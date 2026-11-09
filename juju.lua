@@ -16781,25 +16781,29 @@ end
                 -- last frame there is nothing new to send to the drawings.
                 local cache = data[20]
                 local has_tool = data[13] ~= nil
+                local pixel_x = floor(position.X)
+                local pixel_y = floor(position.Y)
+                local pixel_width = floor(x_size)
+                local pixel_height = floor(y_size)
 
                 if not cache then
                     data[20] = {
-                        x_size, y_size, position.X, position.Y,
+                        pixel_width, pixel_height, pixel_x, pixel_y,
                         data[11], data[9], data[10], data[15], has_tool,
                         hide_armor_bar_if_empty, hide_health_text_if_full
                     }
-                elseif cache[1] == x_size and cache[2] == y_size
-                    and cache[3] == position.X and cache[4] == position.Y
+                elseif cache[1] == pixel_width and cache[2] == pixel_height
+                    and cache[3] == pixel_x and cache[4] == pixel_y
                     and cache[5] == data[11] and cache[6] == data[9]
                     and cache[7] == data[10] and cache[8] == data[15]
                     and cache[9] == has_tool and cache[10] == hide_armor_bar_if_empty
                     and cache[11] == hide_health_text_if_full then
                     continue
                 else
-                    cache[1] = x_size
-                    cache[2] = y_size
-                    cache[3] = position.X
-                    cache[4] = position.Y
+                    cache[1] = pixel_width
+                    cache[2] = pixel_height
+                    cache[3] = pixel_x
+                    cache[4] = pixel_y
                     cache[5] = data[11]
                     cache[6] = data[9]
                     cache[7] = data[10]
@@ -26579,11 +26583,80 @@ do
     local username = "?"
     local avatar = nil
 
-    local LRM_LinkedDiscordID = LRM_LinkedDiscordID or "320421345324433418"
-    if LRM_LinkedDiscordID then
-        local s, data = pcall(function()
+    -- Luashield (https://luashield-vjts.onrender.com) hands the loader the Discord
+    -- id of the key that ran the script: handshake vars.DiscordID, published as
+    -- SEC_DiscordID. The service keeps no display name and no avatar, so those are
+    -- still resolved from that id through a Discord lookup.
+    local discord_id = nil
+
+    do
+        local env = getgenv() or _G
+        local candidates = {
+            env and env["SEC_DiscordID"],
+            _G["SEC_DiscordID"],
+            env and env["LRM_LinkedDiscordID"],
+            _G["LRM_LinkedDiscordID"]
+        }
+
+        for _, value in candidates do
+            if typeof(value) == "string" and value:match("^[0-9]{17,20}$") then
+                discord_id = value
+                break
+            end
+        end
+    end
+
+    -- The loader is not the only way in. The same id answers on the public
+    -- handshake for anyone running the file with a licence key set.
+    if not discord_id then
+        local key = nil
+        local env = getgenv()
+
+        pcall(function()
+            key = script_key
+        end)
+
+        if type(key) ~= "string" and env then
+            key = env["script_key"]
+        end
+
+        if type(key) == "string" and #key > 0 then
+            local hwid = "unknown"
+
+            pcall(function()
+                if type(gethwid) == "function" then
+                    hwid = gethwid()
+                else
+                    hwid = game:GetService("RbxAnalyticsService"):GetClientId()
+                end
+            end)
+
+            local ok, result = pcall(function()
+                local body = request({
+                    ["Url"] = "https://luashield-vjts.onrender.com/api/v1/handshake?key="..key.."&hwid="..tostring(hwid).."&script=pjxSE16vW44&name=juju.beta",
+                    ["Method"] = "GET"
+                })
+
+                if body and body["StatusCode"] == 200 then
+                    return http_service:JSONDecode(body["Body"])
+                end
+            end)
+
+            if ok and type(result) == "table" and result["ok"] then
+                local vars = result["vars"]
+                local id = vars and vars["DiscordID"]
+
+                if typeof(id) == "string" and id:match("^[0-9]{17,20}$") then
+                    discord_id = id
+                end
+            end
+        end
+    end
+
+    if discord_id then
+        local ok, data = pcall(function()
             local body = request({
-                ["Url"] = "https://discord-lookup-api-pied.vercel.app/v1/user/"..LRM_LinkedDiscordID,
+                ["Url"] = "https://discord-lookup-api-pied.vercel.app/v1/user/"..discord_id,
                 ["Method"] = "GET",
                 ["Headers"] = {
                     ["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -26597,20 +26670,26 @@ do
             })
 
             if body and body["StatusCode"] == 200 then
-                local username = http_service:JSONDecode(body["Body"])
-
-                if username then
-                    return username
-                end
+                return http_service:JSONDecode(body["Body"])
             end
         end)
 
-        username = (s and data) and "@"..data["username"] or "?"
+        if ok and type(data) == "table" then
+            if type(data["username"]) == "string" then
+                username = "@"..data["username"]
+            end
 
-        if username ~= "?" then
-            s, avatar = pcall(function()
-                return game:HttpGet(data["avatar"]["link"])
-            end)
+            local link = data["avatar"] and data["avatar"]["link"]
+
+            if type(link) == "string" then
+                local ok_avatar, image = pcall(function()
+                    return game:HttpGet(link)
+                end)
+
+                if ok_avatar then
+                    avatar = image
+                end
+            end
         end
     end
 

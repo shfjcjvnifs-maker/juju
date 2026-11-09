@@ -700,25 +700,43 @@ if not LPH_OBFUSCATED then
         local Properties = self.__PROPERTIES
         local object = self.__OBJECT
 
-        local width = Properties.Size.X
-        local height = Properties.Size.Y
+        -- ESP boxes move and resize every frame, and every move used to rewrite
+        -- all four edge frames: thirteen property writes were spent where one
+        -- would do. Position and Size only write when they actually changed, and
+        -- the edges are laid out in Scale, so they follow the parent frame on
+        -- their own and are rewritten only when Thickness changes.
+        local position = Properties.Position
+
+        if rawget(self, "__LAST_POSITION") ~= position then
+            rawset(self, "__LAST_POSITION", position)
+            object.Position = fromOffset(position.X, position.Y)
+        end
+
+        local size = Properties.Size
+
+        if rawget(self, "__LAST_SIZE") ~= size then
+            rawset(self, "__LAST_SIZE", size)
+            object.Size = fromOffset(size.X, size.Y)
+        end
+
         local thickness = tonumber(Properties.Thickness) or 1
 
         if thickness < 1 then
             thickness = 1
         end
 
-        object.Position = fromOffset(Properties.Position.X, Properties.Position.Y)
-        object.Size = fromOffset(width, height)
+        if rawget(self, "__BORDER_THICKNESS") ~= thickness then
+            rawset(self, "__BORDER_THICKNESS", thickness)
 
-        object._BORDER_TOP.Position = udim2New(0, 0, 0, 0)
-        object._BORDER_TOP.Size = fromOffset(width, thickness)
-        object._BORDER_BOTTOM.Position = fromOffset(0, height - thickness)
-        object._BORDER_BOTTOM.Size = fromOffset(width, thickness)
-        object._BORDER_LEFT.Position = fromOffset(0, 0)
-        object._BORDER_LEFT.Size = fromOffset(thickness, height)
-        object._BORDER_RIGHT.Position = fromOffset(width - thickness, 0)
-        object._BORDER_RIGHT.Size = fromOffset(thickness, height)
+            object._BORDER_TOP.Position = udim2New(0, 0, 0, 0)
+            object._BORDER_TOP.Size = udim2New(1, 0, 0, thickness)
+            object._BORDER_BOTTOM.Position = udim2New(0, 0, 1, -thickness)
+            object._BORDER_BOTTOM.Size = udim2New(1, 0, 0, thickness)
+            object._BORDER_LEFT.Position = udim2New(0, 0, 0, 0)
+            object._BORDER_LEFT.Size = udim2New(0, thickness, 1, 0)
+            object._BORDER_RIGHT.Position = udim2New(1, -thickness, 0, 0)
+            object._BORDER_RIGHT.Size = udim2New(0, thickness, 1, 0)
+        end
 
         self:__UPDATE_BORDERS()
     end
@@ -736,6 +754,12 @@ if not LPH_OBFUSCATED then
         elseif alpha > 1 then
             alpha = 1
         end
+
+        if rawget(self, "__BORDER_ALPHA") == alpha then
+            return
+        end
+
+        rawset(self, "__BORDER_ALPHA", alpha)
 
         object._BORDER_TOP.BackgroundTransparency = alpha
         object._BORDER_BOTTOM.BackgroundTransparency = alpha
