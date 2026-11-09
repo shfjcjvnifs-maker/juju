@@ -8372,7 +8372,42 @@ local drawing_stub_mt = {
     ["__newindex"] = function() end
 }
 
-local create_drawing_object = function(backend, class, properties)
+-- Drawing2 reads Transparency as opacity (1 = solid); the executor's Drawing reads
+-- it as transparency (0 = solid). Every ESP value is written in executor terms, so
+-- Drawing2 objects take the inverted value on the way in and read back out inverted
+-- again, keeping tween math consistent.
+local native_drawing = resolve_drawing_backend(Drawing)
+
+local transparency_proxy_mt = {}
+
+transparency_proxy_mt["__index"] = function(self, key)
+    local target = rawget(self, "__TARGET")
+    local value = target[key]
+
+    if key == "Transparency" and type(value) == "number" then
+        return 1 - value
+    end
+
+    if type(value) == "function" then
+        return function(_, ...)
+            return value(target, ...)
+        end
+    end
+
+    return value
+end
+
+transparency_proxy_mt["__newindex"] = function(self, key, value)
+    local target = rawget(self, "__TARGET")
+
+    if key == "Transparency" and type(value) == "number" then
+        value = 1 - value
+    end
+
+    target[key] = value
+end
+
+local create_drawing_object = function(backend, class, properties, invert_transparency)
     if not backend then
         return setmetatable({}, drawing_stub_mt)
     end
@@ -8385,21 +8420,27 @@ local create_drawing_object = function(backend, class, properties)
         return setmetatable({}, drawing_stub_mt)
     end
 
+    local target = object
+
+    if invert_transparency and backend ~= native_drawing then
+        target = setmetatable({ ["__TARGET"] = object }, transparency_proxy_mt)
+    end
+
     for property, value in properties do
         pcall(function()
-            object[property] = value
+            target[property] = value
         end)
     end
 
-    return object
+    return target
 end
 
 local create_real_drawing = LPH_NO_VIRTUALIZE(function(class, properties)
-    return create_drawing_object(real_drawing, class, properties)
+    return create_drawing_object(real_drawing, class, properties, true)
 end)
 
 local create_fake_drawing = LPH_NO_VIRTUALIZE(function(class, properties)
-    return create_drawing_object(fake_drawing, class, properties)
+    return create_drawing_object(fake_drawing, class, properties, false)
 end)
 
 local new_notification = menu["new_notification"]
@@ -17100,7 +17141,7 @@ end)()
             local image = tool and tool_icon_data[tool["Name"]] or ""
             data[5][9] = create_fake_drawing("Image", {
                 Color = colors[status][9],
-                Transparency = transparencies[status][9],
+                Transparency = 1 - transparencies[status][9],
                 Data = image,
                 Size = vector2_new(24,12),
                 Visible = data[6]
