@@ -1,5 +1,7 @@
 repeat task["wait"]() until game:IsLoaded()
 
+local __juju_ok, __juju_err = xpcall(function()
+
 if (identifyexecutor() == "AWP" or identifyexecutor() == "Nihon") then
     cleardrawcache()
 end
@@ -26637,4 +26639,40 @@ do
     create_connection(crew:GetPropertyChangedSignal("Value"), LPH_NO_VIRTUALIZE(function()
         local_crew = crew["Value"]
     end))
+end
+
+end, function(err)
+    local ok, trace = pcall(debug.traceback, "", 2)
+
+    return tostring(err) .. "\n" .. (ok and trace or "")
+end)
+
+getgenv()["__juju_loaded"] = __juju_ok
+
+if not __juju_ok then
+    warn("[juju] load error: " .. tostring(__juju_err))
+
+    pcall(function()
+        local container = (gethui and gethui()) or game:GetService("CoreGui")
+        local gui = Instance.new("ScreenGui")
+        gui.Name = "juju_load_error"
+        gui.DisplayOrder = 2147483647
+        gui.IgnoreGuiInset = true
+        gui.ResetOnSpawn = false
+        gui.Parent = container
+
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.fromScale(1, 1)
+        label.BackgroundColor3 = Color3.fromRGB(16, 0, 0)
+        label.BackgroundTransparency = 0.1
+        label.BorderSizePixel = 0
+        label.TextColor3 = Color3.fromRGB(255, 130, 130)
+        label.Font = Enum.Font.Code
+        label.TextSize = 14
+        label.TextWrapped = true
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.TextYAlignment = Enum.TextYAlignment.Top
+        label.Text = "juju failed to load\n\n" .. tostring(__juju_err)
+        label.Parent = gui
+    end)
 end
