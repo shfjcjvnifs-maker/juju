@@ -8481,10 +8481,24 @@ local drawing_stub_mt = {
 }
 
 -- Drawing2 reads Transparency as opacity (1 = solid); the executor's Drawing reads
--- it as transparency (0 = solid). Every ESP value is written in executor terms, so
--- Drawing2 objects take the inverted value on the way in and read back out inverted
--- again, keeping tween math consistent.
-local native_drawing = resolve_drawing_backend(Drawing)
+-- it as transparency (0 = solid). Values are written in one convention or the
+-- other, so an object takes the inverter whenever its backend disagrees with the
+-- caller, which keeps tween math consistent in both directions. Drawing2 is the
+-- only backend that exposes a Font constructor, which is how it is told apart.
+local is_opacity_backend = function(backend)
+    if not backend then
+        return false
+    end
+
+    local ok, font = pcall(function()
+        return backend["Font"]
+    end)
+
+    return ok and type(font) == "table" and type(font["new"]) == "function"
+end
+
+local real_is_opacity = is_opacity_backend(real_drawing)
+local fake_is_opacity = is_opacity_backend(fake_drawing)
 
 local transparency_proxy_mt = {}
 
@@ -8515,7 +8529,7 @@ transparency_proxy_mt["__newindex"] = function(self, key, value)
     target[key] = value
 end
 
-local create_drawing_object = function(backend, class, properties, invert_transparency)
+local create_drawing_object = function(backend, backend_is_opacity, class, properties, convention)
     if not backend then
         return setmetatable({}, drawing_stub_mt)
     end
@@ -8530,7 +8544,7 @@ local create_drawing_object = function(backend, class, properties, invert_transp
 
     local target = object
 
-    if invert_transparency and backend ~= native_drawing then
+    if backend_is_opacity ~= (convention == "opacity") then
         target = setmetatable({ ["__TARGET"] = object }, transparency_proxy_mt)
     end
 
@@ -8543,19 +8557,20 @@ local create_drawing_object = function(backend, class, properties, invert_transp
     return target
 end
 
--- HUD drawing (center panel, crosshair, indicators, FOV) is written Drawing2-native
--- (1 = solid, 0 = invisible) and passes straight through. ESP objects are written in
--- executor terms (0 = solid, 1 = invisible), so they get the inverting proxy.
+-- HUD drawing (center panel, crosshair, indicators, hit markers, damage numbers,
+-- FOV) is written opacity-style (1 = solid, 0 = invisible). ESP objects are written
+-- transparency-style (0 = solid, 1 = invisible). The convention decides the
+-- inverter, so both render on either backend.
 local create_real_drawing = LPH_NO_VIRTUALIZE(function(class, properties)
-    return create_drawing_object(real_drawing, class, properties, false)
+    return create_drawing_object(real_drawing, real_is_opacity, class, properties, "opacity")
 end)
 
 local create_fake_drawing = LPH_NO_VIRTUALIZE(function(class, properties)
-    return create_drawing_object(fake_drawing, class, properties, false)
+    return create_drawing_object(fake_drawing, fake_is_opacity, class, properties, "opacity")
 end)
 
 local create_esp_drawing = LPH_NO_VIRTUALIZE(function(class, properties)
-    return create_drawing_object(real_drawing, class, properties, true)
+    return create_drawing_object(real_drawing, real_is_opacity, class, properties, "transparency")
 end)
 
 local new_notification = menu["new_notification"]
@@ -11734,6 +11749,16 @@ do
             destroy(highlight)
         end
 
+        local adornments = data[21]
+
+        if adornments then
+            for i = 1, #adornments do
+                destroy(adornments[i])
+                adornments[i] = nil
+            end
+            data[21] = nil
+        end
+
         local chams = data[12]
 
         if chams then
@@ -14897,8 +14922,14 @@ end
         local create_drawing = (identifyexecutor() == "Swift" or identifyexecutor() == "Potassium") and create_fake_drawing or create_real_drawing
 
         local do_damage_number = LPH_JIT_MAX(function(player, part, damage, _, message)
+            local data = player_data[player]
+
+            if not data then
+                return
+            end
+
             local transparency = -flags["damage_number_transparency"]+1
-            local color = player_data[player][18] and flags["damage_number_lethal_color"] or flags["damage_number_color"]
+            local color = data[18] and flags["damage_number_lethal_color"] or flags["damage_number_color"]
             local number = create_drawing("Text", {
                 ["Text"] = flags["damage_number_show_ragebot_data"] and damage..message or damage,
                 ["Size"] = 14,
@@ -16376,11 +16407,12 @@ end)()
 -- >> ( render quality )
 
 -- Below graphics quality 3 the client skips the Highlight render pass and the
--- material bloom pass, so the player highlight and the neon / forcefield player
--- material stop showing. The guard lifts the level only while one of those
--- features is on, and only to the first level that renders them. Every call is
--- pcall-guarded: some executors do not expose settings(), and a missing handle
--- leaves the features exactly as they were.
+-- bloom pass, so an ESP Highlight and a neon / forcefield material both come out
+-- flat or invisible. Raising the quality preset fixes that by spending exactly
+-- the frames the preset was turned down to save, so nothing is raised here: the
+-- level is only read, and the highlight falls back to engine-drawn adornments,
+-- which render at every level. Every read is pcall-guarded because some
+-- executors do not expose settings(), and an unreadable level means no fallback.
 local render_settings = nil
 do
     local ok, result = pcall(function()
@@ -16392,9 +16424,34 @@ do
     end
 end
 
-local minimum_render_quality = 3
-local minimum_render_quality_item = nil
+local highlight_render_quality = 3
 
+local get_render_quality = function()
+    if not render_settings then
+        return nil
+    end
+
+    local ok, current = pcall(function()
+        return render_settings.Rendering.QualityLevel
+    end)
+
+    if not ok or current == nil then
+        return nil
+    end
+
+    return typeof(current) == "EnumItem" and current.Value or tonumber(current)
+end
+
+local highlight_needs_adornments = function()
+    local level = get_render_quality()
+
+    return level ~= nil and level < highlight_render_quality
+end
+
+-- Set once a second by the visual guard; read by the highlight fallback.
+local using_adornment_highlight = false
+
+local minimum_render_quality_item = nil
 do
     local quality_enum = Enum["QualityLevel"]
 
@@ -16405,7 +16462,7 @@ do
 
         if ok and items then
             for _, item in items do
-                if item.Value >= minimum_render_quality then
+                if item.Value >= highlight_render_quality then
                     minimum_render_quality_item = item
                     break
                 end
@@ -16414,27 +16471,21 @@ do
     end
 end
 
-local ensure_render_quality = function()
-    if not render_settings then
+-- Only the "glow" toggle raises the preset, and it raises it to the first level
+-- that renders Highlight and bloom, never higher.
+local raise_render_quality = function()
+    if not flags["material_glow"] or not render_settings then
         return
     end
 
-    local ok, current = pcall(function()
-        return render_settings.Rendering.QualityLevel
-    end)
+    local level = get_render_quality()
 
-    if not ok or current == nil then
-        return
-    end
-
-    local level = typeof(current) == "EnumItem" and current.Value or tonumber(current)
-
-    if not level or level >= minimum_render_quality then
+    if not level or level >= highlight_render_quality then
         return
     end
 
     pcall(function()
-        render_settings.Rendering.QualityLevel = minimum_render_quality_item or minimum_render_quality
+        render_settings.Rendering.QualityLevel = minimum_render_quality_item or highlight_render_quality
     end)
 end
 
@@ -16477,6 +16528,7 @@ end
     menu_references["material"] = menu_references["esp_section"]:create_element({["name"] = "material"}, {["toggle"] = {["flag"] = "material"}})
         menu_references["material_settings"] = menu_references["material"]:create_settings()
         menu_references["material_value"] = menu_references["material_settings"]:create_element({["name"] = "material"}, {["dropdown"] = {["options"] = {"neon", "forcefield"}, ["requires_one"] = true, ["flag"] = "material_value", ["default"] = {"neon"}}})
+        menu_references["material_glow"] = menu_references["material_settings"]:create_element({["name"] = "glow (quality 3)"}, {["toggle"] = {["flag"] = "material_glow"}})
         menu_references["material_color"] = menu_references["material_settings"]:create_element({["name"] = "color"}, {["colorpicker"] = {["color_flag"] = "material_color", ["transparency_flag"] = "material_transparency", ["default_color"] = color3_fromrgb(249, 217, 255), ["default_transparency"] = 0.2}})
         menu_references["enemy_material_color"] = menu_references["material_settings"]:create_element({["name"] = "enemy color"}, {["colorpicker"] = {["color_flag"] = "enemy_material_color", ["transparency_flag"] = "enemy_material_transparency", ["default_color"] = color3_fromrgb(249, 217, 255), ["default_transparency"] = 0.2}})
         menu_references["friendly_material_color"] = menu_references["material_settings"]:create_element({["name"] = "friendly color"}, {["colorpicker"] = {["color_flag"] = "friendly_material_color", ["transparency_flag"] = "friendly_material_transparency", ["default_color"] = color3_fromrgb(249, 217, 255), ["default_transparency"] = 0.2}})
@@ -17283,6 +17335,96 @@ end
         end
     end)
 
+    -- Highlight rendering is skipped below graphics quality 3 and the level is
+    -- deliberately never raised, so the highlight is mirrored onto one
+    -- BoxHandleAdornment per body part there instead. Adornments are drawn at
+    -- every quality level, which the chams feature already relies on. Skipped
+    -- when chams is on, since that draws the same adornments already.
+    local update_highlight_fallback = LPH_NO_VIRTUALIZE(function(data)
+        local adornments = data[21]
+
+        if not using_adornment_highlight or not do_highlight or do_chams or not data[3] then
+            if adornments then
+                for i = 1, #adornments do
+                    destroy(adornments[i])
+                    adornments[i] = nil
+                end
+
+                data[21] = nil
+            end
+
+            return
+        end
+
+        if not data[6] then
+            if adornments then
+                for i = 1, #adornments do
+                    adornments[i]["Visible"] = false
+                end
+            end
+
+            return
+        end
+
+        local parts = data[4]
+        local information = alt_information[data[1]]
+
+        -- An adornment carries one colour, so it takes whichever half of the
+        -- highlight is actually visible: the smaller transparency wins.
+        local color = information[3]
+        local transparency = information[4]
+
+        if information[2] < information[4] then
+            color = information[1]
+            transparency = information[2]
+        end
+
+        if not adornments then
+            adornments = {}
+            local culling_mode = Enum["AdornCullingMode"]["Automatic"]
+            local always_on_top = highlight_depth_mode == Enum["HighlightDepthMode"]["AlwaysOnTop"]
+
+            for i = 1, #body_parts do
+                local character_part = parts[body_parts[i]]
+
+                adornments[i] = create_instance("BoxHandleAdornment", {
+                    ["Visible"] = true,
+                    ["Adornee"] = character_part,
+                    ["Transparency"] = transparency,
+                    ["AdornCullingMode"] = culling_mode,
+                    ["Archivable"] = true,
+                    ["Color3"] = color,
+                    ["ZIndex"] = chams_z_index,
+                    ["AlwaysOnTop"] = always_on_top,
+                    ["Size"] = character_part and character_part["Size"] + chams_offset or chams_offset,
+                    ["Parent"] = core_gui
+                })
+            end
+
+            data[21] = adornments
+            return
+        end
+
+        for i = 1, #body_parts do
+            local adornment = adornments[i]
+            local character_part = parts[body_parts[i]]
+
+            if adornment then
+                if adornment["Adornee"] ~= character_part then
+                    adornment["Adornee"] = character_part
+                end
+
+                if not adornment["Visible"] then
+                    adornment["Visible"] = true
+                end
+
+                adornment["Size"] = character_part and character_part["Size"] + chams_offset or chams_offset
+                adornment["Color3"] = color
+                adornment["Transparency"] = transparency
+            end
+        end
+    end)
+
     local update_highlight = LPH_NO_VIRTUALIZE(function(data)
         local highlight = data[8]
         if not highlight then
@@ -17327,15 +17469,21 @@ end
 
         last_visual_guard = now
 
-        if do_highlight or do_material then
-            ensure_render_quality()
-        end
+        raise_render_quality()
 
-        if not do_highlight or not flags["esp"] then
+        using_adornment_highlight = do_highlight and highlight_needs_adornments()
+
+        if not flags["esp"] then
             return
         end
 
         for player, data in player_data do
+            update_highlight_fallback(data)
+
+            if not do_highlight then
+                continue
+            end
+
             local highlight = data[8]
             local character = data[3]
 
@@ -17998,6 +18146,15 @@ end
                     data[8] = nil
                 end
 
+                local adornments = data[21]
+                if adornments then
+                    for i = 1, #adornments do
+                        destroy(adornments[i])
+                        adornments[i] = nil
+                    end
+                    data[21] = nil
+                end
+
                 local chams = data[12]
                 if chams then
                     for i = 1, #chams do
@@ -18431,10 +18588,6 @@ end
         create_connection(menu_references["highlight"]["on_toggle_change"], LPH_NO_VIRTUALIZE(function(value)
             do_highlight = value
 
-            if value then
-                ensure_render_quality()
-            end
-
             if highlight_character_added_connection then
                 highlight_character_added_connection:Disconnect()
                 highlight_character_added_connection = nil
@@ -18446,6 +18599,15 @@ end
                 if highlight then
                     destroy(highlight)
                     data[8] = nil
+                end
+
+                local adornments = data[21]
+                if adornments then
+                    for i = 1, #adornments do
+                        destroy(adornments[i])
+                        adornments[i] = nil
+                    end
+                    data[21] = nil
                 end
             end
 
@@ -18728,12 +18890,14 @@ end
             end
         end)
 
+        create_connection(menu_references["material_glow"]["on_toggle_change"], function(value)
+            if value then
+                raise_render_quality()
+            end
+        end)
+
         create_connection(menu_references["material"]["on_toggle_change"], LPH_NO_VIRTUALIZE(function(value)
             do_material = value
-
-            if value then
-                ensure_render_quality()
-            end
 
             if material_on_player_character_added then
                 material_on_player_character_added:Disconnect()
@@ -19254,8 +19418,6 @@ do
         menu_references["character_highlight_outline"] = menu_references["character_highlight_settings"]:create_element({["name"] = "outline"}, {["colorpicker"] = {["color_flag"] = "character_highlight_outline_color", ["default_color"] = color3_fromrgb(255, 255, 255), ["transparency_flag"] = "character_highlight_outline_transparency", ["default_transparency"] =  0.9}})
 
     local apply_character_highlight = LPH_NO_VIRTUALIZE(function()
-        ensure_render_quality()
-
         character_highlight["FillTransparency"] = 1
         character_highlight["OutlineTransparency"] = 1
 
@@ -19279,8 +19441,6 @@ do
         end
 
         if value then
-            ensure_render_quality()
-
             character_highlight = create_instance("Highlight", {
                 FillColor = flags["character_highlight_color"],
                 FillTransparency = flags["character_highlight_transparency"],
