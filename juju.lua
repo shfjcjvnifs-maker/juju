@@ -9295,6 +9295,17 @@ do
 
                         local pos = ragebot_aim_position + vector3_new(math_random(101,105)/100,0.008,-0.008)
                         local origin = local_server_position["p"] + vector3_new(0.004,3.0208,-0.048)
+
+                        -- Wall bang: start the shot one stud from the target
+                        -- instead of at the shooter, so the server's trace has
+                        -- no wall between its origin and the aim point.
+                        if flags["auto_fire_wall_bang"] then
+                            local direction = (pos-origin)["Unit"]
+
+                            if direction["Magnitude"] > 0.001 then
+                                origin = pos - direction
+                            end
+                        end
                 
                         local dir = (origin-pos)["Unit"]
                         local Magnitude = dir["Magnitude"]
@@ -10689,22 +10700,60 @@ do
     do
         local connection = nil
 
+        local fire_tool = function(tool)
+            local fired = false
+
+            local ok = pcall(function()
+                local connections = getconnections(tool["Activated"])
+
+                if connections then
+                    for _, signal_connection in connections do
+                        setthreadidentity(5)
+                        signal_connection:Fire()
+                        setthreadidentity(8)
+                        fired = true
+                        break
+                    end
+                end
+
+                if not fired then
+                    tool:Activate()
+                    fired = true
+                end
+            end)
+
+            if not ok then
+                pcall(setthreadidentity, 8)
+            end
+
+            return fired
+        end
+
         local on_m1_input = LPH_NO_VIRTUALIZE(function(input, processed)
-            if input["UserInputType"] == Enum["UserInputType"]["MouseButton1"] and input["UserInputState"] == Enum["UserInputState"]["Begin"] and local_gun and not menu["is_menu_open"]() then
+            if input["UserInputType"] == Enum["UserInputType"]["MouseButton1"] and input["UserInputState"] == Enum["UserInputState"]["Begin"] and not menu["is_menu_open"]() then
                 while user_input_service["IsMouseButtonPressed"](user_input_service, Enum["UserInputType"]["MouseButton1"]) and not menu["is_menu_open"]() do
                     if not local_reloading then
-                        -- Fire the first Activated handler of every held gun, not
-                        -- just the selected one, so multi-equip actually shoots.
+                        -- Fire every equipped gun, not just the selected one, so
+                        -- multi-equip actually shoots. A tool with no readable
+                        -- Activated connection falls back to Tool:Activate.
+                        local found_gun = false
+
                         for handle, data in local_guns do
                             local tool = data[5] or handle["Parent"]
                             local ammo = tonumber(data[3])
 
                             if tool and tool["Parent"] == local_character and (ammo == nil or ammo > 0) then
-                                for _, connection in getconnections(tool["Activated"]) do
-                                    setthreadidentity(5)
-                                    connection:Fire()
-                                    setthreadidentity(8)
-                                    break
+                                found_gun = true
+                                fire_tool(tool)
+                            end
+                        end
+
+                        -- No gun entry bound (range/ammo values missing on this
+                        -- build): fall back to whatever tool is held.
+                        if not found_gun and local_character then
+                            for _, child in local_character:GetChildren() do
+                                if child["ClassName"] == "Tool" and child:FindFirstChild("Handle") then
+                                    fire_tool(child)
                                 end
                             end
                         end
@@ -10720,7 +10769,7 @@ do
                 connection:Disconnect()
                 connection = nil
             end
-            
+
             if value then
                 connection = create_connection(user_input_service["InputBegan"], on_m1_input)
             end
@@ -21141,7 +21190,7 @@ local backtrack_data = {}
                 ragebot_aim_velocity = target_velocity
                 ragebot_aim_defensive = did_defensive
 
-                if local_gun and (((not local_reloading or auto_fire_always_fire) and not target[18] and not target[7] and not spawn_guard["check"](target) and not grabbing_constraint) and (flags["auto_fire"] and (auto_fire_always_fire or (((local_server_position-ragebot_aim_position)["Magnitude"] <= local_gun) or flags["follow_target"] or did_defensive)) and old_time-last_fire > fire_cooldown)) then
+                if local_gun and (((not local_reloading or auto_fire_always_fire) and not target[18] and not target[7] and not spawn_guard["check"](target) and not grabbing_constraint) and (flags["auto_fire"] and (auto_fire_always_fire or ((flags["auto_fire_wall_bang"] or (local_server_position-ragebot_aim_position)["Magnitude"] <= local_gun) or flags["follow_target"] or did_defensive)) and old_time-last_fire > fire_cooldown)) then
                     local delay = flags["shot_delay"]
                     if delay > 0 then
                         wait(delay/1000)
@@ -21741,65 +21790,117 @@ local backtrack_data = {}
         local connection = nil
         local connection2 = nil
 
-        local on_tool_added = function(tool)
+        -- A cooldown is a sub-second float. Staying below 1 keeps whole-number
+        -- constants (loop bounds, counts) out of the patch.
+        local is_cooldown = function(value)
+            return type(value) == "number" and value >= 0.01 and value < 1
+        end
+
+        local source_of = function(func)
+            local ok, info = pcall(getinfo, func)
+
+            if ok and type(info) == "string" then
+                return info:lower()
+            end
+
+            if ok and type(info) == "table" and type(info["source"]) == "string" then
+                return info["source"]:lower()
+            end
+
+            local ok_debug, source = pcall(function()
+                return debug.info(func, "s")
+            end)
+
+            return ok_debug and type(source) == "string" and source:lower() or ""
+        end
+
+        local is_gun_handler = function(func)
+            if type(func) ~= "function" then
+                return false
+            end
+
+            local source = source_of(func)
+
+            return source:find("gun") ~= nil or source:find("weapon") ~= nil or source:find("shoot") ~= nil
+        end
+
+        local on_tool_added = LPH_NO_VIRTUALIZE(function(tool)
             if not tool then
                 return
             end
 
-            local connection = getconnections(tool["Activated"])[1]
+            local connections = getconnections(tool["Activated"])
 
-            if not connection then
+            if not connections then
                 return
             end
 
-            local old = connection["Function"]
+            for _, signal_connection in connections do
+                local old = signal_connection["Function"]
 
-            if not old or constant_cache[old] or upvalue_cache[old] or not getinfo(old)["source"]:find("GunClient") then
-                return
+                if old and not constant_cache[old] and not upvalue_cache[old] and is_gun_handler(old) then
+                    local constants = {}
+
+                    -- Only sub-second numbers are patched. The old code took the
+                    -- first number it could find, which could be a loop bound or
+                    -- a random seed, and that left the gun handler broken.
+                    pcall(function()
+                        for index, constant in getconstants(old) do
+                            if is_cooldown(constant) then
+                                constants[index] = constant
+                                setconstant(old, index, -10000)
+                            end
+                        end
+                    end)
+
+                    local upvalues = {}
+
+                    pcall(function()
+                        for index, upvalue in getupvalues(old) do
+                            if is_cooldown(upvalue) then
+                                upvalues[index] = upvalue
+                                setupvalue(old, index, -10000)
+                            end
+                        end
+                    end)
+
+                    if next(constants) then
+                        constant_cache[old] = constants
+                    end
+
+                    if next(upvalues) then
+                        upvalue_cache[old] = upvalues
+                    end
+                end
             end
+        end)
 
-            for _, constant in getconstants(old) do
-                if type(constant) == "number" and constant ~= -10000 and constant ~= 0.05 then
-                    constant_cache[old] = constant
-                    setconstant(old, _, -10000)
-                    break
+        local restore = LPH_NO_VIRTUALIZE(function()
+            for func, constants in constant_cache do
+                for index, value in constants do
+                    pcall(setconstant, func, index, value)
                 end
             end
 
-            for _, upvalue in getupvalues(old) do
-                if type(upvalue) == "number" and upvalue ~= 0 and upvalue ~= 0.05 and upvalue < 10 then
-                    upvalue_cache[old] = upvalue
-                    setupvalue(old, _, -10000)
-                    return
+            for func, upvalues in upvalue_cache do
+                for index, value in upvalues do
+                    pcall(setupvalue, func, index, value)
                 end
             end
-        end
 
-        local reset = LPH_JIT_MAX(function()
             constant_cache = {}
             upvalue_cache = {}
         end)
 
-        create_connection(menu_references["rapid_fire"]["on_toggle_change"], function(value)
-            for func, data in constant_cache do
-                for _, constant in getconstants(func) do
-                    if type(constant) == "number" and constant == -10000 then
-                        setconstant(func, _, data)
-                        break
-                    end
-                end
-                constant_cache[func] = nil
-            end
+        -- A respawn swaps the character but not the gun module, so the patched
+        -- handlers are still there. Restore them before dropping the cache;
+        -- clearing the cache first lost the original values for good.
+        local reset = LPH_JIT_MAX(function()
+            restore()
+        end)
 
-            for func, data in upvalue_cache do
-                for _, upvalue in getupvalues(func) do
-                    if type(upvalue) == "number" and upvalue == -10000 then
-                        setupvalue(func, _, data)
-                        break
-                    end
-                end
-                upvalue_cache[func] = nil
-            end
+        create_connection(menu_references["rapid_fire"]["on_toggle_change"], function(value)
+            restore()
 
             if connection then
                 connection:Disconnect()
@@ -21813,10 +21914,18 @@ local backtrack_data = {}
 
             if value then
                 for handle, data in local_guns do
-                    local tool = handle["Parent"]
+                    local tool = data[5] or handle["Parent"]
 
                     if tool then
                         on_tool_added(tool)
+                    end
+                end
+
+                if local_character then
+                    for _, child in local_character:GetChildren() do
+                        if child["ClassName"] == "Tool" then
+                            on_tool_added(child)
+                        end
                     end
                 end
 
