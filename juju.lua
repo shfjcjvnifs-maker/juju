@@ -11749,13 +11749,11 @@ do
             destroy(highlight)
         end
 
-        local adornments = data[21]
+        local adornment = data[21]
 
-        if adornments then
-            for i = 1, #adornments do
-                destroy(adornments[i])
-                adornments[i] = nil
-            end
+        if adornment then
+            adornment["Adornee"] = nil
+            destroy(adornment)
             data[21] = nil
         end
 
@@ -14930,8 +14928,14 @@ end
 
             local transparency = -flags["damage_number_transparency"]+1
             local color = data[18] and flags["damage_number_lethal_color"] or flags["damage_number_color"]
+            local text = damage
+
+            if flags["damage_number_show_ragebot_data"] and message then
+                text = damage..message
+            end
+
             local number = create_drawing("Text", {
-                ["Text"] = flags["damage_number_show_ragebot_data"] and damage..message or damage,
+                ["Text"] = text,
                 ["Size"] = 14,
                 ["Color"] = color,
                 ["OutlineColor"] = damage_number_outline_color,
@@ -17341,15 +17345,12 @@ end
     -- every quality level, which the chams feature already relies on. Skipped
     -- when chams is on, since that draws the same adornments already.
     local update_highlight_fallback = LPH_NO_VIRTUALIZE(function(data)
-        local adornments = data[21]
+        local adornment = data[21]
 
         if not using_adornment_highlight or not do_highlight or do_chams or not data[3] then
-            if adornments then
-                for i = 1, #adornments do
-                    destroy(adornments[i])
-                    adornments[i] = nil
-                end
-
+            if adornment then
+                adornment["Adornee"] = nil
+                destroy(adornment)
                 data[21] = nil
             end
 
@@ -17357,16 +17358,15 @@ end
         end
 
         if not data[6] then
-            if adornments then
-                for i = 1, #adornments do
-                    adornments[i]["Visible"] = false
-                end
+            if adornment and adornment["Visible"] then
+                adornment["Visible"] = false
             end
 
             return
         end
 
         local parts = data[4]
+        local root_part = parts["HumanoidRootPart"] or parts["UpperTorso"]
         local information = alt_information[data[1]]
 
         -- An adornment carries one colour, so it takes whichever half of the
@@ -17379,50 +17379,46 @@ end
             transparency = information[2]
         end
 
-        if not adornments then
-            adornments = {}
-            local culling_mode = Enum["AdornCullingMode"]["Automatic"]
-            local always_on_top = highlight_depth_mode == Enum["HighlightDepthMode"]["AlwaysOnTop"]
+        local size = nil
 
-            for i = 1, #body_parts do
-                local character_part = parts[body_parts[i]]
+        local ok, extents = pcall(function()
+            return data[3]:GetExtentsSize()
+        end)
 
-                adornments[i] = create_instance("BoxHandleAdornment", {
-                    ["Visible"] = true,
-                    ["Adornee"] = character_part,
-                    ["Transparency"] = transparency,
-                    ["AdornCullingMode"] = culling_mode,
-                    ["Archivable"] = true,
-                    ["Color3"] = color,
-                    ["ZIndex"] = chams_z_index,
-                    ["AlwaysOnTop"] = always_on_top,
-                    ["Size"] = character_part and character_part["Size"] + chams_offset or chams_offset,
-                    ["Parent"] = core_gui
-                })
-            end
+        if ok and typeof(extents) == "Vector3" then
+            size = extents + chams_offset
+        else
+            size = vector3_new(4, 6, 4)
+        end
 
-            data[21] = adornments
+        if not adornment then
+            data[21] = create_instance("BoxHandleAdornment", {
+                ["Visible"] = true,
+                ["Adornee"] = root_part,
+                ["Transparency"] = transparency,
+                ["AdornCullingMode"] = Enum["AdornCullingMode"]["Automatic"],
+                ["Archivable"] = true,
+                ["Color3"] = color,
+                ["ZIndex"] = chams_z_index,
+                ["AlwaysOnTop"] = highlight_depth_mode == Enum["HighlightDepthMode"]["AlwaysOnTop"],
+                ["Size"] = size,
+                ["Parent"] = core_gui
+            })
+
             return
         end
 
-        for i = 1, #body_parts do
-            local adornment = adornments[i]
-            local character_part = parts[body_parts[i]]
-
-            if adornment then
-                if adornment["Adornee"] ~= character_part then
-                    adornment["Adornee"] = character_part
-                end
-
-                if not adornment["Visible"] then
-                    adornment["Visible"] = true
-                end
-
-                adornment["Size"] = character_part and character_part["Size"] + chams_offset or chams_offset
-                adornment["Color3"] = color
-                adornment["Transparency"] = transparency
-            end
+        if adornment["Adornee"] ~= root_part then
+            adornment["Adornee"] = root_part
         end
+
+        if not adornment["Visible"] then
+            adornment["Visible"] = true
+        end
+
+        adornment["Size"] = size
+        adornment["Color3"] = color
+        adornment["Transparency"] = transparency
     end)
 
     local update_highlight = LPH_NO_VIRTUALIZE(function(data)
@@ -18146,12 +18142,11 @@ end
                     data[8] = nil
                 end
 
-                local adornments = data[21]
-                if adornments then
-                    for i = 1, #adornments do
-                        destroy(adornments[i])
-                        adornments[i] = nil
-                    end
+                local adornment = data[21]
+
+                if adornment then
+                    adornment["Adornee"] = nil
+                    destroy(adornment)
                     data[21] = nil
                 end
 
@@ -18601,12 +18596,11 @@ end
                     data[8] = nil
                 end
 
-                local adornments = data[21]
-                if adornments then
-                    for i = 1, #adornments do
-                        destroy(adornments[i])
-                        adornments[i] = nil
-                    end
+                local adornment = data[21]
+
+                if adornment then
+                    adornment["Adornee"] = nil
+                    destroy(adornment)
                     data[21] = nil
                 end
             end
