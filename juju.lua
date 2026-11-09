@@ -10706,82 +10706,124 @@ do
     -- >> ( automatic guns )
 
     do
-        local connection = nil
+        local active = false
+        local next_fire = 0
 
-        local fire_tool = function(tool)
-            local fired = false
+        local raycast_params = RaycastParams["new"]()
+        raycast_params["FilterType"] = Enum["RaycastFilterType"]["Exclude"]
+        raycast_params["IgnoreWater"] = true
+        raycast_params["FilterDescendantsInstances"] = {}
 
-            local ok = pcall(function()
-                local connections = getconnections(tool["Activated"])
+        local pick_gun = function()
+            -- Held tool first, then any equipped bound gun, then the tool's own
+            -- Handle when the gun handler never bound it.
+            for handle, data in local_guns do
+                local tool = data[5] or handle["Parent"]
 
-                if connections then
-                    for _, signal_connection in connections do
-                        setthreadidentity(5)
-                        signal_connection:Fire()
-                        setthreadidentity(8)
-                        fired = true
-                        break
-                    end
+                if tool and tool == local_tool then
+                    return handle, data
                 end
-
-                if not fired then
-                    tool:Activate()
-                    fired = true
-                end
-            end)
-
-            if not ok then
-                pcall(setthreadidentity, 8)
             end
 
-            return fired
+            for handle, data in local_guns do
+                local tool = data[5] or handle["Parent"]
+                local ammo = tonumber(data[3])
+
+                if tool and tool["Parent"] == local_character and (ammo == nil or ammo > 0) then
+                    return handle, data
+                end
+            end
+
+            if local_tool and local_tool["Parent"] == local_character then
+                return guns_ext.find_handle(local_tool)
+            end
         end
 
-        local on_m1_input = LPH_NO_VIRTUALIZE(function(input, processed)
-            if input["UserInputType"] == Enum["UserInputType"]["MouseButton1"] and input["UserInputState"] == Enum["UserInputState"]["Begin"] and not menu["is_menu_open"]() then
-                while user_input_service["IsMouseButtonPressed"](user_input_service, Enum["UserInputType"]["MouseButton1"]) and not menu["is_menu_open"]() do
-                    if not local_reloading then
-                        -- Fire every equipped gun, not just the selected one, so
-                        -- multi-equip actually shoots. A tool with no readable
-                        -- Activated connection falls back to Tool:Activate.
-                        local found_gun = false
+        local do_automatic_guns = LPH_NO_VIRTUALIZE(function(dt)
+            local now = clock()
 
-                        for handle, data in local_guns do
-                            local tool = data[5] or handle["Parent"]
-                            local ammo = tonumber(data[3])
+            if now < next_fire then
+                return
+            end
 
-                            if tool and tool["Parent"] == local_character and (ammo == nil or ammo > 0) then
-                                found_gun = true
-                                fire_tool(tool)
-                            end
-                        end
+            if not flags["automatic_guns"] or local_reloading or not local_character or menu["is_menu_open"]() then
+                return
+            end
 
-                        -- No gun entry bound (range/ammo values missing on this
-                        -- build): fall back to whatever tool is held.
-                        if not found_gun and local_character then
-                            for _, child in local_character:GetChildren() do
-                                if child["ClassName"] == "Tool" and child:FindFirstChild("Handle") then
-                                    fire_tool(child)
-                                end
-                            end
-                        end
-                    end
+            if not user_input_service["IsMouseButtonPressed"](user_input_service, Enum["UserInputType"]["MouseButton1"]) then
+                return
+            end
 
-                    wait(tonumber(local_tool and local_tool:GetAttribute("FireRate")) or 0.03)
+            local handle = pick_gun()
+
+            if not handle then
+                return
+            end
+
+            local mouse = get_mouse_location(user_input_service)
+            local ray = camera["ViewportPointToRay"](camera, mouse["X"], mouse["Y"])
+
+            raycast_params["FilterDescendantsInstances"] = {local_character}
+
+            local result = workspace["Raycast"](workspace, ray["Origin"], ray["Direction"] * 2048, raycast_params)
+            local part = result and result["Instance"]
+
+            if not part then
+                return
+            end
+
+            local origin = local_server_position["p"] + vector3_new(0.004,3.0208,-0.048)
+            local pos = result["Position"]
+            local direction = (pos-origin)
+
+            if direction["Magnitude"] <= 0.001 then
+                return
+            end
+
+            local rate = tonumber(local_tool and local_tool:GetAttribute("FireRate")) or 0.03
+            next_fire = now + clamp(rate, 0.01, 0.5)
+
+            setthreadidentity(8)
+            event:FireServer("ShootGun", handle, origin, pos, part, direction["Unit"])
+            setthreadidentity(4)
+        end)
+
+        local start = function()
+            if active then
+                return
+            end
+
+            active = true
+            next_fire = 0
+            heartbeat[#heartbeat+1] = do_automatic_guns
+        end
+
+        local stop = function()
+            if not active then
+                return
+            end
+
+            active = false
+
+            for i = 1, #heartbeat do
+                if heartbeat[i] == do_automatic_guns then
+                    table.remove(heartbeat, i)
+                    break
                 end
             end
-        end)
+        end
 
-        create_connection(menu_references["automatic_guns"]["on_toggle_change"], function(value)
-            if connection then
-                connection:Disconnect()
-                connection = nil
-            end
-
+        create_connection(menu_references["automatic_guns"]["on_toggle_change"], LPH_JIT_MAX(function(value)
             if value then
-                connection = create_connection(user_input_service["InputBegan"], on_m1_input)
+                start()
+            else
+                stop()
             end
-        end)
+        end))
+
+        if flags["automatic_guns"] then
+            start()
+        end
     end
 
     -- >> ( auto vehicle )
@@ -20437,6 +20479,9 @@ local backtrack_data = {}
         menu_references["auto_heal_try_cooldown"] = menu_references["auto_heal_settings"]:create_element({["name"] = "try cooldown"}, {["slider"] = {["flag"] = "auto_heal_try_cooldown", ["min"] = 0, ["max"] = 2, ["default"] = 0.05, ["decimals"] = 2, ["suffix"] = "s"}})
         menu_references["anti_taser"] = menu_references["utility_section"]:create_element({["name"] = "anti taser"}, {["toggle"] = {["flag"] = "anti_taser"}})
         menu_references["rapid_fire"] = menu_references["utility_section"]:create_element({["name"] = "rapid fire"}, {["toggle"] = {["flag"] = "rapid_fire", ["default"] = false}})
+        menu_references["rapid_fire_settings"] = menu_references["rapid_fire"]:create_settings()
+        menu_references["rapid_fire_rate"] = menu_references["rapid_fire_settings"]:create_element({["name"] = "rate"}, {["slider"] = {["flag"] = "rapid_fire_rate", ["min"] = 1, ["max"] = 100, ["default"] = 80, ["suffix"] = "/s"}})
+        menu_references["rapid_fire_visual"] = menu_references["rapid_fire_settings"]:create_element({["name"] = "visual"}, {["toggle"] = {["flag"] = "rapid_fire_visual", ["default"] = true}})
         --[[
         menu_references["control"] = menu_references["utility_section"]:create_element({["name"] = "control"}, {["toggle"] = {["flag"] = "control", ["default"] = false}})
         menu_references["control_settings"] = menu_references["control"]:create_settings()
@@ -21859,7 +21904,8 @@ local backtrack_data = {}
     do
         local active = false
         local next_fire = 0
-        local interval = 0.012
+        local interval = 1 / 80
+        local do_visual = flags["rapid_fire_visual"] ~= false
 
         local raycast_params = RaycastParams["new"]()
         raycast_params["FilterType"] = Enum["RaycastFilterType"]["Exclude"]
@@ -21868,6 +21914,7 @@ local backtrack_data = {}
 
         local pick_gun = function()
             local best = nil
+            local best_data = nil
 
             for handle, data in local_guns do
                 local tool = data[5] or handle["Parent"]
@@ -21877,11 +21924,12 @@ local backtrack_data = {}
                     -- Rifle first: the server treats it as the primary arm.
                     if best == nil or tool["Name"] == "[Rifle]" then
                         best = handle
+                        best_data = data
                     end
                 end
             end
 
-            return best
+            return best, best_data
         end
 
         local do_rapid_fire = LPH_NO_VIRTUALIZE(function(dt)
@@ -21899,7 +21947,7 @@ local backtrack_data = {}
                 return
             end
 
-            local handle = pick_gun()
+            local handle, data = pick_gun()
 
             if not handle then
                 return
@@ -21925,6 +21973,24 @@ local backtrack_data = {}
             end
 
             next_fire = now + interval
+
+            if do_visual and shoot and data then
+                setthreadidentity(8)
+                pcall(function()
+                    local env = getfenv(shoot)
+                    env["require"] = require
+                    shoot({
+                        Shooter = local_character,
+                        Handle = handle,
+                        ForcedOrigin = origin,
+                        AimPosition = pos,
+                        BeamColor = color3_fromrgb(1, 0.545098, 0.14902),
+                        Range = tonumber(data[2]) or 1000
+                    })
+                    env["require"] = nil
+                end)
+                setthreadidentity(4)
+            end
 
             setthreadidentity(8)
             event:FireServer("ShootGun", handle, origin, pos, part, direction["Unit"])
@@ -21955,6 +22021,17 @@ local backtrack_data = {}
                 end
             end
         end
+
+        local update_interval = function(value)
+            interval = 1 / math.max(tonumber(value) or 80, 1)
+        end
+
+        update_interval(flags["rapid_fire_rate"])
+
+        create_connection(menu_references["rapid_fire_rate"]["on_slider_change"], update_interval)
+        create_connection(menu_references["rapid_fire_visual"]["on_toggle_change"], function(value)
+            do_visual = value
+        end)
 
         create_connection(menu_references["rapid_fire"]["on_toggle_change"], LPH_JIT_MAX(function(value)
             if value then
