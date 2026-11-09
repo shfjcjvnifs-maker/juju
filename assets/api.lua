@@ -416,8 +416,12 @@ if not LPH_OBFUSCATED then
   
     function Text:__index(property)
         local value = self.__PROPERTIES[property]
-  
-        return value or Text[property]
+
+        if value == nil then
+            return Text[property]
+        end
+
+        return value
     end
   
     local type = type
@@ -427,7 +431,7 @@ if not LPH_OBFUSCATED then
             return
         end
   
-        if value == "TextBounds" then
+        if property == "TextBounds" then
             error("Attempt to modify read-only property", 2)
         end
   
@@ -449,7 +453,15 @@ if not LPH_OBFUSCATED then
             if type(value) == "string" then
                 value = Drawing2.Font.Enums[Drawing2.Font.Fonts[value]]
             elseif type(value) == "number" then
-                value = Drawing2.Font.Enums[value] or Drawing2.Font.Enums[1]
+                -- Executor font index 2 is Plex. The embedded set has no Plex,
+                -- so a registered "Plex" face takes that slot when present.
+                local plex = Drawing2.Font.Fonts["Plex"]
+
+                if value == 2 and plex then
+                    value = Drawing2.Font.Enums[plex]
+                else
+                    value = Drawing2.Font.Enums[value] or Drawing2.Font.Enums[1]
+                end
             end
 
             Properties.Font = value
@@ -566,11 +578,37 @@ if not LPH_OBFUSCATED then
                 Visible = false,
                 Parent = __ROOT
             }, {
-                Drawing2.CreateInstance("UIStroke", {
-                    Name = "_STROKE",
-                    Color = Color3.new(0, 0, 0),
-                    LineJoinMode = Enum.LineJoinMode.Miter,
-                    Thickness = 1
+                -- Four solid edge frames instead of a UIStroke: UIStroke is
+                -- dropped in some executor GUIs, which turns every unfilled
+                -- square (ESP boxes, outlines) invisible while filled ones
+                -- keep drawing.
+                Drawing2.CreateInstance("Frame", {
+                    Name = "_BORDER_TOP",
+                    BackgroundColor3 = color3New(0, 0, 0),
+                    BackgroundTransparency = 0,
+                    BorderSizePixel = 0,
+                    Visible = true
+                }),
+                Drawing2.CreateInstance("Frame", {
+                    Name = "_BORDER_BOTTOM",
+                    BackgroundColor3 = color3New(0, 0, 0),
+                    BackgroundTransparency = 0,
+                    BorderSizePixel = 0,
+                    Visible = true
+                }),
+                Drawing2.CreateInstance("Frame", {
+                    Name = "_BORDER_LEFT",
+                    BackgroundColor3 = color3New(0, 0, 0),
+                    BackgroundTransparency = 0,
+                    BorderSizePixel = 0,
+                    Visible = true
+                }),
+                Drawing2.CreateInstance("Frame", {
+                    Name = "_BORDER_RIGHT",
+                    BackgroundColor3 = color3New(0, 0, 0),
+                    BackgroundTransparency = 0,
+                    BorderSizePixel = 0,
+                    Visible = true
                 })
             })
         }, Square)
@@ -596,35 +634,43 @@ if not LPH_OBFUSCATED then
         Properties[property] = value
   
         if property == "Color" then
-            self.__OBJECT.BackgroundColor3 = value
-            self.__OBJECT._STROKE.Color = value
+            local object = self.__OBJECT
+
+            object.BackgroundColor3 = value
+            object._BORDER_TOP.BackgroundColor3 = value
+            object._BORDER_BOTTOM.BackgroundColor3 = value
+            object._BORDER_LEFT.BackgroundColor3 = value
+            object._BORDER_RIGHT.BackgroundColor3 = value
         elseif property == "Position" then
             self:__UPDATE_SCALE()
         elseif property == "Size" then
             self:__UPDATE_SCALE()
         elseif property == "Thickness" then
-            local stroke = self.__OBJECT._STROKE
-            stroke.Thickness = value
-            stroke.Enabled = not Properties.Filled
             self:__UPDATE_SCALE()
         elseif property == "Filled" then
             local object = self.__OBJECT
-  
-            object._STROKE.Enabled = not value
+
             object.BackgroundTransparency = value and 1 - Properties.Transparency or 1
+            self:__UPDATE_BORDERS()
         elseif property == "Transparency" then
             local alpha = 1 - value
             local object = self.__OBJECT
 
             object.BackgroundTransparency = Properties.Filled and alpha or 1
-            object._STROKE.Transparency = alpha
+            self:__UPDATE_BORDERS()
         elseif property == "Visible" then
             self.__OBJECT.Visible = value
         elseif property == "ZIndex" then
-            self.__OBJECT.ZIndex = value
+            local object = self.__OBJECT
+
+            object.ZIndex = value
+            object._BORDER_TOP.ZIndex = value
+            object._BORDER_BOTTOM.ZIndex = value
+            object._BORDER_LEFT.ZIndex = value
+            object._BORDER_RIGHT.ZIndex = value
         end
     end
-  
+
     function Square:__iter()
         return next, self.__PROPERTIES
     end
@@ -635,9 +681,49 @@ if not LPH_OBFUSCATED then
   
     function Square:__UPDATE_SCALE()
         local Properties = self.__PROPERTIES
-  
-        self.__OBJECT.Position = fromOffset(Properties.Position.X, Properties.Position.Y)
-        self.__OBJECT.Size = fromOffset(Properties.Size.X, Properties.Size.Y)
+        local object = self.__OBJECT
+
+        local width = Properties.Size.X
+        local height = Properties.Size.Y
+        local thickness = tonumber(Properties.Thickness) or 1
+
+        if thickness < 1 then
+            thickness = 1
+        end
+
+        object.Position = fromOffset(Properties.Position.X, Properties.Position.Y)
+        object.Size = fromOffset(width, height)
+
+        object._BORDER_TOP.Position = udim2New(0, 0, 0, 0)
+        object._BORDER_TOP.Size = fromOffset(width, thickness)
+        object._BORDER_BOTTOM.Position = fromOffset(0, height - thickness)
+        object._BORDER_BOTTOM.Size = fromOffset(width, thickness)
+        object._BORDER_LEFT.Position = fromOffset(0, 0)
+        object._BORDER_LEFT.Size = fromOffset(thickness, height)
+        object._BORDER_RIGHT.Position = fromOffset(width - thickness, 0)
+        object._BORDER_RIGHT.Size = fromOffset(thickness, height)
+
+        self:__UPDATE_BORDERS()
+    end
+
+    -- Border alpha is Drawing2-native (Transparency 1 = solid, 0 = invisible).
+    function Square:__UPDATE_BORDERS()
+        local Properties = self.__PROPERTIES
+        local object = self.__OBJECT
+        local alpha = 1 - (tonumber(Properties.Transparency) or 1)
+
+        if Properties.Filled then
+            alpha = 1
+        elseif alpha < 0 then
+            alpha = 0
+        elseif alpha > 1 then
+            alpha = 1
+        end
+
+        object._BORDER_TOP.BackgroundTransparency = alpha
+        object._BORDER_BOTTOM.BackgroundTransparency = alpha
+        object._BORDER_LEFT.BackgroundTransparency = alpha
+        object._BORDER_RIGHT.BackgroundTransparency = alpha
     end
   
     function Square:Remove()

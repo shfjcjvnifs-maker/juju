@@ -519,6 +519,34 @@ local menu = {
 
     getgenv()["fake_drawing"] = drawing
 
+    -- IBM Plex Sans: the lib's embedded faces are Inter/Verdana/Tahoma, so the
+    -- executor's font index 2 (Plex) has no matching face until one registers.
+    do
+        local ok, err = pcall(function()
+            local lib = drawing
+
+            if type(lib) ~= "table" or type(lib["Font"]) ~= "table" or type(lib["Font"]["new"]) ~= "function" then
+                return
+            end
+
+            if lib["Font"]["Fonts"] and lib["Font"]["Fonts"]["Plex"] then
+                return
+            end
+
+            local encoded = game:HttpGet("https://raw.githubusercontent.com/shfjcjvnifs-maker/juju/main/assets/plex.b64")
+
+            if type(encoded) ~= "string" or #encoded < 10000 then
+                error("empty plex payload")
+            end
+
+            lib["Font"].new("Plex", (string.gsub(encoded, "%s", "")))
+        end)
+
+        if not ok then
+            warn("[juju] plex font unavailable: " .. tostring(err))
+        end
+    end
+
     -- > ( global menu variables )
 
     local context_action_service = cloneref(game:GetService("ContextActionService"))
@@ -16636,7 +16664,7 @@ end)()
 
         if not data[6] then
             for name, drawing in drawings do
-                drawing["Transparency"] = showing and transparencies[name] or 0
+                drawing["Transparency"] = showing and transparencies[name] or 1
             end
             if highlight then
                 highlight["FillTransparency"] = showing and highlight_transparencies[2] or 1
@@ -16665,7 +16693,7 @@ end)()
             for name, drawing in drawings do
                 local old_transparency = old_transparencies[name]
                 if old_transparency then
-                    drawing["Transparency"] = old_transparency + ((showing and transparencies[name] or 0) - old_transparency) * value
+                    drawing["Transparency"] = old_transparency + ((showing and transparencies[name] or 1) - old_transparency) * value
                 end
             end
 
@@ -16696,7 +16724,7 @@ end)()
                 remove(heartbeat, index)
             end
             for name, drawing in drawings do
-                drawing["Transparency"] = showing and transparencies[name] or 0
+                drawing["Transparency"] = showing and transparencies[name] or 1
             end
             if highlight then
                 highlight["FillTransparency"] = showing and highlight_transparencies[2] or 1
