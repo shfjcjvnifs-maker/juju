@@ -8369,6 +8369,13 @@ local real_drawing = resolve_drawing_backend(Drawing)
 
 local fake_drawing = resolve_drawing_backend(getgenv()["fake_drawing"]) or real_drawing
 
+-- Potassium's executor Drawing drops whole classes without raising: boxes and
+-- name text are created fine and never appear. Drawing2 renders there (the menu
+-- proves it), so ESP runs on the same backend as the menu on that executor.
+if fake_drawing and identifyexecutor() == "Potassium" then
+    real_drawing = fake_drawing
+end
+
 local event = replicated_storage["MainEvent"]
 local clone = workspace["Clone"]
 local bush = workspace["Bush"]
