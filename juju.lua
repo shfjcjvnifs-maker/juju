@@ -865,7 +865,7 @@ local menu = {
     local build_text = drawing_proxy["new"]("Text", {
         ["Font"] = 1,
         ["Color"] = menu["colors"]["accent"],
-        ["Text"] = (LRM_ScriptName == "da hood" or LRM_ScriptName == "da hood copies") and "live" or "live",
+        ["Text"] = "beta",
         ["Parent"] = logo,
         ["Position"] = udim2_new(1, 5, 0, 19),
         ["Size"] = 14,
@@ -7840,8 +7840,6 @@ local menu = {
                 misc:create_tab("addons")
                 misc:create_tab("shop")
                 misc:create_tab("main")
-            local neckgrab = menu.create_group("neckgrab")
-                neckgrab:create_tab("neckgrab")
             menu.create_group("addons")
             menu["groups"]["addons"]:hide()
         end
@@ -8335,6 +8333,86 @@ local local_knocked = false
 local ragebot_force_position = nil
 local in_void = false
 local stomping = false
+
+-- Ragebot hitbox selection. The dropdown names either one part or a group
+-- whose part is rolled per target and held for a short window, so the aim and
+-- the shot resolve to the same part instead of jittering every frame.
+local ragebot_hitbox_candidates = {
+    head = {"Head"},
+    root = {"HumanoidRootPart"},
+    torso = {"UpperTorso", "LowerTorso"},
+    arms = {
+        "LeftUpperArm", "LeftLowerArm", "RightUpperArm",
+        "RightLowerArm", "LeftHand", "RightHand"
+    },
+    legs = {
+        "LeftUpperLeg", "LeftLowerLeg", "RightUpperLeg",
+        "RightLowerLeg", "LeftFoot", "RightFoot"
+    },
+    randomize = {
+        "Head", "UpperTorso", "LowerTorso", "HumanoidRootPart",
+        "LeftUpperArm", "LeftLowerArm", "RightUpperArm",
+        "RightLowerArm", "LeftHand", "RightHand",
+        "LeftUpperLeg", "LeftLowerLeg", "RightUpperLeg",
+        "RightLowerLeg", "LeftFoot", "RightFoot"
+    }
+}
+
+local ragebot_random_part = nil
+local ragebot_random_part_target = nil
+local ragebot_random_part_tick = 0
+
+-- parts may be the live parts map or a backtrack snapshot; a part missing
+-- from the given map can never be aimed at, so fall back to the root.
+local resolve_ragebot_hitbox_part = function(parts)
+    local mode = (flags["ragebot_hitbox"] or {})[1] or "head"
+    local candidates = ragebot_hitbox_candidates[mode] or ragebot_hitbox_candidates.head
+
+    if not parts then
+        return candidates[1]
+    end
+
+    local rolled = mode == "arms" or mode == "legs" or mode == "randomize"
+
+    if rolled then
+        local now = clock()
+
+        if ragebot_random_part
+            and ragebot_random_part_target == ragebot_target
+            and now - ragebot_random_part_tick < 0.5
+            and parts[ragebot_random_part] then
+            return ragebot_random_part
+        end
+
+        local available = {}
+
+        for i = 1, #candidates do
+            if parts[candidates[i]] then
+                available[#available + 1] = candidates[i]
+            end
+        end
+
+        if #available == 0 then
+            return "HumanoidRootPart"
+        end
+
+        local pick = available[math_random(1, #available)]
+
+        ragebot_random_part = pick
+        ragebot_random_part_target = ragebot_target
+        ragebot_random_part_tick = now
+
+        return pick
+    end
+
+    for i = 1, #candidates do
+        if parts[candidates[i]] then
+            return candidates[i]
+        end
+    end
+
+    return "HumanoidRootPart"
+end
 
 -- Potassium exposes Drawing in the script environment, not always through
 -- getgenv(), so resolve the first backend that actually has .new.
@@ -9201,7 +9279,7 @@ do
                 
                         local dir = (origin-pos)["Unit"]
                         local Magnitude = dir["Magnitude"]
-                        local part = ragebot_target[4][flags["ragebot_hitbox"][1] == "head" and "Head" or "UpperTorso"]
+                        local part = ragebot_target[4][resolve_ragebot_hitbox_part(ragebot_target[4])] or ragebot_target[4]["UpperTorso"]
                         
                         spawn(get_bullet_result, ragebot_target[2], part)
 
@@ -12688,7 +12766,7 @@ end
 
         local do_center_panel = LPH_JIT_MAX(function(dt)
             local old = text3["Text"]
-            local new = ((flags["ragebot"] or flags["infgrab"]) and (getgenv()["juju"] or {})["waiting_protection"]) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or (in_void or in_void == nil) and "void" or "unsafe" or local_parts["ForceField"] and "invulnerable"
+            local new = (flags["ragebot"] and (getgenv()["juju"] or {})["waiting_protection"]) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or (in_void or in_void == nil) and "void" or "unsafe" or local_parts["ForceField"] and "invulnerable"
             text3["Text"] = new
             if old ~= new then
                 tween(text3, {["Transparency"] = 0.35}, linear, out, 0.09)
@@ -12788,7 +12866,7 @@ end
                     ["Transparency"] = 0,
                     ["ZIndex"] = 2,
                     ["Visible"] = true,
-                    ["Text"] = (LRM_ScriptName == "da hood" or LRM_ScriptName == "da hood copies") and "live" or "live",
+                    ["Text"] = "beta",
                     ["Size"] = 12,
                     ["Font"] = 0,
                     ["Outline"] = true,
@@ -19656,7 +19734,7 @@ local backtrack_data = {}
         menu_references["void_spam_resolver_void_weight"] = menu_references["auto_fire_defensive_settings"]:create_element({["name"] = "void trust"}, {["slider"] = {["flag"] = "void_spam_resolver_void_weight", ["min"] = 0.1, ["max"] = 5, ["default"] = 0.2, ["decimals"] = 2}})
         menu_references["void_spam_resolver_accuracy"] = menu_references["auto_fire_defensive_settings"]:create_element({["name"] = "accuracy"}, {["slider"] = {["flag"] = "void_spam_resolver_accuracy", ["min"] = 5, ["suffix"] = "%", ["max_text"] = "high", ["max"] = 110, ["default"] = 76.82, ["decimals"] = 2}})
         menu_references["void_spam_resolver_lerp"] = menu_references["auto_fire_defensive_settings"]:create_element({["name"] = "lerp % when close"}, {["slider"] = {["flag"] = "void_spam_resolver_lerp", ["min"] = 10, ["suffix"] = "%", ["max_text"] = "instant", ["max"] = 100, ["default"] = 10, ["decimals"] = 1}})
-        menu_references["ragebot_hitbox"] = menu_references["general_section"]:create_element({["name"] = "target hitbox"}, {["dropdown"] = {["flag"] = "ragebot_hitbox", ["options"] = {"head", "root"}, ["default"] = {"head"}}})
+        menu_references["ragebot_hitbox"] = menu_references["general_section"]:create_element({["name"] = "target hitbox"}, {["dropdown"] = {["flag"] = "ragebot_hitbox", ["options"] = {"head", "root", "torso", "arms", "legs", "randomize"}, ["default"] = {"head"}}})
         menu_references["prediction"] = menu_references["general_section"]:create_element({["name"] = "prediction"}, {["slider"] = {["flag"] = "prediction", ["min"] = 0, ["max"] = 2000, ["default"] = 0, ["min_text"] = "auto", ["max_text"] = "disabled", ["suffix"] = "%", ["decimals"] = 2}})
         menu_references["prediction_settings"] = menu_references["prediction"]:create_settings()
         menu_references["resolver_rate"] = menu_references["prediction_settings"]:create_element({["name"] = "resolver rate"}, {["slider"] = {["flag"] = "resolver_rate", ["min"] = 0, ["suffix"] = "s", ["max"] = 0.1, ["default"] = 0.037, ["decimals"] = 4}})
@@ -19793,25 +19871,10 @@ local backtrack_data = {}
         menu_references["control_settings"] = menu_references["control"]:create_settings()
         menu_references["control_chat_replies"] = menu_references["control_settings"]:create_element({["name"] = "chat replies"}, {["toggle"] = {["flag"] = "control_chat_replies", ["default"] = true}})
         --]]
-    menu_references["neckgrab_section"] = menu["groups"]["neckgrab"]:create_section("neckgrab", "infgrab", 1, 1)
-        menu_references["infgrab"] = menu_references["neckgrab_section"]:create_element({["name"] = "infgrab"}, {["toggle"] = {["flag"] = "infgrab"}})
-        menu_references["infgrab_settings"] = menu_references["infgrab"]:create_settings()
-        menu_references["infgrab_health"] = menu_references["infgrab_settings"]:create_element({["name"] = "kill at health"}, {["slider"] = {["flag"] = "infgrab_health", ["min"] = 1, ["max"] = 100, ["default"] = 50, ["suffix"] = "%"}})
-        menu_references["infgrab_range"] = menu_references["infgrab_settings"]:create_element({["name"] = "grab range"}, {["slider"] = {["flag"] = "infgrab_range", ["min"] = 5, ["max"] = 1000, ["default"] = 250, ["suffix"] = " studs"}})
-        menu_references["infgrab_cooldown"] = menu_references["infgrab_settings"]:create_element({["name"] = "grab cooldown"}, {["slider"] = {["flag"] = "infgrab_cooldown", ["min"] = 0.05, ["max"] = 2, ["default"] = 0.3, ["decimals"] = 2, ["suffix"] = "s"}})
-        menu_references["infgrab_target_statuses"] = menu_references["infgrab_settings"]:create_element({["name"] = "target statuses"}, {["dropdown"] = {["flag"] = "infgrab_target_statuses", ["options"] = {"friendly", "neutral", "enemy"}, ["default"] = {"neutral", "enemy"}, ["multi"] = true, ["requires_one"] = true}})
-    menu_references["neckgrab_info_section"] = menu["groups"]["neckgrab"]:create_section("neckgrab", "info", 2, 1)
-        menu_references["infgrab_status"] = menu_references["neckgrab_info_section"]:create_element({["name"] = "status"}, {["info"] = {}})
-        menu_references["infgrab_status"]:set_info("Text", "idle")
-        menu_references["infgrab_mode"] = menu_references["neckgrab_info_section"]:create_element({["name"] = "mode"}, {["info"] = {}})
-        menu_references["infgrab_mode"]:set_info("Text", "grab + kill at health")
-        menu_references["infgrab_note"] = menu_references["neckgrab_info_section"]:create_element({["name"] = "note"}, {["info"] = {}})
-        menu_references["infgrab_note"]:set_info("Text", "loops after respawn")
     -- >> ( ragebot )
 
     local automatic = false
     local do_notification = false
-    local ragebot_hitbox = "Head"
     local target_distance = true
     local ragebot_field_of_view = true
     local ragebot_untarget_when_better_target = false
@@ -20415,7 +20478,7 @@ local backtrack_data = {}
 
         if target and hrp then
             local parts = target[4]
-            local hitbox = parts[ragebot_hitbox]
+            local hitbox = parts[resolve_ragebot_hitbox_part(parts)] or parts["HumanoidRootPart"]
 
             if flags["auto_fire_at_target_vehicle"] then
                 hitbox = target[19] or hitbox
@@ -20500,7 +20563,7 @@ local backtrack_data = {}
                     local data = backtrack_data[target[2]]
 
                     if data then
-                        local hitbox = data[2][ragebot_hitbox]
+                        local hitbox = data[2][resolve_ragebot_hitbox_part(data[2])]
 
                         if hitbox then
                             hitbox_position = hitbox["Position"]
@@ -20826,8 +20889,8 @@ local backtrack_data = {}
         update_targets()
     end)
 
-    create_connection(menu_references["ragebot_hitbox"]["on_dropdown_change"], function(value)
-        ragebot_hitbox = value[1] == "head" and "Head" or "HumanoidRootPart"
+    create_connection(menu_references["ragebot_hitbox"]["on_dropdown_change"], function()
+        ragebot_random_part = nil
     end)
 
     create_connection(menu_references["target_selection_target_distance"]["on_slider_change"], function(value)
@@ -21149,287 +21212,6 @@ local backtrack_data = {}
                 end
             end
         end)
-    end
-
-    -- >> ( neckgrab / infgrab )
-
-    do
-        local infgrab_target = nil
-        local infgrab_next_grab = 0
-        local infgrab_status_text = "idle"
-
-        local function infgrab_contains(values, value)
-            if not values then
-                return false
-            end
-
-            for i = 1, #values do
-                if values[i] == value then
-                    return true
-                end
-            end
-
-            return false
-        end
-
-        local function infgrab_status_allowed(data, statuses)
-            local status = data[1]
-
-            if status == 2 then
-                return infgrab_contains(statuses, "friendly")
-            elseif status == 3 then
-                return infgrab_contains(statuses, "enemy")
-            end
-
-            return infgrab_contains(statuses, "neutral")
-        end
-
-        local function infgrab_is_grabbed(target)
-            local body_effects = local_parts["BodyEffects"]
-
-            if body_effects then
-                local grabbed = body_effects:FindFirstChild("Grabbed")
-
-                if grabbed and target and grabbed["Value"] == target[2]["Name"] then
-                    return true
-                end
-            end
-
-            if target then
-                local target_body_effects = target[4]["BodyEffects"]
-
-                if target_body_effects then
-                    local grabbed = target_body_effects:FindFirstChild("Grabbed")
-
-                    if grabbed and grabbed["Value"] == local_player["Name"] then
-                        return true
-                    end
-                end
-            end
-
-            return false
-        end
-
-        local function infgrab_get_health(target)
-            local humanoid = target[4]["Humanoid"]
-            local max_health = target[10]
-
-            if humanoid then
-                local health = humanoid["Health"]
-
-                if health ~= health then
-                    health = target[9]
-                end
-
-                return health, max_health and max_health > 0 and max_health or humanoid["MaxHealth"]
-            end
-
-            return target[9], max_health
-        end
-
-        local function infgrab_should_kill(target)
-            local health, max_health = infgrab_get_health(target)
-
-            if not health or health <= 0 then
-                return false
-            end
-
-            local threshold = flags["infgrab_health"]/100 * (max_health and max_health > 0 and max_health or 100)
-
-            return health <= threshold + 0.5
-        end
-
-        local function infgrab_kill(target)
-            local humanoid = target[4]["Humanoid"]
-
-            if humanoid then
-                humanoid["Health"] = 0
-            end
-
-            target[9] = 0
-        end
-
-        local function infgrab_set_status(text)
-            if text ~= infgrab_status_text then
-                infgrab_status_text = text
-
-                local status = menu_references["infgrab_status"]
-
-                if status then
-                    status:set_info("Text", text)
-                end
-            end
-        end
-
-        local function infgrab_find_target(hrp)
-            local best = nil
-            local closest = math["huge"]
-            local statuses = flags["infgrab_target_statuses"]
-            local range = flags["infgrab_range"]
-            local local_position = hrp and hrp["Position"] or local_client_position["p"]
-
-            for player, data in player_data do
-                if player ~= local_player and not data[7] and not data[18] and data[3] and infgrab_status_allowed(data, statuses) then
-                    local parts = data[4]
-                    local target_hrp = parts["HumanoidRootPart"]
-
-                    if target_hrp and not parts["GRABBING_CONSTRAINT"] and not spawn_guard["check"](data) then
-                        local position = target_hrp["Position"]
-
-                        if abs(position["X"]) < 9e8 and abs(position["Z"]) < 9e8 then
-                            local distance = (local_position - position)["Magnitude"]
-
-                            if distance <= range and distance < closest then
-                                closest = distance
-                                best = data
-                            end
-                        end
-                    end
-                end
-            end
-
-            return best
-        end
-
-        local function infgrab_attempt(target, hrp)
-            local target_hrp = target[4]["HumanoidRootPart"]
-
-            if not target_hrp then
-                return false
-            end
-
-            local old_cframe = hrp["CFrame"]
-            local old_velocity = hrp["Velocity"]
-
-            hrp["Velocity"] = vector3_zero
-            hrp["CFrame"] = cframe_new(target_hrp["Position"] + vector3_new(0, 3, 0))
-            render_stepped_wait(render_stepped)
-
-            pcall(function()
-                event:FireServer("Grabbing", true)
-            end)
-
-            local timeout = clock() + 0.35
-            local grabbed = false
-
-            while clock() < timeout do
-                if infgrab_is_grabbed(target) then
-                    grabbed = true
-                    break
-                end
-
-                wait()
-            end
-
-            hrp["Velocity"] = old_velocity
-            hrp["CFrame"] = old_cframe
-
-            if grabbed and infgrab_should_kill(target) then
-                infgrab_kill(target)
-            end
-
-            return grabbed
-        end
-
-        local function infgrab_waiting(target)
-            return target[7] or spawn_guard["check"](target)
-        end
-
-        spawn(LPH_NO_VIRTUALIZE(function()
-            while true do
-                wait(0.05)
-
-                if not flags["infgrab"] then
-                    infgrab_target = nil
-                    infgrab_next_grab = 0
-                    infgrab_set_status("idle")
-                else
-                    local hrp = local_parts["HumanoidRootPart"]
-                    local humanoid = local_parts["Humanoid"]
-                    local local_constraint = local_parts["GRABBING_CONSTRAINT"]
-
-                    if hrp and humanoid and humanoid["Health"] > 0 and not local_knocked and not local_constraint and not purchasing and not stomping then
-                        local target = flags["ragebot"] and (ragebot_target or infgrab_target) or infgrab_target
-
-                        if target and player_data[target[2]] ~= target then
-                            target = nil
-                        end
-
-                        if not target and flags["ragebot"] then
-                            target = ragebot_target
-                        end
-
-                        if not target then
-                            local waiting = spawn_guard["waiting"]
-
-                            if waiting and player_data[waiting[2]] == waiting and infgrab_waiting(waiting) then
-                                target = waiting
-                            else
-                                target = infgrab_find_target(hrp)
-
-                                if target then
-                                    set_ragebot_target(target, "neckgrab target set to "..target[2]["Name"])
-                                end
-                            end
-                        end
-
-                        infgrab_target = target
-
-                        if target then
-                            local waiting = infgrab_waiting(target)
-                            local state = getgenv()["juju"]
-
-                            if waiting then
-                                spawn_guard["waiting"] = target
-
-                                if state and not flags["ragebot"] then
-                                    state["waiting_protection"] = true
-                                end
-
-                                infgrab_set_status("waiting forcefield")
-                            else
-                                if spawn_guard["waiting"] == target then
-                                    spawn_guard["waiting"] = nil
-                                end
-
-                                if state and not flags["ragebot"] then
-                                    state["waiting_protection"] = false
-                                end
-
-                                if infgrab_is_grabbed(target) then
-                                    if infgrab_should_kill(target) then
-                                        infgrab_kill(target)
-                                        infgrab_next_grab = clock() + flags["infgrab_cooldown"]
-                                        infgrab_set_status("killed "..target[2]["Name"])
-                                    else
-                                        infgrab_set_status("grabbed "..target[2]["Name"].." ("..tostring(floor(target[9])).." hp)")
-                                    end
-                                elseif target[18] then
-                                    infgrab_set_status("target knocked")
-                                elseif infgrab_should_kill(target) then
-                                    if clock() >= infgrab_next_grab then
-                                        infgrab_next_grab = clock() + flags["infgrab_cooldown"]
-                                        infgrab_set_status("grabbing "..target[2]["Name"])
-
-                                        if not infgrab_attempt(target, hrp) then
-                                            infgrab_set_status("grab failed "..target[2]["Name"])
-                                        end
-                                    else
-                                        infgrab_set_status("grab cooldown")
-                                    end
-                                else
-                                    infgrab_set_status("damaging "..target[2]["Name"].." ("..tostring(floor(target[9])).." hp)")
-                                end
-                            end
-                        else
-                            infgrab_set_status("no target")
-                        end
-                    else
-                        infgrab_set_status("unavailable")
-                    end
-                end
-            end
-        end))
     end
 
     -- >> ( rapid fire )
