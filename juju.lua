@@ -12778,7 +12778,7 @@ end
                     ["Visible"] = true,
                     ["Text"] = "juju",
                     ["Size"] = 12,
-                    ["Font"] = 2,
+                    ["Font"] = 0,
                     ["Outline"] = true,
                     ["Position"] = vector2_new(0, 0),
                 })
@@ -12790,7 +12790,7 @@ end
                     ["Visible"] = true,
                     ["Text"] = (LRM_ScriptName == "da hood" or LRM_ScriptName == "da hood copies") and "live" or "live",
                     ["Size"] = 12,
-                    ["Font"] = 2,
+                    ["Font"] = 0,
                     ["Outline"] = true,
                     ["Position"] = vector2_new(0, 0),
                 })
@@ -12803,7 +12803,7 @@ end
                     ["Text"] = "void",
                     ["Size"] = 12,
                     ["Visible"] = flags["center_panel_show_state"],
-                    ["Font"] = 2,
+                    ["Font"] = 0,
                     ["Outline"] = true,
                     ["Position"] = vector2_new(0, 0),
                 })
@@ -13583,7 +13583,7 @@ end
         menu_references["local_bullet_sound_sound"] = menu_references["local_bullet_sound_settings"]:create_element({["name"] = "sound"}, {["dropdown"] = {["options"] = {"default", "sexy"}, ["default"] = {"sexy"}, ["requires_one"] = true, ["flag"] = "local_bullet_sound_sound", ["use_custom_extensions"] = {"mp3", "ogg", "wav"}}})
     menu_references["damage_number"] = menu_references["game_section"]:create_element({["name"] = "damage number"}, {["toggle"] = {["flag"] = "damage_number"}})
         menu_references["damage_number_settings"] = menu_references["damage_number"]:create_settings()
-        menu_references["damage_number_font"] = menu_references["damage_number_settings"]:create_element({["name"] = "font"}, {["dropdown"] = {["flag"] = "damage_number_font", ["default"] = {"2"}, ["options"] = {"0", "1", "2", "3"}, ["requires_one"] = true}})
+        menu_references["damage_number_font"] = menu_references["damage_number_settings"]:create_element({["name"] = "font"}, {["dropdown"] = {["flag"] = "damage_number_font", ["default"] = {"1"}, ["options"] = {"0", "1", "2", "3"}, ["requires_one"] = true}})
         menu_references["damage_number_lifetime"] = menu_references["damage_number_settings"]:create_element({["name"] = "lifetime"}, {["slider"] = {["flag"] = "damage_number_lifetime", ["min"] = 0.7, ["max"] = 2, ["default"] = 0.7, ["decimals"] = 1, ["suffix"] = "s", ["prefix"] = ""}})
         menu_references["damage_number_color"] = menu_references["damage_number_settings"]:create_element({["name"] = "color"}, {["colorpicker"] = {["color_flag"] = "damage_number_color", ["transparency_flag"] = "damage_number_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0}})
         menu_references["damage_number_lethal_color"] = menu_references["damage_number_settings"]:create_element({["name"] = "lethal color"}, {["colorpicker"] = {["color_flag"] = "damage_number_lethal_color", ["transparency_flag"] = "damage_number_lethal_transparency", ["default_color"] = color3_fromrgb(255, 55, 55), ["default_transparency"] = 0}})
@@ -14806,7 +14806,7 @@ end
     do
         local damage_number_connection = nil
         local damage_number_outline_color = color3_fromrgb(15, 15, 15)
-        local damage_number_font = 2
+        local damage_number_font = 1
         local show_offset = vector3_new(0,1.5,0)
         local create_drawing = (identifyexecutor() == "Swift" or identifyexecutor() == "Potassium") and create_fake_drawing or create_real_drawing
 
@@ -16386,8 +16386,8 @@ end)()
         menu_references["friendly_health_text_color"] = menu_references["health_text_settings"]:create_element({["name"] = "friendly color"}, {["colorpicker"] = {["color_flag"] = "friendly_health_text_color", ["transparency_flag"] = "friendly_health_text_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0}})
 
     menu_references["fonts"] = menu_references["esp_section"]:create_element({["name"] = "fonts"}, {}):create_settings()
-        menu_references["main_font"] = menu_references["fonts"]:create_element({["name"] = "main font"}, {["dropdown"] = {["options"] = {"0", "1", "2", "3"}, ["requires_one"] = true, ["flag"] = "main_font", ["default"] = identifyexecutor() == "Wave" and {"1"} or {"2"}}})
-        menu_references["small_font"] = menu_references["fonts"]:create_element({["name"] = "small font"}, {["dropdown"] = {["options"] = {"0", "1", "2", "3"}, ["requires_one"] = true, ["flag"] = "small_font", ["default"] = identifyexecutor() == "Wave" and {"1"} or {"2"}}})
+        menu_references["main_font"] = menu_references["fonts"]:create_element({["name"] = "main font"}, {["dropdown"] = {["options"] = {"0", "1", "2", "3"}, ["requires_one"] = true, ["flag"] = "main_font", ["default"] = {"1"}}})
+        menu_references["small_font"] = menu_references["fonts"]:create_element({["name"] = "small font"}, {["dropdown"] = {["options"] = {"0", "1", "2", "3"}, ["requires_one"] = true, ["flag"] = "small_font", ["default"] = {"1"}}})
 
     -- >> ( esp variables )
 
@@ -16429,9 +16429,9 @@ end)()
         local material_value = Enum["Material"]["Neon"]
     local material_attribute = tostring({}):sub(math_random(8,12))
 
-    local main_font = identifyexecutor() == "Wave" and 1 or 2
+    local main_font = 1
     local main_size = identifyexecutor() == "Wave" and 13 or 13
-    local small_font = identifyexecutor() == "Wave" and 1 or 2
+    local small_font = 1
     local small_size = identifyexecutor() == "Wave" and 13 or 11
 
     -- >> menu value is the Drawing transparency (0 = opaque, 1 = invisible), the
