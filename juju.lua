@@ -8331,6 +8331,8 @@ local legitbot_target = nil
 local ragebot_target = nil
 local custom_ragebot_aim_position = nil
 local ragebot_aim_position = nil
+local ragebot_aim_velocity = nil
+local ragebot_aim_defensive = false
 local local_knocked = false
 local ragebot_force_position = nil
 local in_void = false
@@ -9202,7 +9204,7 @@ do
             older_health = data[9]
             older_data = data
 
-            local message = old_server_position and " (pred miss: "..tostring(round((aim_position-part["Position"])["Magnitude"], 1))..") (velocity: "..tostring(round((target_velocity or vector3_zero)["Magnitude"], 1))..(did_defensive and ") (defensive: true)" or ") (defensive: false)")
+            local message = old_server_position and part and aim_position and " (pred miss: "..tostring(round((aim_position-part["Position"])["Magnitude"], 1))..") (velocity: "..tostring(round((target_velocity or vector3_zero)["Magnitude"], 1))..(did_defensive and ") (defensive: true)" or ") (defensive: false)")
 
             if shot_count == old_count then
                 return signals["on_local_bullet_failed"]:Fire(player, part, not local_parts["Head"] and "death" or "unknown"..(message or ""), shot_count)
@@ -9298,7 +9300,7 @@ do
                         local Magnitude = dir["Magnitude"]
                         local part = ragebot_target[4][resolve_ragebot_hitbox_part(ragebot_target[4])] or ragebot_target[4]["UpperTorso"]
                         
-                        spawn(get_bullet_result, ragebot_target[2], part)
+                        spawn(get_bullet_result, ragebot_target[2], part, local_server_position["p"], ragebot_aim_position, ragebot_aim_velocity, ragebot_aim_defensive)
 
                         return old_namecall(self, "ShootGun", handle, origin, pos, part, (Magnitude <= 0 or Magnitude ~= Magnitude) and (handle["Position"]-pos)["Unit"] or dir)
                     end
@@ -20788,6 +20790,8 @@ local backtrack_data = {}
         end
 
         ragebot_aim_position = nil
+        ragebot_aim_velocity = nil
+        ragebot_aim_defensive = false
         target_velocity = vector3_zero
         ragebot_target = target
         target_last_position = nil
@@ -20913,6 +20917,8 @@ local backtrack_data = {}
             if ragebot_target == nil then
                 target_velocity = vector3_zero
                 ragebot_aim_position = nil
+                ragebot_aim_velocity = nil
+                ragebot_aim_defensive = false
                 target_last_position = nil
                 torso = nil
                 last_refresh = clock()
@@ -21023,6 +21029,9 @@ local backtrack_data = {}
                     ragebot_aim_position = custom_ragebot_aim_position
                     custom_ragebot_aim_position = nil
                 end
+
+                ragebot_aim_velocity = target_velocity
+                ragebot_aim_defensive = did_defensive
 
                 if local_gun and (((not local_reloading or auto_fire_always_fire) and not target[18] and not target[7] and not spawn_guard["check"](target) and not grabbing_constraint) and (flags["auto_fire"] and (auto_fire_always_fire or (((local_server_position-ragebot_aim_position)["Magnitude"] <= local_gun) or flags["follow_target"] or did_defensive)) and old_time-last_fire > fire_cooldown)) then
                     local delay = flags["shot_delay"]
