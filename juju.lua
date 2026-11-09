@@ -103,7 +103,11 @@ local tween_service = cloneref(game:GetService("TweenService"))
     local get_value = tween_service["GetValue"]
 local http_service = cloneref(game:GetService("HttpService"))
 local workspace = workspace
-    local camera = cloneref(workspace["CurrentCamera"])
+    local camera = workspace["CurrentCamera"]
+
+    if camera then
+        camera = cloneref(camera)
+    end
 local hui = cloneref(gethui())
 
 local color3_fromrgb = Color3["fromRGB"]
@@ -137,7 +141,7 @@ local connections = {}
 local addon_data = {}
 local heartbeat = {}
 local flags = {
-    ["keybinds_position"] = {15, camera["ViewportSize"]["Y"]/2 - 10},
+    ["keybinds_position"] = {15, ((camera and camera["ViewportSize"]["Y"]) or 1080)/2 - 10},
     ["loaded_addons"] = {},
     ["favorites"] = {},
     ["skins"] = {}
@@ -397,6 +401,16 @@ local menu = {
             makefolder("juju recode")
         end
 
+        local function needs_write(path)
+            if not isfile(path) then
+                return true
+            end
+
+            local ok, body = pcall(readfile, path)
+
+            return ok and type(body) == "string" and #body == 0
+        end
+
         local recursive_check
 
         recursive_check = function(path, array)
@@ -405,23 +419,36 @@ local menu = {
                 local data_type = type(data)
 
                 if data_type == "table" then
-                    if not isfolder(path) then
-                        makefolder(path)
-                    end
+                    pcall(function()
+                        if not isfolder(path) then
+                            makefolder(path)
+                        end
+                    end)
                     recursive_check(path.."/", data)
-                elseif not isfile(path) then
-                    writefile(path, type(data) == "function" and data() or data)
+                elseif needs_write(path) then
+                    -- A dead host or a placeholder body must not stop the script.
+                    local ok, err = pcall(function()
+                        local content = type(data) == "function" and data() or data
+
+                        if type(content) == "string" and #content > 0 then
+                            writefile(path, content)
+                        end
+                    end)
+
+                    if not ok then
+                        warn("[juju] asset skipped: " .. path .. " (" .. tostring(err) .. ")")
+                    end
                 end
             end
         end
 
-        recursive_check("juju recode/", files)
+        pcall(recursive_check, "juju recode/", files)
     end
 
     -- > ( custom drawing )
 
     local drawing = Drawing
-    LPH_NO_VIRTUALIZE(function()
+    local loader_ok, loader_err = pcall(function()
         if _G.FORCE_REAL_DRAWING then
             drawing = Drawing
             return
@@ -477,7 +504,12 @@ local menu = {
             drawing = Drawing
             warn("[juju] custom drawing unavailable, falling back to executor Drawing: " .. tostring(lib))
         end
-    end)()
+    end)
+
+    if not loader_ok then
+        drawing = Drawing
+        warn("[juju] custom drawing loader error: " .. tostring(loader_err))
+    end
 
     getgenv()["fake_drawing"] = drawing
 
