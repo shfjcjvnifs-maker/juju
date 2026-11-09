@@ -11459,18 +11459,24 @@ do
     local blank_player_image_data = base64_decode("iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAMAAAC67D+PAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAGUExURf///wAAAFXC034AAAACdFJOU/8A5bcwSgAAAAlwSFlzAAAOxAAADsQBlSsOGwAAABh0RVh0U29mdHdhcmUAUGFpbnQuTkVUIDUuMS4y+7wDtgAAALZlWElmSUkqAAgAAAAFABoBBQABAAAASgAAABsBBQABAAAAUgAAACgBAwABAAAAAgAAADEBAgAQAAAAWgAAAGmHBAABAAAAagAAAAAAAAAMdwEA6AMAAAx3AQDoAwAAUGFpbnQuTkVUIDUuMS4yAAMAAJAHAAQAAAAwMjMwAaADAAEAAAABAAAABaAEAAEAAACUAAAAAAAAAAIAAQACAAQAAABSOTgAAgAHAAQAAAAwMTAwAAAAAO7qLRjGzAACAAAAI0lEQVQYV2NgZGRkAAIQBWGB2DiZSGphAEUBhAVkY2MyMAIACxYALVlZOREAAAAASUVORK5CYII=")
     local staff_player_image_data = base64_decode("iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADdUAAA3VAT3WWPEAAAAYdEVYdFNvZnR3YXJlAFBhaW50Lk5FVCA1LjEuMvu8A7YAAAC2ZVhJZklJKgAIAAAABQAaAQUAAQAAAEoAAAAbAQUAAQAAAFIAAAAoAQMAAQAAAAIAAAAxAQIAEAAAAFoAAABphwQAAQAAAGoAAAAAAAAAbl8BAOgDAABuXwEA6AMAAFBhaW50Lk5FVCA1LjEuMgADAACQBwAEAAAAMDIzMAGgAwABAAAAAQAAAAWgBAABAAAAlAAAAAAAAAACAAEAAgAEAAAAUjk4AAIABwAEAAAAMDEwMAAAAADGgMOKJmQafQAAAE5JREFUKFOVjsEOgDAMQsdu/v/HetTRoKm0yeI7lI4UsuFcQs+XKd0CaeBNWGj9kg9LiCObT4t7//6Y0x1sRHN0SE9pUA4Zphafw00HAG7iXzDzhK35MgAAAABJRU5ErkJggg==")
 
-    local on_character_added = LPH_NO_VIRTUALIZE(function(character)
+    local on_character_added = LPH_NO_VIRTUALIZE(function(character, attempt)
         local humanoid = wait_for_child(character, "Humanoid", 5)
         local head = wait_for_child(character, "Head", 5)
 
-        if not humanoid then
-            return
-        end
-        
         local player = find_first_child(players_service, character["Name"])
         local data = player and player_data[player]
 
         if not data then
+            return
+        end
+
+        if not humanoid then
+            data[3] = character
+            data[7] = false
+
+            if character["Parent"] and (attempt or 1) < 3 then
+                spawn(on_character_added, character, (attempt or 1) + 1)
+            end
             return
         end
 
