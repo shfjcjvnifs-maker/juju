@@ -73,36 +73,37 @@ if not LPH_OBFUSCATED then
         elseif string.sub(FontData, 1, 11) == "rbxasset://" then
             FontObject = Font.new(FontData, Enum.FontWeight.Regular)
         else
-            if not isfolder("Drawing2FontCache") then
-                makefolder("Drawing2FontCache")
-            end
+            local decode = (crypt and type(crypt.base64) == "table" and crypt.base64.decode) or base64_decode
 
-            local decode = (crypt and crypt.base64 and crypt.base64.decode) or base64_decode
+            if not decode or not writefile or not getcustomasset then
+                -- Executor lacks custom-font support; keep Drawing2 usable with a built-in font.
+                FontObject = Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.Regular)
+            else
+                if not isfolder("Drawing2FontCache") then
+                    makefolder("Drawing2FontCache")
+                end
 
-            if not decode then
-                error("No base64 decoder available for Drawing2 font.", 2)
-            end
+                local TempPath = HttpService:GenerateGUID(false)
 
-            local TempPath = HttpService:GenerateGUID(false)
-  
-            writefile(`Drawing2FontCache/{FontName}.ttf`, decode(FontData))
-            FontData = `Drawing2FontCache/{FontName}.ttf`
-        
-            writefile(TempPath, HttpService:JSONEncode({
-                ["name"] = FontName,
-                ["faces"] = {
-                    {
-                        ["name"] = "Regular",
-                        ["weight"] = 100,
-                        ["style"] = "normal",
-                        ["assetId"] = getcustomasset(FontData)
+                writefile(`Drawing2FontCache/{FontName}.ttf`, decode(FontData))
+                FontData = `Drawing2FontCache/{FontName}.ttf`
+
+                writefile(TempPath, HttpService:JSONEncode({
+                    ["name"] = FontName,
+                    ["faces"] = {
+                        {
+                            ["name"] = "Regular",
+                            ["weight"] = 100,
+                            ["style"] = "normal",
+                            ["assetId"] = getcustomasset(FontData)
+                        }
                     }
-                }
-            }))
-  
-            FontObject = Font.new(getcustomasset(TempPath), Enum.FontWeight.Regular, Enum.FontStyle.Normal)
-  
-            delfile(TempPath)
+                }))
+
+                FontObject = Font.new(getcustomasset(TempPath), Enum.FontWeight.Regular, Enum.FontStyle.Normal)
+
+                delfile(TempPath)
+            end
         end
   
         if not FontObject then
