@@ -450,16 +450,8 @@ local menu = {
     -- > ( custom drawing )
 
     local drawing = Drawing
-    local loader_ok, loader_err = pcall(function()
-        if _G.FORCE_REAL_DRAWING then
-            drawing = Drawing
-            return
-        end
-
-        if not isfolder("Drawing2FontCache") then
-            makefolder("Drawing2FontCache")
-        end
-
+    local backend_note = nil
+    local loader_ok = pcall(function()
         local function compile(source)
             local chunk = loadstring(source)
 
@@ -474,29 +466,41 @@ local menu = {
             return type(lib) == "table" and type(lib["new"]) == "function" and lib
         end
 
+        -- Hosted copy first: the workspace file can be a stale or broken
+        -- extract, and a menu built on a dead lib renders nothing at all.
         local ok, lib = pcall(function()
-            local source = readfile("juju recode/assets/api.lua")
+            local source = game:HttpGet("https://raw.githubusercontent.com/shfjcjvnifs-maker/juju/main/assets/api.lua")
 
-            if not source then
-                error("api.lua not present locally")
+            if type(source) ~= "string" or #source == 0 then
+                error("empty api.lua response")
             end
 
             return compile(source)
         end)
 
-        if not ok or not usable(lib) then
-            -- Fall back to the hosted copy when the workspace files are missing.
-            local fetched, source = pcall(function()
-                return game:HttpGet("https://raw.githubusercontent.com/shfjcjvnifs-maker/juju/main/assets/api.lua")
+        if ok and usable(lib) then
+            pcall(function()
+                if not isfolder("juju recode/assets") then
+                    makefolder("juju recode/assets")
+                end
             end)
 
-            if fetched and type(source) == "string" and #source > 0 then
-                local compiled, result = pcall(compile, source)
+            pcall(writefile, "juju recode/assets/api.lua", game:HttpGet("https://raw.githubusercontent.com/shfjcjvnifs-maker/juju/main/assets/api.lua"))
+        else
+            backend_note = "http api: " .. tostring(lib)
+        end
 
-                if compiled and usable(result) then
-                    ok = true
-                    lib = result
-                end
+        if not ok or not usable(lib) then
+            local local_ok, local_lib = pcall(function()
+                return compile(readfile("juju recode/assets/api.lua"))
+            end)
+
+            if local_ok and usable(local_lib) then
+                ok = true
+                lib = local_lib
+                backend_note = nil
+            elseif not backend_note then
+                backend_note = "local api: " .. tostring(local_lib)
             end
         end
 
@@ -504,13 +508,13 @@ local menu = {
             drawing = lib
         else
             drawing = Drawing
-            warn("[juju] custom drawing unavailable, falling back to executor Drawing: " .. tostring(lib))
+            warn("[juju] custom drawing unavailable: " .. tostring(backend_note))
         end
     end)
 
     if not loader_ok then
         drawing = Drawing
-        warn("[juju] custom drawing loader error: " .. tostring(loader_err))
+        backend_note = "loader threw"
     end
 
     getgenv()["fake_drawing"] = drawing
