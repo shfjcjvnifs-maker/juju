@@ -515,6 +515,43 @@ local menu = {
 
     getgenv()["fake_drawing"] = drawing
 
+    -- > ( backend diagnostics )
+
+    pcall(function()
+        local backend_name = drawing == Drawing and "executor" or "Drawing2"
+        local notes = {"juju backend: " .. backend_name}
+
+        if backend_note then
+            notes[#notes + 1] = tostring(backend_note):sub(1, 220)
+        end
+
+        local missing = {}
+
+        for _, class in {"Line", "Text", "Image", "Circle", "Square", "Triangle", "Quad"} do
+            local ok = pcall(function()
+                return Drawing["new"](class)
+            end)
+
+            if not ok then
+                missing[#missing + 1] = class
+            end
+        end
+
+        if #missing > 0 then
+            notes[#notes + 1] = "Drawing missing: " .. table.concat(missing, ", ")
+        end
+
+        local label = Drawing["new"]("Text")
+        label["Position"] = vector2_new(12, 12)
+        label["Size"] = 14
+        label["Color"] = Color3.new(1, 0.35, 0.35)
+        label["Outline"] = true
+        label["OutlineColor"] = Color3.new(0, 0, 0)
+        label["Text"] = table.concat(notes, " | ")
+        label["Visible"] = true
+        label["ZIndex"] = 99999
+    end)
+
     -- > ( global menu variables )
 
     local context_action_service = cloneref(game:GetService("ContextActionService"))
