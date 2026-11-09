@@ -12390,6 +12390,12 @@ do
         }
     }
 
+    local weather_base_rate = {}
+
+    for weather, data in weather_types do
+        weather_base_rate[weather] = data["Rate"]
+    end
+
     local offset = vector3_new(0, 20, 0)
 
     local do_weather = LPH_NO_VIRTUALIZE(function(dt, hrp)
@@ -12453,16 +12459,64 @@ do
     end)
 
     create_connection(menu_references["weather_rate"]["on_slider_change"], function(value)
-        local rate = 1000 * (value/100)
-
-        if weather_particle then
-            weather_particle["Rate"] = rate
-        end
+        local scale = value/100
 
         for weather, data in weather_types do
-            weather_types[weather]["Rate"] = rate
+            data["Rate"] = weather_base_rate[weather] * scale
+        end
+
+        if weather_particle then
+            local current = weather_types[flags["weather_type"][1]]
+
+            if current then
+                weather_particle["Rate"] = current["Rate"]
+            end
         end
     end)
+
+    -- >> ( remove effects )
+
+    local removed_effects = {}
+
+    local set_remove_effects = LPH_NO_VIRTUALIZE(function(value)
+        if value then
+            if #removed_effects > 0 then
+                return
+            end
+
+            -- ColorCorrectionEffect is deliberately not on this list: the
+            -- saturation, contrast and tint settings write to it. The menu's own
+            -- Atmosphere is skipped too, since the atmosphere toggle owns it.
+            for _, effect in lighting:GetChildren() do
+                local class = effect["ClassName"]
+
+                if (class == "BloomEffect" or class == "SunRaysEffect" or class == "DepthOfFieldEffect" or class == "Atmosphere" or class == "Clouds") and effect ~= atmosphere then
+                    local ok = pcall(function()
+                        effect["Parent"] = nil
+                    end)
+
+                    if ok then
+                        removed_effects[#removed_effects + 1] = effect
+                    end
+                end
+            end
+        else
+            for _, effect in removed_effects do
+                if effect and not effect["Parent"] then
+                    pcall(function()
+                        effect["Parent"] = lighting
+                    end)
+                end
+            end
+
+            removed_effects = {}
+        end
+    end)
+
+    menu_references["remove_effects"] = menu_references["lighting_section"]:create_element({["name"] = "remove effects"}, {["toggle"] = {["flag"] = "remove_effects", ["default"] = true}})
+
+    create_connection(menu_references["remove_effects"]["on_toggle_change"], set_remove_effects)
+    set_remove_effects(flags["remove_effects"] ~= false)
 
     -- >> ( skybox )
 
@@ -16503,6 +16557,8 @@ end
         menu_references["esp_settings"] = menu_references["esp"]:create_settings()
         menu_references["render_statuses"] = menu_references["esp_settings"]:create_element({["name"] = "render statuses"}, {["dropdown"] = {["flag"] = "render_statuses", ["options"] = {"friendly", "neutral", "enemy"}, ["default"] = {"friendly", "neutral", "enemy"}, ["multi"] = true, ["requires_one"] = true}})
 
+    menu_references["simple_esp"] = menu_references["esp_section"]:create_element({["name"] = "simple (fps)"}, {["toggle"] = {["flag"] = "simple_esp"}})
+
     menu_references["box"] = menu_references["esp_section"]:create_element({["name"] = "box"}, {["toggle"] = {["flag"] = "box"}})
         menu_references["box_settings"] = menu_references["box"]:create_settings()
         menu_references["box_outline"] = menu_references["box_settings"]:create_element({["name"] = "outline"}, {["colorpicker"] = {["color_flag"] = "box_outline_color", ["transparency_flag"] = "box_outline_transparency", ["default_color"] = color3_fromrgb(30, 30, 30), ["default_transparency"] = 0}})
@@ -16638,6 +16694,38 @@ end
         local material_value = Enum["Material"]["Neon"]
     local material_attribute = tostring({}):sub(math_random(8,12))
 
+    -- Simple mode drops the per-player drawings that cost the most per layout
+    -- change: the two gradient overlays, the avatar image and the tool icon.
+    -- The box, name, bars and health text stay, only the text outline goes.
+    local simple_esp = false
+    local simple_esp_hidden = {[6] = true, [9] = true, [12] = true, [13] = true}
+
+    local apply_simple_esp = function(data)
+        local drawings = data[5]
+
+        if not drawings then
+            return
+        end
+
+        for index in simple_esp_hidden do
+            local drawing = drawings[index]
+
+            if drawing then
+                drawing["Visible"] = data[6] and not simple_esp
+            end
+        end
+
+        for _, index in {3, 7, 8} do
+            local drawing = drawings[index]
+
+            if drawing then
+                drawing["Outline"] = not simple_esp
+            end
+        end
+
+        data[22] = simple_esp
+    end
+
     local main_font = 1
     local main_size = identifyexecutor() == "Wave" and 13 or 13
     local small_font = 1
@@ -16757,10 +16845,17 @@ end
                 local drawings = data[5]
 
                 if not data[6] then
-                    for _, drawing in drawings do
-                        drawing["Visible"] = true
-                    end
                     data[6] = true
+
+                    local hidden = simple_esp and simple_esp_hidden
+
+                    for index, drawing in drawings do
+                        drawing["Visible"] = not (hidden and hidden[index])
+                    end
+
+                    if data[22] ~= simple_esp then
+                        apply_simple_esp(data)
+                    end
 
                     local shown_highlight = data[8]
 
@@ -16794,6 +16889,7 @@ end
                         data[11], data[9], data[10], data[15], has_tool,
                         hide_armor_bar_if_empty, hide_health_text_if_full
                     }
+                    data[22] = nil
                 elseif cache[1] == pixel_width and cache[2] == pixel_height
                     and cache[3] == pixel_x and cache[4] == pixel_y
                     and cache[5] == data[11] and cache[6] == data[9]
@@ -16825,7 +16921,7 @@ end
                     outline["Position"] = position
                 end
 
-                if do_image then
+                if do_image and not simple_esp then
                     local image = drawings[13]
                     image["Size"] = size
                     image["Position"] = position
@@ -16851,7 +16947,7 @@ end
                     bar["Position"] = bar_position
                     bar["Size"] = bar_size
 
-                    if do_health_bar_gradient then
+                    if do_health_bar_gradient and not simple_esp then
                         local gradient = drawings[6]
                         gradient["Position"] = bar_position - bar_offset
                         gradient["Size"] = bar_size + bar_offset
@@ -16877,7 +16973,7 @@ end
                         bar["Position"] = bar_position
                         bar["Size"] = bar_size
 
-                        if do_armor_bar_gradient then
+                        if do_armor_bar_gradient and not simple_esp then
                             local gradient = drawings[12]
                             gradient["Position"] = bar_position - bar_offset
                             gradient["Size"] = bar_size + bar_offset
@@ -16898,7 +16994,11 @@ end
                     end
                 end
 
-                if do_tool_icon then
+                if data[22] ~= simple_esp then
+                    apply_simple_esp(data)
+                end
+
+                if do_tool_icon and not simple_esp then
                     if data[13] then
                         drawings[9]["Position"] = position + vector2_new((x_size-24)/2, y_size + (do_tool_text and small_size or 0) + 2)
                     end
@@ -17164,7 +17264,7 @@ end
         data[5][3] = create_esp_drawing("Text", {
             Color = colors[status][3],
             Center = true,
-            Outline = true,
+            Outline = not simple_esp,
             Transparency = transparencies[status][3],
             Size = main_size,
             Font = main_font,
@@ -17538,7 +17638,7 @@ end
         data[5][7] = create_esp_drawing("Text", {
             Color = colors[status][7],
             Center = false,
-            Outline = true,
+            Outline = not simple_esp,
             Transparency = transparencies[status][7],
             Size = small_size,
             Font = small_font,
@@ -17578,7 +17678,7 @@ end
         data[5][8] = create_esp_drawing("Text", {
             Color = colors[status][8],
             Center = true,
-            Outline = true,
+            Outline = not simple_esp,
             Transparency = transparencies[status][8],
             Size = small_size,
             Font = small_font,
@@ -18285,6 +18385,14 @@ end
                 if do_health_text then
                     health_text_player_health_changed_connection = create_connection(signals["on_player_health_changed"], update_health_text)
                 end
+            end
+        end))
+
+        create_connection(menu_references["simple_esp"]["on_toggle_change"], LPH_NO_VIRTUALIZE(function(value)
+            simple_esp = value
+
+            for _, data in player_data do
+                apply_simple_esp(data)
             end
         end))
 
