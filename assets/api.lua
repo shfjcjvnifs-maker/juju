@@ -204,7 +204,11 @@ if not LPH_OBFUSCATED then
     function Line:__index(property)
         local value = self.__PROPERTIES[property]
   
-        return value or Line[property]
+        if value == nil then
+            return Line[property]
+        end
+
+        return value
     end
   
     function Line:__newindex(property, value)
@@ -303,7 +307,11 @@ if not LPH_OBFUSCATED then
     function Circle:__index(property)
         local value = self.__PROPERTIES[property]
   
-        return value or Circle[property]
+        if value == nil then
+            return Circle[property]
+        end
+
+        return value
     end
   
     function Circle:__newindex(property, value)
@@ -621,7 +629,11 @@ if not LPH_OBFUSCATED then
     function Square:__index(property)
         local value = self.__PROPERTIES[property]
   
-        return value or Square[property]
+        if value == nil then
+            return Square[property]
+        end
+
+        return value
     end
   
     function Square:__newindex(property, value)
@@ -783,7 +795,11 @@ if not LPH_OBFUSCATED then
     function Image:__index(property)
         local value = self.__PROPERTIES[property]
   
-        return value or Image[property]
+        if value == nil then
+            return Image[property]
+        end
+
+        return value
     end
   
     function Image:__newindex(property, value)
@@ -934,7 +950,11 @@ if not LPH_OBFUSCATED then
     function Triangle:__index(property)
         local value = self.__PROPERTIES[property]
   
-        return value or Triangle[property]
+        if value == nil then
+            return Triangle[property]
+        end
+
+        return value
     end
   
     function Triangle:__newindex(property, value)
@@ -1084,7 +1104,11 @@ if not LPH_OBFUSCATED then
     function Quad:__index(property)
         local value = self.__PROPERTIES[property]
   
-        return value or Quad[property]
+        if value == nil then
+            return Quad[property]
+        end
+
+        return value
     end
   
     function Quad:__newindex(property, value)

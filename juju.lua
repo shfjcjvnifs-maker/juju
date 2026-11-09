@@ -8463,12 +8463,19 @@ local create_drawing_object = function(backend, class, properties, invert_transp
     return target
 end
 
+-- HUD drawing (center panel, crosshair, indicators, FOV) is written Drawing2-native
+-- (1 = solid, 0 = invisible) and passes straight through. ESP objects are written in
+-- executor terms (0 = solid, 1 = invisible), so they get the inverting proxy.
 local create_real_drawing = LPH_NO_VIRTUALIZE(function(class, properties)
-    return create_drawing_object(real_drawing, class, properties, true)
+    return create_drawing_object(real_drawing, class, properties, false)
 end)
 
 local create_fake_drawing = LPH_NO_VIRTUALIZE(function(class, properties)
     return create_drawing_object(fake_drawing, class, properties, false)
+end)
+
+local create_esp_drawing = LPH_NO_VIRTUALIZE(function(class, properties)
+    return create_drawing_object(real_drawing, class, properties, true)
 end)
 
 local new_notification = menu["new_notification"]
@@ -16864,7 +16871,7 @@ end)()
         local colors = colors[status]
         local transparencies = transparencies[status]
 
-        drawings[1] = create_real_drawing("Square", {
+        drawings[1] = create_esp_drawing("Square", {
             Color = colors[1],
             Thickness = 1,
             Filled = false,
@@ -16872,7 +16879,7 @@ end)()
             ZIndex = 3,
             Visible = rendering
         })
-        drawings[2] = create_real_drawing("Square", {
+        drawings[2] = create_esp_drawing("Square", {
             Color = colors[2],
             Thickness = 3,
             Filled = false,
@@ -16886,7 +16893,7 @@ end)()
         local status = data[1]
         local player = data[2]
 
-        data[5][3] = create_real_drawing("Text", {
+        data[5][3] = create_esp_drawing("Text", {
             Color = colors[status][3],
             Center = true,
             Outline = true,
@@ -16910,7 +16917,7 @@ end)()
         local colors = colors[status]
         local transparencies = transparencies[status]
 
-        drawings[4] = create_real_drawing("Square", {
+        drawings[4] = create_esp_drawing("Square", {
             Color = colors[4],
             Thickness = 1,
             Filled = true,
@@ -16918,7 +16925,7 @@ end)()
             ZIndex = 3,
             Visible = rendering
         })
-        drawings[5] = create_real_drawing("Square", {
+        drawings[5] = create_esp_drawing("Square", {
             Color = colors[5],
             Thickness = 3,
             Filled = true,
@@ -16928,7 +16935,7 @@ end)()
         })
 
         if do_health_bar_gradient then
-            drawings[6] = create_real_drawing("Image", {
+            drawings[6] = create_esp_drawing("Image", {
                 Color = colors[6],
                 Transparency = transparencies[6],
                 ZIndex = 4,
@@ -16960,7 +16967,7 @@ end)()
         local colors = colors[status]
         local transparencies = transparencies[status]
 
-        drawings[10] = create_real_drawing("Square", {
+        drawings[10] = create_esp_drawing("Square", {
             Color = colors[10],
             Thickness = 1,
             Filled = true,
@@ -16968,7 +16975,7 @@ end)()
             ZIndex = 3,
             Visible = rendering
         })
-        drawings[11] = create_real_drawing("Square", {
+        drawings[11] = create_esp_drawing("Square", {
             Color = colors[11],
             Thickness = 3,
             Filled = true,
@@ -16983,7 +16990,7 @@ end)()
         end
 
         if do_armor_bar_gradient then
-            drawings[12] = create_real_drawing("Image", {
+            drawings[12] = create_esp_drawing("Image", {
                 Color = colors[12],
                 Transparency = transparencies[12],
                 ZIndex = 4,
@@ -17105,7 +17112,7 @@ end)()
         local status = data[1]
         local health = data[9]
 
-        data[5][7] = create_real_drawing("Text", {
+        data[5][7] = create_esp_drawing("Text", {
             Color = colors[status][7],
             Center = false,
             Outline = true,
@@ -17143,7 +17150,7 @@ end)()
         local status = data[1]
         local tool = data[13]
 
-        data[5][8] = create_real_drawing("Text", {
+        data[5][8] = create_esp_drawing("Text", {
             Color = colors[status][8],
             Center = true,
             Outline = true,
@@ -17167,9 +17174,9 @@ end)()
             local tool = data[13]
 
             local image = tool and tool_icon_data[tool["Name"]] or ""
-            data[5][9] = create_fake_drawing("Image", {
+            data[5][9] = create_esp_drawing("Image", {
                 Color = colors[status][9],
-                Transparency = 1 - transparencies[status][9],
+                Transparency = transparencies[status][9],
                 Data = image,
                 Size = vector2_new(24,12),
                 Visible = data[6]
@@ -17181,7 +17188,7 @@ end)()
             local tool = data[13]
 
             local image = tool and tool_icon_data[tool["Name"]] or ""
-            data[5][9] = create_real_drawing("Image", {
+            data[5][9] = create_esp_drawing("Image", {
                 Color = colors[status][9],
                 Transparency = transparencies[status][9],
                 Data = image,
@@ -17202,7 +17209,7 @@ end)()
     local create_image = LPH_NO_VIRTUALIZE(function(data)
         local status = data[1]
 
-        data[5][13] = create_real_drawing("Image", {
+        data[5][13] = create_esp_drawing("Image", {
             Color = colors[status][13],
             Transparency = transparencies[status][13],
             Data = image_data or "",
