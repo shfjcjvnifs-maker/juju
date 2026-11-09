@@ -8376,8 +8376,8 @@ local ragebot_random_part_tick = 0
 
 -- parts may be the live parts map or a backtrack snapshot; a part missing
 -- from the given map can never be aimed at, so fall back to the root.
-local resolve_ragebot_hitbox_part = function(parts)
-    local mode = (flags["ragebot_hitbox"] or {})[1] or "head"
+local resolve_ragebot_hitbox_part = function(parts, flag)
+    local mode = (flags[flag or "ragebot_hitbox"] or {})[1] or "head"
     local candidates = ragebot_hitbox_candidates[mode] or ragebot_hitbox_candidates.head
 
     if not parts then
@@ -9298,28 +9298,64 @@ do
                 local packet = args[1]
                 
                 if packet == "ShootGun" then
-                    if ragebot_aim_position then
+                    local aim_position = nil
+                    local silent_part = nil
+
+                    -- Silent aim: with a target selected the shot is rewritten even
+                    -- when the ragebot is not auto firing, so the crosshair does
+                    -- not have to be on the target and no distance has to be closed.
+                    -- The manipulation hitbox is used for both the aim point and
+                    -- the part argument so the server sees the same limb.
+                    if flags["manipulation_silent_aim"] and ragebot_target and not ragebot_target[7] then
+                        local silent_parts = ragebot_target[4]
+                        silent_part = silent_parts[resolve_ragebot_hitbox_part(silent_parts, "manipulation_hitbox")] or silent_parts["HumanoidRootPart"]
+
+                        if silent_part then
+                            aim_position = silent_part["Position"]
+                        end
+                    end
+
+                    if not aim_position then
+                        aim_position = ragebot_aim_position
+                    end
+
+                    if aim_position then
                         local handle = args[2]
 
-                        local pos = ragebot_aim_position + vector3_new(math_random(101,105)/100,0.008,-0.008)
+                        local pos = aim_position + vector3_new(math_random(101,105)/100,0.008,-0.008)
                         local origin = local_server_position["p"] + vector3_new(0.004,3.0208,-0.048)
 
-                        -- Wall bang: start the shot one stud from the target
-                        -- instead of at the shooter, so the server's trace has
-                        -- no wall between its origin and the aim point.
+                        -- Wall bang: start the shot right at the target body instead
+                        -- of at the shooter, so the server trace has no wall to stop
+                        -- it. A whole stud away was still far enough for the server
+                        -- to resolve a wall, so this sits much closer.
                         if flags["auto_fire_wall_bang"] then
                             local direction = (pos-origin)["Unit"]
 
                             if direction["Magnitude"] > 0.001 then
-                                origin = pos - direction
+                                origin = pos - direction * 0.2
                             end
                         end
                 
                         local dir = (origin-pos)["Unit"]
+
+                        -- Bullet spoof: send a direction pointing somewhere else so
+                        -- other clients draw the beam off the real line. The part
+                        -- argument still carries the hit.
+                        if flags["manipulation_bullet_spoof"] then
+                            local spoof = pos + vector3_new(math_random(-40, 40), math_random(20, 60), math_random(-40, 40))
+                            local spoofed = (spoof-origin)["Unit"]
+
+                            if spoofed["Magnitude"] > 0.001 then
+                                dir = spoofed
+                            end
+                        end
                         local Magnitude = dir["Magnitude"]
-                        local part = ragebot_target[4][resolve_ragebot_hitbox_part(ragebot_target[4])] or ragebot_target[4]["UpperTorso"]
+                        local part = silent_part or (ragebot_target and (ragebot_target[4][resolve_ragebot_hitbox_part(ragebot_target[4])] or ragebot_target[4]["UpperTorso"])) or args[5]
                         
-                        spawn(get_bullet_result, ragebot_target[2], part, local_server_position["p"], ragebot_aim_position, ragebot_aim_velocity, ragebot_aim_defensive)
+                        if part and ragebot_target then
+                            spawn(get_bullet_result, ragebot_target[2], part, local_server_position["p"], aim_position, ragebot_aim_velocity, ragebot_aim_defensive)
+                        end
 
                         return old_namecall(self, "ShootGun", handle, origin, pos, part, (Magnitude <= 0 or Magnitude ~= Magnitude) and (handle["Position"]-pos)["Unit"] or dir)
                     end
@@ -20333,7 +20369,12 @@ local backtrack_data = {}
         menu_references["auto_fire_settings"] = menu_references["auto_fire"]:create_settings()
         menu_references["auto_fire_at_target_vehicle"] = menu_references["auto_fire_settings"]:create_element({["name"] = "at target vehicle"}, {["toggle"] = {["flag"] = "auto_fire_at_target_vehicle", ["default"] = true}})
         menu_references["auto_fire_at_backtrack"] = menu_references["auto_fire_settings"]:create_element({["name"] = "at backtrack"}, {["toggle"] = {["flag"] = "auto_fire_at_backtrack", ["default"] = false}})
-        menu_references["auto_fire_wall_bang"] = menu_references["auto_fire_settings"]:create_element({["name"] = "wall bang"}, {["toggle"] = {["flag"] = "auto_fire_wall_bang", ["default"] = false}})
+        menu_references["manipulation"] = menu_references["utility_section"]:create_element({["name"] = "manipulation"}, {})
+        menu_references["manipulation_settings"] = menu_references["manipulation"]:create_settings()
+        menu_references["manipulation_silent_aim"] = menu_references["manipulation_settings"]:create_element({["name"] = "silent aim"}, {["toggle"] = {["flag"] = "manipulation_silent_aim", ["default"] = false}})
+        menu_references["manipulation_target_hitbox"] = menu_references["manipulation_settings"]:create_element({["name"] = "target hitbox"}, {["dropdown"] = {["flag"] = "manipulation_hitbox", ["options"] = {"head", "root", "torso", "arms", "legs", "randomize"}, ["default"] = {"head"}}})
+        menu_references["manipulation_wall_bang"] = menu_references["manipulation_settings"]:create_element({["name"] = "wall bang"}, {["toggle"] = {["flag"] = "auto_fire_wall_bang", ["default"] = false}})
+        menu_references["manipulation_bullet_spoof"] = menu_references["manipulation_settings"]:create_element({["name"] = "bullet spoof"}, {["toggle"] = {["flag"] = "manipulation_bullet_spoof", ["default"] = false}})
         menu_references["auto_fire_always_fire"] = menu_references["auto_fire_settings"]:create_element({["name"] = "always fire"}, {["toggle"] = {["flag"] = "auto_fire_always_fire", ["default"] = true}})
         menu_references["auto_fire_dont_render"] = menu_references["auto_fire_settings"]:create_element({["name"] = "dont render"}, {["toggle"] = {["flag"] = "auto_fire_dont_render", ["default"] = false}})
         menu_references["auto_equip"] = menu_references["general_section"]:create_element({["name"] = "auto equip"}, {["toggle"] = {["flag"] = "auto_equip", ["default"] = false}})
@@ -22042,6 +22083,89 @@ local backtrack_data = {}
         end))
 
         if flags["rapid_fire"] then
+            start()
+        end
+    end
+
+    -- >> ( manipulation )
+
+    do
+        local active = false
+
+        local do_manipulation = LPH_NO_VIRTUALIZE(function(dt)
+            if not flags["manipulation_silent_aim"] then
+                return
+            end
+
+            local target = ragebot_target
+
+            if not target or target[7] then
+                -- Target died or went away: drop the aim point we were feeding.
+                -- The ragebot clears its own frame by frame.
+                if not flags["ragebot"] then
+                    ragebot_aim_position = nil
+                end
+
+                return
+            end
+
+            local parts = target[4]
+            local hitbox = parts[resolve_ragebot_hitbox_part(parts, "manipulation_hitbox")] or parts["HumanoidRootPart"]
+
+            if not hitbox then
+                return
+            end
+
+            local position = hitbox["Position"]
+
+            -- The ragebot owns the aim point when it computed one this frame.
+            -- Outside that the manipulation hitbox feeds it, which is what the
+            -- mouse Hit hook (silent aim) and the tracer both read.
+            if not ragebot_aim_position or ragebot_aim_position == vector3_zero then
+                ragebot_aim_position = position
+            end
+        end)
+
+        local start = function()
+            if active then
+                return
+            end
+
+            active = true
+            heartbeat[#heartbeat+1] = do_manipulation
+        end
+
+        local stop = function()
+            if not active then
+                return
+            end
+
+            active = false
+
+            for i = 1, #heartbeat do
+                if heartbeat[i] == do_manipulation then
+                    table.remove(heartbeat, i)
+                    break
+                end
+            end
+
+            -- Drop the aim point we were feeding so nothing keeps locking onto
+            -- a target after the toggle goes off. The ragebot owns it otherwise
+            -- and recomputes every frame.
+            if not flags["ragebot"] then
+                ragebot_aim_position = nil
+            end
+        end
+
+        create_connection(menu_references["manipulation_silent_aim"]["on_toggle_change"], LPH_JIT_MAX(function(value)
+            if value then
+                start()
+            else
+                stop()
+            end
+        end))
+
+        if flags["manipulation_silent_aim"] then
             start()
         end
     end
