@@ -8294,6 +8294,10 @@ create_connection(workspace["GetPropertyChangedSignal"](workspace, "CurrentCamer
     end
 end)
 
+local raw_world_to_viewport_point = function(cam, position)
+    return cam["WorldToViewportPoint"](cam, position)
+end
+
 local world_to_viewport_point = LPH_NO_VIRTUALIZE(function(cam, position)
     cam = cam or workspace["CurrentCamera"]
 
@@ -8301,9 +8305,7 @@ local world_to_viewport_point = LPH_NO_VIRTUALIZE(function(cam, position)
         return vector2_new(0, 0), false
     end
 
-    local ok, screen, on_screen = pcall(function()
-        return cam["WorldToViewportPoint"](cam, position)
-    end)
+    local ok, screen, on_screen = pcall(raw_world_to_viewport_point, cam, position)
 
     if not ok then
         return vector2_new(0, 0), false
@@ -9802,7 +9804,7 @@ do
     local do_noclip = LPH_NO_VIRTUALIZE(function()
         for _, part in local_parts do
             local name = part["ClassName"]
-            if name == "MeshPart" or name == "Part" then
+            if (name == "MeshPart" or name == "Part") and part["CanCollide"] then
                 part["CanCollide"] = false
             end
         end
@@ -12767,8 +12769,8 @@ end
         local do_center_panel = LPH_JIT_MAX(function(dt)
             local old = text3["Text"]
             local new = (flags["ragebot"] and (getgenv()["juju"] or {})["waiting_protection"]) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or (in_void or in_void == nil) and "void" or "unsafe" or local_parts["ForceField"] and "invulnerable"
-            text3["Text"] = new
             if old ~= new then
+                text3["Text"] = new
                 tween(text3, {["Transparency"] = 0.35}, linear, out, 0.09)
                 if new ~= "void" then
                     delay(0.07, tween, text3, {["Transparency"] = 0.7}, linear, out, 0.09)
@@ -16365,6 +16367,71 @@ end)()
     end)
 end)()
 
+-- >> ( render quality )
+
+-- Below graphics quality 3 the client skips the Highlight render pass and the
+-- material bloom pass, so the player highlight and the neon / forcefield player
+-- material stop showing. The guard lifts the level only while one of those
+-- features is on, and only to the first level that renders them. Every call is
+-- pcall-guarded: some executors do not expose settings(), and a missing handle
+-- leaves the features exactly as they were.
+local render_settings = nil
+do
+    local ok, result = pcall(function()
+        return settings()
+    end)
+
+    if ok then
+        render_settings = result
+    end
+end
+
+local minimum_render_quality = 3
+local minimum_render_quality_item = nil
+
+do
+    local quality_enum = Enum["QualityLevel"]
+
+    if quality_enum then
+        local ok, items = pcall(function()
+            return quality_enum:GetEnumItems()
+        end)
+
+        if ok and items then
+            for _, item in items do
+                if item.Value >= minimum_render_quality then
+                    minimum_render_quality_item = item
+                    break
+                end
+            end
+        end
+    end
+end
+
+local ensure_render_quality = function()
+    if not render_settings then
+        return
+    end
+
+    local ok, current = pcall(function()
+        return render_settings.Rendering.QualityLevel
+    end)
+
+    if not ok or current == nil then
+        return
+    end
+
+    local level = typeof(current) == "EnumItem" and current.Value or tonumber(current)
+
+    if not level or level >= minimum_render_quality then
+        return
+    end
+
+    pcall(function()
+        render_settings.Rendering.QualityLevel = minimum_render_quality_item or minimum_render_quality
+    end)
+end
+
 -- >> ( player visuals )
 
 ;(function()
@@ -16610,6 +16677,12 @@ end)()
                     end
                     data[6] = false
                 end
+
+                local hidden_highlight = data[8]
+
+                if hidden_highlight and hidden_highlight["Enabled"] then
+                    hidden_highlight["Enabled"] = false
+                end
                 continue
             end
 
@@ -16624,6 +16697,12 @@ end)()
                         drawing["Visible"] = true
                     end
                     data[6] = true
+
+                    local shown_highlight = data[8]
+
+                    if shown_highlight and not shown_highlight["Enabled"] then
+                        shown_highlight["Enabled"] = true
+                    end
                 end
 
                 local offset_pos = world_to_viewport_point(camera, position - offset)
@@ -16634,6 +16713,39 @@ end)()
 
                 local size = vector2_new(x_size, y_size)
                 local position = vector2_new(offset_pos["X"] - x_size/2, offset_pos["Y"] - y_size/2)
+
+                -- Every write below is a pure function of the box rect and the
+                -- player values folded into the signature. When both match the
+                -- last frame there is nothing new to send to the drawings.
+                local cache = data[20]
+                local has_tool = data[13] ~= nil
+
+                if not cache then
+                    data[20] = {
+                        x_size, y_size, position.X, position.Y,
+                        data[11], data[9], data[10], data[15], has_tool,
+                        hide_armor_bar_if_empty, hide_health_text_if_full
+                    }
+                elseif cache[1] == x_size and cache[2] == y_size
+                    and cache[3] == position.X and cache[4] == position.Y
+                    and cache[5] == data[11] and cache[6] == data[9]
+                    and cache[7] == data[10] and cache[8] == data[15]
+                    and cache[9] == has_tool and cache[10] == hide_armor_bar_if_empty
+                    and cache[11] == hide_health_text_if_full then
+                    continue
+                else
+                    cache[1] = x_size
+                    cache[2] = y_size
+                    cache[3] = position.X
+                    cache[4] = position.Y
+                    cache[5] = data[11]
+                    cache[6] = data[9]
+                    cache[7] = data[10]
+                    cache[8] = data[15]
+                    cache[9] = has_tool
+                    cache[10] = hide_armor_bar_if_empty
+                    cache[11] = hide_health_text_if_full
+                end
 
                 if do_box then
                     local box = drawings[1]
@@ -16729,6 +16841,12 @@ end)()
                     drawing["Visible"] = false
                 end
                 data[6] = false
+
+                local offscreen_highlight = data[8]
+
+                if offscreen_highlight and offscreen_highlight["Enabled"] then
+                    offscreen_highlight["Enabled"] = false
+                end
             end
         end
     end) 
@@ -16946,6 +17064,8 @@ end)()
         local drawings = data[5]
         local status = data[1]
 
+        data[20] = nil
+
         local colors = colors[status]
         local transparencies = transparencies[status]
 
@@ -16971,6 +17091,8 @@ end)()
         local status = data[1]
         local player = data[2]
 
+        data[20] = nil
+
         data[5][3] = create_esp_drawing("Text", {
             Color = colors[status][3],
             Center = true,
@@ -16989,6 +17111,8 @@ end)()
         local rendering = data[6]
         local drawings = data[5]
         local status = data[1]
+
+        data[20] = nil
 
         data[11] = data[9]
 
@@ -17032,6 +17156,7 @@ end)()
     end)
 
     local create_armor_bar = LPH_NO_VIRTUALIZE(function(data)
+        data[20] = nil
         local rendering = data[6]
         local drawings = data[5]
         local status = data[1]
@@ -17182,6 +17307,68 @@ end)()
         })
     end)
 
+    -- Highlight can be dropped by the client (respawn, appearance reload, or a
+    -- skipped render pass). Re-adorn and re-enable it once a second, and keep
+    -- the render quality above the level where Highlight and material bloom are
+    -- rendered while one of those features is on.
+    local last_visual_guard = 0
+    local visual_guard = LPH_NO_VIRTUALIZE(function()
+        local now = clock()
+
+        if now - last_visual_guard < 1 then
+            return
+        end
+
+        last_visual_guard = now
+
+        if do_highlight or do_material then
+            ensure_render_quality()
+        end
+
+        if not do_highlight or not flags["esp"] then
+            return
+        end
+
+        for player, data in player_data do
+            local highlight = data[8]
+            local character = data[3]
+
+            if character and character["Parent"] == nil then
+                character = nil
+            end
+
+            if highlight then
+                if highlight["Parent"] == nil then
+                    data[8] = nil
+
+                    if character then
+                        create_highlight(data)
+                    end
+                elseif not character then
+                    if highlight["Adornee"] ~= nil then
+                        highlight["Adornee"] = nil
+                    end
+
+                    if highlight["Enabled"] then
+                        highlight["Enabled"] = false
+                    end
+                elseif highlight["Adornee"] ~= character then
+                    update_highlight(data)
+                elseif data[6] then
+                    if not highlight["Enabled"] then
+                        highlight["Enabled"] = true
+                    end
+                elseif highlight["Enabled"] then
+                    highlight["Enabled"] = false
+                end
+            elseif character then
+                create_highlight(data)
+            end
+        end
+    end)
+
+    heartbeat[#heartbeat+1] = visual_guard
+
     local update_health_text = LPH_NO_VIRTUALIZE(function(data, health)
         data[5][7]["Text"] = (hide_health_text_if_full and health >= data[10] or false) and "" or tostring(health)
     end)
@@ -17189,6 +17376,8 @@ end)()
     local create_health_text = LPH_NO_VIRTUALIZE(function(data)
         local status = data[1]
         local health = data[9]
+
+        data[20] = nil
 
         data[5][7] = create_esp_drawing("Text", {
             Color = colors[status][7],
@@ -17228,6 +17417,8 @@ end)()
         local status = data[1]
         local tool = data[13]
 
+        data[20] = nil
+
         data[5][8] = create_esp_drawing("Text", {
             Color = colors[status][8],
             Center = true,
@@ -17251,6 +17442,8 @@ end)()
             local status = data[1]
             local tool = data[13]
 
+            data[20] = nil
+
             local image = tool and tool_icon_data[tool["Name"]] or ""
             data[5][9] = create_esp_drawing("Image", {
                 Color = colors[status][9],
@@ -17264,6 +17457,8 @@ end)()
         if data[2] then
             local status = data[1]
             local tool = data[13]
+
+            data[20] = nil
 
             local image = tool and tool_icon_data[tool["Name"]] or ""
             data[5][9] = create_esp_drawing("Image", {
@@ -17286,6 +17481,8 @@ end)()
 
     local create_image = LPH_NO_VIRTUALIZE(function(data)
         local status = data[1]
+
+        data[20] = nil
 
         data[5][13] = create_esp_drawing("Image", {
             Color = colors[status][13],
@@ -17365,6 +17562,16 @@ end)()
                     if part["Transparency"] ~= 1 then
                         part["Transparency"] = 0
                     end
+
+                    if part["ClassName"] == "MeshPart" then
+                        local texture_key = material_attribute .. name
+                        local original = part:GetAttribute(texture_key)
+
+                        if original then
+                            part["TextureID"] = original
+                            part:SetAttribute(texture_key, nil)
+                        end
+                    end
                 end
             end
 
@@ -17416,6 +17623,18 @@ end)()
                     if part["Transparency"] ~= 1 then
                         part["Transparency"] = transparency
                     end
+
+                    if part["ClassName"] == "MeshPart" then
+                        local texture_key = material_attribute .. name
+
+                        if not part:GetAttribute(texture_key) then
+                            part:SetAttribute(texture_key, part["TextureID"])
+                        end
+
+                        if part["TextureID"] ~= "" then
+                            part["TextureID"] = ""
+                        end
+                    end
                 end
             end
 
@@ -17462,6 +17681,7 @@ end)()
 
     local create_esp = LPH_NO_VIRTUALIZE(function(data)
         data[6] = false
+        data[20] = nil
         if do_box then
             create_box(data)
         end
@@ -18205,6 +18425,10 @@ end)()
         create_connection(menu_references["highlight"]["on_toggle_change"], LPH_NO_VIRTUALIZE(function(value)
             do_highlight = value
 
+            if value then
+                ensure_render_quality()
+            end
+
             if highlight_character_added_connection then
                 highlight_character_added_connection:Disconnect()
                 highlight_character_added_connection = nil
@@ -18488,10 +18712,22 @@ end)()
 
         create_connection(menu_references["material_value"]["on_dropdown_change"], function(value)
             material_value = value[1] == "neon" and Enum["Material"]["Neon"] or Enum["Material"]["ForceField"]
+
+            if do_material and flags["esp"] then
+                for player, data in player_data do
+                    if data[3] then
+                        spawn(apply_material, data)
+                    end
+                end
+            end
         end)
 
         create_connection(menu_references["material"]["on_toggle_change"], LPH_NO_VIRTUALIZE(function(value)
             do_material = value
+
+            if value then
+                ensure_render_quality()
+            end
 
             if material_on_player_character_added then
                 material_on_player_character_added:Disconnect()
@@ -19012,6 +19248,8 @@ do
         menu_references["character_highlight_outline"] = menu_references["character_highlight_settings"]:create_element({["name"] = "outline"}, {["colorpicker"] = {["color_flag"] = "character_highlight_outline_color", ["default_color"] = color3_fromrgb(255, 255, 255), ["transparency_flag"] = "character_highlight_outline_transparency", ["default_transparency"] =  0.9}})
 
     local apply_character_highlight = LPH_NO_VIRTUALIZE(function()
+        ensure_render_quality()
+
         character_highlight["FillTransparency"] = 1
         character_highlight["OutlineTransparency"] = 1
 
@@ -19035,6 +19273,8 @@ do
         end
 
         if value then
+            ensure_render_quality()
+
             character_highlight = create_instance("Highlight", {
                 FillColor = flags["character_highlight_color"],
                 FillTransparency = flags["character_highlight_transparency"],
@@ -20473,8 +20713,6 @@ local backtrack_data = {}
                 fov_circle_outline["Position"] = new_position
             end
         end
-
-        local new_cframe = cframe_new(vector3_new(math_random(-2147483647, 2147483647), math_random(-400, 2147483647), math_random(-2147483647, 2147483647)))
 
         if target and hrp then
             local parts = target[4]
