@@ -482,9 +482,7 @@ if not LPH_OBFUSCATED then
             self.__OBJECT.FontFace = value
             self:_UPDATE_TEXT_BOUNDS()
         elseif property == "Outline" then
-            -- The stroke fades with the text. Driving it from a constant made the
-            -- outline linger as a black ghost after the fill tweened away.
-            self.__OBJECT.TextStrokeTransparency = value and clamp(1 - (Properties.Transparency or 1), 0, 1) or 1
+            self.__OBJECT.TextStrokeTransparency = value and 0 or 1
         elseif property == "OutlineColor" then
             self.__OBJECT.TextStrokeColor3 = value
             self.__OBJECT._STROKE.Color = value
@@ -495,7 +493,6 @@ if not LPH_OBFUSCATED then
             local alpha = clamp(1 - value, 0, 1)
             local object = self.__OBJECT
             object.TextTransparency = alpha
-            object.TextStrokeTransparency = Properties.Outline and alpha or 1
             object._STROKE.Transparency = alpha
         elseif property == "Visible" then
             self.__OBJECT.Visible = value
@@ -714,16 +711,13 @@ if not LPH_OBFUSCATED then
         object.Position = fromOffset(Properties.Position.X, Properties.Position.Y)
         object.Size = fromOffset(width, height)
 
-        -- UIStroke (BorderMode Outer, the default) draws the stroke outside the
--- frame bounds; the executor's unfilled Square works the same way. Laying
--- these inside shrank every ESP box and bar by its outline thickness.
-        object._BORDER_TOP.Position = fromOffset(-thickness, -thickness)
-        object._BORDER_TOP.Size = fromOffset(width + thickness * 2, thickness)
-        object._BORDER_BOTTOM.Position = fromOffset(-thickness, height)
-        object._BORDER_BOTTOM.Size = fromOffset(width + thickness * 2, thickness)
-        object._BORDER_LEFT.Position = fromOffset(-thickness, 0)
+        object._BORDER_TOP.Position = udim2New(0, 0, 0, 0)
+        object._BORDER_TOP.Size = fromOffset(width, thickness)
+        object._BORDER_BOTTOM.Position = fromOffset(0, height - thickness)
+        object._BORDER_BOTTOM.Size = fromOffset(width, thickness)
+        object._BORDER_LEFT.Position = fromOffset(0, 0)
         object._BORDER_LEFT.Size = fromOffset(thickness, height)
-        object._BORDER_RIGHT.Position = fromOffset(width, 0)
+        object._BORDER_RIGHT.Position = fromOffset(width - thickness, 0)
         object._BORDER_RIGHT.Size = fromOffset(thickness, height)
 
         self:__UPDATE_BORDERS()
@@ -735,14 +729,9 @@ if not LPH_OBFUSCATED then
         local object = self.__OBJECT
         local alpha = 1 - (tonumber(Properties.Transparency) or 1)
 
-        -- Executor Drawing ignores Thickness when Filled is true: the square is
-        -- a solid rect with no border. Painting the edge frames anyway grew
-        -- every filled bar by its thickness on all four sides.
         if Properties.Filled then
-            alpha = 0
-        end
-
-        if alpha < 0 then
+            alpha = 1
+        elseif alpha < 0 then
             alpha = 0
         elseif alpha > 1 then
             alpha = 1
