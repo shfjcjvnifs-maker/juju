@@ -12878,7 +12878,14 @@ end
             local new_text_position = vector2_new(x_size - juju_textbounds["X"] + offset - 3, y_size + 1)
             local new_text2_position = vector2_new(x_size + 12 + offset, y_size + 1)
             local new_heart_position = vector2_new(x_size + offset, y_size + 3)
-            local new_text3_position = vector2_new(x_size + offset + 5, y_size + 14)
+
+            -- Centre the state text on the real title bounds and drop it one
+            -- full line below the title.
+            local title_left = new_text_position["X"]
+            local title_right = new_text2_position["X"] + build_textbounds["X"]
+            local title_bottom = y_size + 1 + math.max(juju_textbounds["Y"], build_textbounds["Y"])
+            local state_textbounds = text3["TextBounds"]
+            local new_text3_position = vector2_new((title_left + title_right)/2, title_bottom + 3 + state_textbounds["Y"]/2)
 
             local new_shadow_position = new_text_position - vector2_new(shadow_size / 2, 0)
 
@@ -16606,8 +16613,6 @@ end
         menu_references["esp_settings"] = menu_references["esp"]:create_settings()
         menu_references["render_statuses"] = menu_references["esp_settings"]:create_element({["name"] = "render statuses"}, {["dropdown"] = {["flag"] = "render_statuses", ["options"] = {"friendly", "neutral", "enemy"}, ["default"] = {"friendly", "neutral", "enemy"}, ["multi"] = true, ["requires_one"] = true}})
 
-    menu_references["simple_esp"] = menu_references["esp_section"]:create_element({["name"] = "simple (fps)"}, {["toggle"] = {["flag"] = "simple_esp"}})
-
     menu_references["box"] = menu_references["esp_section"]:create_element({["name"] = "box"}, {["toggle"] = {["flag"] = "box"}})
         menu_references["box_settings"] = menu_references["box"]:create_settings()
         menu_references["box_outline"] = menu_references["box_settings"]:create_element({["name"] = "outline"}, {["colorpicker"] = {["color_flag"] = "box_outline_color", ["transparency_flag"] = "box_outline_transparency", ["default_color"] = color3_fromrgb(30, 30, 30), ["default_transparency"] = 0}})
@@ -16743,38 +16748,6 @@ end
         local material_value = Enum["Material"]["Neon"]
     local material_attribute = tostring({}):sub(math_random(8,12))
 
-    -- Simple mode drops the per-player drawings that cost the most per layout
-    -- change: the two gradient overlays, the avatar image and the tool icon.
-    -- The box, name, bars and health text stay, only the text outline goes.
-    local simple_esp = false
-    local simple_esp_hidden = {[6] = true, [9] = true, [12] = true, [13] = true}
-
-    local apply_simple_esp = function(data)
-        local drawings = data[5]
-
-        if not drawings then
-            return
-        end
-
-        for index in simple_esp_hidden do
-            local drawing = drawings[index]
-
-            if drawing then
-                drawing["Visible"] = data[6] and not simple_esp
-            end
-        end
-
-        for _, index in {3, 7, 8} do
-            local drawing = drawings[index]
-
-            if drawing then
-                drawing["Outline"] = not simple_esp
-            end
-        end
-
-        data[22] = simple_esp
-    end
-
     local main_font = 1
     local main_size = identifyexecutor() == "Wave" and 13 or 13
     local small_font = 1
@@ -16894,17 +16867,10 @@ end
                 local drawings = data[5]
 
                 if not data[6] then
+                    for _, drawing in drawings do
+                        drawing["Visible"] = true
+                    end
                     data[6] = true
-
-                    local hidden = simple_esp and simple_esp_hidden
-
-                    for index, drawing in drawings do
-                        drawing["Visible"] = not (hidden and hidden[index])
-                    end
-
-                    if data[22] ~= simple_esp then
-                        apply_simple_esp(data)
-                    end
 
                     local shown_highlight = data[8]
 
@@ -16938,7 +16904,6 @@ end
                         data[11], data[9], data[10], data[15], has_tool,
                         hide_armor_bar_if_empty, hide_health_text_if_full
                     }
-                    data[22] = nil
                 elseif cache[1] == pixel_width and cache[2] == pixel_height
                     and cache[3] == pixel_x and cache[4] == pixel_y
                     and cache[5] == data[11] and cache[6] == data[9]
@@ -16970,7 +16935,7 @@ end
                     outline["Position"] = position
                 end
 
-                if do_image and not simple_esp then
+                if do_image then
                     local image = drawings[13]
                     image["Size"] = size
                     image["Position"] = position
@@ -16996,7 +16961,7 @@ end
                     bar["Position"] = bar_position
                     bar["Size"] = bar_size
 
-                    if do_health_bar_gradient and not simple_esp then
+                    if do_health_bar_gradient then
                         local gradient = drawings[6]
                         gradient["Position"] = bar_position - bar_offset
                         gradient["Size"] = bar_size + bar_offset
@@ -17022,7 +16987,7 @@ end
                         bar["Position"] = bar_position
                         bar["Size"] = bar_size
 
-                        if do_armor_bar_gradient and not simple_esp then
+                        if do_armor_bar_gradient then
                             local gradient = drawings[12]
                             gradient["Position"] = bar_position - bar_offset
                             gradient["Size"] = bar_size + bar_offset
@@ -17043,11 +17008,7 @@ end
                     end
                 end
 
-                if data[22] ~= simple_esp then
-                    apply_simple_esp(data)
-                end
-
-                if do_tool_icon and not simple_esp then
+                if do_tool_icon then
                     if data[13] then
                         drawings[9]["Position"] = position + vector2_new((x_size-24)/2, y_size + (do_tool_text and small_size or 0) + 2)
                     end
@@ -17313,7 +17274,7 @@ end
         data[5][3] = create_esp_drawing("Text", {
             Color = colors[status][3],
             Center = true,
-            Outline = not simple_esp,
+            Outline = true,
             Transparency = transparencies[status][3],
             Size = main_size,
             Font = main_font,
@@ -17687,7 +17648,7 @@ end
         data[5][7] = create_esp_drawing("Text", {
             Color = colors[status][7],
             Center = false,
-            Outline = not simple_esp,
+            Outline = true,
             Transparency = transparencies[status][7],
             Size = small_size,
             Font = small_font,
@@ -17727,7 +17688,7 @@ end
         data[5][8] = create_esp_drawing("Text", {
             Color = colors[status][8],
             Center = true,
-            Outline = not simple_esp,
+            Outline = true,
             Transparency = transparencies[status][8],
             Size = small_size,
             Font = small_font,
@@ -18434,14 +18395,6 @@ end
                 if do_health_text then
                     health_text_player_health_changed_connection = create_connection(signals["on_player_health_changed"], update_health_text)
                 end
-            end
-        end))
-
-        create_connection(menu_references["simple_esp"]["on_toggle_change"], LPH_NO_VIRTUALIZE(function(value)
-            simple_esp = value
-
-            for _, data in player_data do
-                apply_simple_esp(data)
             end
         end))
 
@@ -21785,154 +21738,116 @@ local backtrack_data = {}
     -- >> ( rapid fire )
 
     do
-        local constant_cache = {}
-        local upvalue_cache = {}
-        local connection = nil
-        local connection2 = nil
+        local active = false
+        local next_fire = 0
+        local interval = 0.012
 
-        -- A cooldown is a sub-second float. Staying below 1 keeps whole-number
-        -- constants (loop bounds, counts) out of the patch.
-        local is_cooldown = function(value)
-            return type(value) == "number" and value >= 0.01 and value < 1
-        end
+        local raycast_params = RaycastParams["new"]()
+        raycast_params["FilterType"] = Enum["RaycastFilterType"]["Exclude"]
+        raycast_params["IgnoreWater"] = true
+        raycast_params["FilterDescendantsInstances"] = {}
 
-        local source_of = function(func)
-            local ok, info = pcall(getinfo, func)
+        local pick_gun = function()
+            local best = nil
 
-            if ok and type(info) == "string" then
-                return info:lower()
-            end
+            for handle, data in local_guns do
+                local tool = data[5] or handle["Parent"]
+                local ammo = tonumber(data[3])
 
-            if ok and type(info) == "table" and type(info["source"]) == "string" then
-                return info["source"]:lower()
-            end
-
-            local ok_debug, source = pcall(function()
-                return debug.info(func, "s")
-            end)
-
-            return ok_debug and type(source) == "string" and source:lower() or ""
-        end
-
-        local is_gun_handler = function(func)
-            if type(func) ~= "function" then
-                return false
-            end
-
-            local source = source_of(func)
-
-            return source:find("gun") ~= nil or source:find("weapon") ~= nil or source:find("shoot") ~= nil
-        end
-
-        local on_tool_added = LPH_NO_VIRTUALIZE(function(tool)
-            if not tool then
-                return
-            end
-
-            local connections = getconnections(tool["Activated"])
-
-            if not connections then
-                return
-            end
-
-            for _, signal_connection in connections do
-                local old = signal_connection["Function"]
-
-                if old and not constant_cache[old] and not upvalue_cache[old] and is_gun_handler(old) then
-                    local constants = {}
-
-                    -- Only sub-second numbers are patched. The old code took the
-                    -- first number it could find, which could be a loop bound or
-                    -- a random seed, and that left the gun handler broken.
-                    pcall(function()
-                        for index, constant in getconstants(old) do
-                            if is_cooldown(constant) then
-                                constants[index] = constant
-                                setconstant(old, index, -10000)
-                            end
-                        end
-                    end)
-
-                    local upvalues = {}
-
-                    pcall(function()
-                        for index, upvalue in getupvalues(old) do
-                            if is_cooldown(upvalue) then
-                                upvalues[index] = upvalue
-                                setupvalue(old, index, -10000)
-                            end
-                        end
-                    end)
-
-                    if next(constants) then
-                        constant_cache[old] = constants
-                    end
-
-                    if next(upvalues) then
-                        upvalue_cache[old] = upvalues
+                if handle and tool and tool["Parent"] == local_character and (ammo == nil or ammo > 0) then
+                    -- Rifle first: the server treats it as the primary arm.
+                    if best == nil or tool["Name"] == "[Rifle]" then
+                        best = handle
                     end
                 end
             end
+
+            return best
+        end
+
+        local do_rapid_fire = LPH_NO_VIRTUALIZE(function(dt)
+            local now = clock()
+
+            if now < next_fire then
+                return
+            end
+
+            if not flags["rapid_fire"] or local_reloading or not local_character or menu["is_menu_open"]() then
+                return
+            end
+
+            if not user_input_service["IsMouseButtonPressed"](user_input_service, Enum["UserInputType"]["MouseButton1"]) then
+                return
+            end
+
+            local handle = pick_gun()
+
+            if not handle then
+                return
+            end
+
+            local ray = camera["ViewportPointToRay"](camera, get_mouse_location(user_input_service)["X"], get_mouse_location(user_input_service)["Y"])
+
+            raycast_params["FilterDescendantsInstances"] = {local_character}
+
+            local result = workspace["Raycast"](workspace, ray["Origin"], ray["Direction"] * 2048, raycast_params)
+            local part = result and result["Instance"]
+
+            if not part then
+                return
+            end
+
+            local origin = local_server_position["p"] + vector3_new(0.004,3.0208,-0.048)
+            local pos = result["Position"]
+            local direction = (pos-origin)
+
+            if direction["Magnitude"] <= 0.001 then
+                return
+            end
+
+            next_fire = now + interval
+
+            setthreadidentity(8)
+            event:FireServer("ShootGun", handle, origin, pos, part, direction["Unit"])
+            setthreadidentity(4)
         end)
 
-        local restore = LPH_NO_VIRTUALIZE(function()
-            for func, constants in constant_cache do
-                for index, value in constants do
-                    pcall(setconstant, func, index, value)
+        local start = function()
+            if active then
+                return
+            end
+
+            active = true
+            next_fire = 0
+            heartbeat[#heartbeat+1] = do_rapid_fire
+        end
+
+        local stop = function()
+            if not active then
+                return
+            end
+
+            active = false
+
+            for i = 1, #heartbeat do
+                if heartbeat[i] == do_rapid_fire then
+                    table.remove(heartbeat, i)
+                    break
                 end
             end
+        end
 
-            for func, upvalues in upvalue_cache do
-                for index, value in upvalues do
-                    pcall(setupvalue, func, index, value)
-                end
-            end
-
-            constant_cache = {}
-            upvalue_cache = {}
-        end)
-
-        -- A respawn swaps the character but not the gun module, so the patched
-        -- handlers are still there. Restore them before dropping the cache;
-        -- clearing the cache first lost the original values for good.
-        local reset = LPH_JIT_MAX(function()
-            restore()
-        end)
-
-        create_connection(menu_references["rapid_fire"]["on_toggle_change"], function(value)
-            restore()
-
-            if connection then
-                connection:Disconnect()
-                connection = nil
-            end
-
-            if connection2 then
-                connection2:Disconnect()
-                connection2 = nil
-            end
-
+        create_connection(menu_references["rapid_fire"]["on_toggle_change"], LPH_JIT_MAX(function(value)
             if value then
-                for handle, data in local_guns do
-                    local tool = data[5] or handle["Parent"]
-
-                    if tool then
-                        on_tool_added(tool)
-                    end
-                end
-
-                if local_character then
-                    for _, child in local_character:GetChildren() do
-                        if child["ClassName"] == "Tool" then
-                            on_tool_added(child)
-                        end
-                    end
-                end
-
-                connection2 = create_connection(signals["on_local_character_added"], reset)
-                connection = create_connection(signals["on_local_tool_equipped"], on_tool_added)
+                start()
+            else
+                stop()
             end
-        end)
+        end))
+
+        if flags["rapid_fire"] then
+            start()
+        end
     end
 
     -- >> ( sender rate value )
