@@ -8187,7 +8187,23 @@ local run_service = cloneref(game:GetService("RunService"))
 local core_gui = cloneref(game:GetService("CoreGui"))
 
 local find_first_child_of_class = workspace["FindFirstChildOfClass"]
-local world_to_viewport_point = camera["WorldToViewportPoint"]
+local world_to_viewport_point = LPH_NO_VIRTUALIZE(function(cam, position)
+    cam = cam or workspace["CurrentCamera"]
+
+    if not cam then
+        return vector2_new(0, 0), false
+    end
+
+    local ok, screen, on_screen = pcall(function()
+        return cam["WorldToViewportPoint"](cam, position)
+    end)
+
+    if not ok then
+        return vector2_new(0, 0), false
+    end
+
+    return screen, on_screen
+end)
 local find_first_child = workspace["FindFirstChild"]
 local wait_for_child = workspace["WaitForChild"]
 local get_children = workspace["GetChildren"]
@@ -8211,8 +8227,29 @@ local ragebot_force_position = nil
 local in_void = false
 local stomping = false
 
-local real_drawing = getgenv()["Drawing"]
-local fake_drawing = getgenv()["fake_drawing"]
+-- Potassium exposes Drawing in the script environment, not always through
+-- getgenv(), so resolve the first backend that actually has .new.
+local resolve_drawing_backend = function(candidate)
+    if candidate == nil then
+        return nil
+    end
+
+    local ok, new = pcall(function()
+        return candidate["new"]
+    end)
+
+    if ok and type(new) == "function" then
+        return candidate
+    end
+
+    return nil
+end
+
+local real_drawing = resolve_drawing_backend(Drawing)
+    or resolve_drawing_backend(getgenv()["Drawing"])
+    or resolve_drawing_backend(getgenv()["fake_drawing"])
+
+local fake_drawing = resolve_drawing_backend(getgenv()["fake_drawing"]) or real_drawing
 
 local event = replicated_storage["MainEvent"]
 local clone = workspace["Clone"]
@@ -8230,24 +8267,51 @@ local anti_aim = {}
 
 -- > ( cheat functions )
 
-local create_real_drawing = LPH_NO_VIRTUALIZE(function(class, properties)
-    local object = real_drawing["new"](class)
+-- A stub absorbs writes so a backend that rejects one class or property can
+-- never take the whole ESP loop down with it.
+local drawing_stub_mt = {
+    ["__index"] = function(_, key)
+        if key == "Destroy" or key == "Remove" then
+            return function() end
+        end
+
+        if key == "TextBounds" or key == "Position" or key == "Size" or key == "Color" then
+            return key == "Color" and Color3.new(1, 1, 1) or vector2_new(0, 0)
+        end
+
+        return nil
+    end,
+    ["__newindex"] = function() end
+}
+
+local create_drawing_object = function(backend, class, properties)
+    if not backend then
+        return setmetatable({}, drawing_stub_mt)
+    end
+
+    local ok, object = pcall(function()
+        return backend["new"](class)
+    end)
+
+    if not ok or object == nil then
+        return setmetatable({}, drawing_stub_mt)
+    end
 
     for property, value in properties do
-        object[property] = value
+        pcall(function()
+            object[property] = value
+        end)
     end
 
     return object
+end
+
+local create_real_drawing = LPH_NO_VIRTUALIZE(function(class, properties)
+    return create_drawing_object(real_drawing, class, properties)
 end)
 
 local create_fake_drawing = LPH_NO_VIRTUALIZE(function(class, properties)
-    local object = fake_drawing["new"](class)
-
-    for property, value in properties do
-        object[property] = value
-    end
-
-    return object
+    return create_drawing_object(fake_drawing, class, properties)
 end)
 
 local new_notification = menu["new_notification"]
@@ -8372,6 +8436,8 @@ do
 
     local guns_ext = {}
     guns_ext.bindings = {}
+    guns_ext.retries = {}
+    guns_ext.default_range = 1000
 
     function guns_ext.find_handle(tool)
         local handle = tool:FindFirstChild("Handle") or tool:FindFirstChild("GunHandle")
@@ -8433,6 +8499,13 @@ do
             return
         end
 
+        -- Not every Da Hood gun exposes a Range value; a missing range must not
+        -- strand the gun out of local_guns (that kills burst fire from it).
+        range = tonumber(range) or guns_ext.default_range
+        ammo = tonumber(ammo)
+        max_ammo = tonumber(max_ammo)
+        reload_time = tonumber(reload_time)
+
         local entry = {handle, range, ammo, nil, tool, max_ammo, reload_time, 0}
 
         local function on_ammo_changed()
@@ -8454,6 +8527,13 @@ do
     end
 
     function guns_ext.unbind(tool)
+        local retry = tool and guns_ext.retries[tool]
+
+        if retry then
+            retry:Disconnect()
+            guns_ext.retries[tool] = nil
+        end
+
         local entry = tool and guns_ext.bindings[tool]
 
         if not entry then
@@ -8554,14 +8634,53 @@ do
     local on_child_added = LPH_NO_VIRTUALIZE(function(child)
         local_parts[child["Name"]] = child
         if child["ClassName"] == "Tool" then
-            local handle = guns_ext.find_handle(child)
+            -- Tool children (Handle, Ammo) can replicate a frame after the Tool
+            -- itself, so retry the bind on ChildAdded until both land.
+            local try_bind = LPH_NO_VIRTUALIZE(function()
+                local handle = guns_ext.find_handle(child)
 
-            if handle then
-                local_tool = child
+                if not handle then
+                    return
+                end
 
-                signals["on_local_tool_equipped"]:Fire(child)
+                local first = guns_ext.bindings[child] == nil
 
                 guns_ext.bind(child, handle, ammo_signal)
+
+                local entry = guns_ext.bindings[child]
+
+                if not entry then
+                    return
+                end
+
+                if first then
+                    local_tool = child
+
+                    signals["on_local_tool_equipped"]:Fire(child)
+                end
+
+                if entry[3] ~= nil then
+                    local retry = guns_ext.retries[child]
+
+                    if retry then
+                        retry:Disconnect()
+                        guns_ext.retries[child] = nil
+                    end
+                end
+            end)
+
+            try_bind()
+
+            local entry = guns_ext.bindings[child]
+
+            if child["Parent"] == local_character and (not entry or entry[3] == nil) then
+                local retry = guns_ext.retries[child]
+
+                if retry then
+                    retry:Disconnect()
+                end
+
+                guns_ext.retries[child] = create_connection(child["ChildAdded"], try_bind)
             end
         end
     end)
@@ -8608,7 +8727,12 @@ do
             end
         end
 
+        for tool, retry in guns_ext.retries do
+            retry:Disconnect()
+        end
+
         guns_ext.bindings = {}
+        guns_ext.retries = {}
         local_guns = {}
 
         local hrp = wait_for_child(character, "HumanoidRootPart", 5)
@@ -10307,14 +10431,24 @@ do
         local on_m1_input = LPH_NO_VIRTUALIZE(function(input, processed)
             if input["UserInputType"] == Enum["UserInputType"]["MouseButton1"] and input["UserInputState"] == Enum["UserInputState"]["Begin"] and local_gun and not menu["is_menu_open"]() then
                 while user_input_service["IsMouseButtonPressed"](user_input_service, Enum["UserInputType"]["MouseButton1"]) and not menu["is_menu_open"]() do
-                    if local_tool and local_gun and not local_reloading then
-                        for _, connection in getconnections(local_tool["Activated"]) do
-                            setthreadidentity(5)
-                            connection:Fire()
-                            setthreadidentity(8)
-                            break
+                    if not local_reloading then
+                        -- Fire the first Activated handler of every held gun, not
+                        -- just the selected one, so multi-equip actually shoots.
+                        for handle, data in local_guns do
+                            local tool = data[5] or handle["Parent"]
+                            local ammo = tonumber(data[3])
+
+                            if tool and tool["Parent"] == local_character and (ammo == nil or ammo > 0) then
+                                for _, connection in getconnections(tool["Activated"]) do
+                                    setthreadidentity(5)
+                                    connection:Fire()
+                                    setthreadidentity(8)
+                                    break
+                                end
+                            end
                         end
                     end
+
                     wait(tonumber(local_tool and local_tool:GetAttribute("FireRate")) or 0.03)
                 end
             end
@@ -10480,42 +10614,62 @@ do
     local do_auto_reload_clip_empty = true
     local do_auto_reload_rifle = true
 
+    -- One reload packet per held gun, throttled per gun so a held trigger or a
+    -- repeated signal cannot spam the remote.
+    local reload_tool = LPH_NO_VIRTUALIZE(function(tool, entry)
+        if not tool then
+            return false
+        end
+
+        local now = clock()
+
+        if entry and now - (entry[8] or 0) < 0.3 then
+            return false
+        end
+
+        if entry then
+            entry[8] = now
+        end
+
+        event:FireServer("Reload", tool)
+
+        return true
+    end)
+
+    local reload_all_guns = LPH_NO_VIRTUALIZE(function()
+        local reloaded = false
+
+        for handle, data in local_guns do
+            local tool = data[5] or handle["Parent"]
+
+            if tool and reload_tool(tool, data) then
+                reloaded = true
+                wait(0.05)
+            end
+        end
+
+        return reloaded
+    end)
+
     local do_reload = function(dead, b)
         if dead == ragebot_target and (b == true or b == nil) then
-            for gun, data in local_guns do
-                local gun = gun["Parent"]
-                if gun["Name"] == "[Rifle]" and data[3] < 3 then
-                    event:FireServer("Reload", gun)
-                    return
-                end
-            end
-            for gun, data in local_guns do
-                event:FireServer("Reload", gun["Parent"])
-                break
-            end
+            reload_all_guns()
         end
     end
 
     local do_auto_reload = LPH_NO_VIRTUALIZE(function()
-        if local_reloading or not do_auto_reload_clip_empty then
-            return
-        end
-
-        local tool = local_tool
-
-        if not tool then
-            return
-        end
-
         for handle, data in local_guns do
-            if handle["Parent"] == tool then
+            local tool = data[5] or handle["Parent"]
+
+            if tool then
                 local ammo = tonumber(data[3])
+                local empty = ammo == nil or ammo <= 0
 
-                if ammo ~= nil and ((do_auto_reload_rifle and tool["Name"] == "[Rifle]" and ammo <= 1) or ammo <= 0) then
-                    event:FireServer("Reload", tool)
+                if do_auto_reload_clip_empty and empty then
+                    reload_tool(tool, data)
+                elseif do_auto_reload_rifle and ammo ~= nil and ammo <= 1 and tool["Name"] == "[Rifle]" then
+                    reload_tool(tool, data)
                 end
-
-                return
             end
         end
     end)
@@ -20268,11 +20422,13 @@ local backtrack_data = {}
                         local origin = local_server_position
 
                         for i = 1, #new_local_guns do
-                            local local_gun = new_local_guns[i]
-                            local handle = local_gun[1]
-                            local ammo = local_gun[3]
+                            local entry = new_local_guns[i]
+                            local handle = entry[1]
+                            local ammo = tonumber(entry[3])
 
-                            if ammo > 0 and handle["Parent"] and not spawn_guard["check"](target) then
+                            -- An unread ammo value is unknown, not empty: fire and
+                            -- let the server reject the shot if the clip is dry.
+                            if (ammo == nil or ammo > 0) and handle and handle["Parent"] and not spawn_guard["check"](target) then
                                 last_fire = clock()
 
                                 if shoot and not flags["auto_fire_dont_render"] then
@@ -20286,7 +20442,7 @@ local backtrack_data = {}
                                             ForcedOrigin = origin,
                                             AimPosition = pos,
                                             BeamColor = color3_fromrgb(1, 0.545098, 0.14902),
-                                            Range = local_gun[2]
+                                            Range = tonumber(entry[2]) or 1000
                                         })
                                         env["require"] = nil
                                     end)
