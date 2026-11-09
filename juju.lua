@@ -431,15 +431,47 @@ local menu = {
             makefolder("Drawing2FontCache")
         end
 
-        local ok, lib = pcall(function()
-            local chunk = loadstring(readfile("juju recode/assets/api.lua"))
+        local function compile(source)
+            local chunk = loadstring(source)
+
             if not chunk then
-                error("api.lua failed to compile")
+                return nil
             end
+
             return chunk()
+        end
+
+        local function usable(lib)
+            return type(lib) == "table" and type(lib["new"]) == "function" and lib
+        end
+
+        local ok, lib = pcall(function()
+            local source = readfile("juju recode/assets/api.lua")
+
+            if not source then
+                error("api.lua not present locally")
+            end
+
+            return compile(source)
         end)
 
-        if ok and type(lib) == "table" and type(lib.new) == "function" then
+        if not ok or not usable(lib) then
+            -- Fall back to the hosted copy when the workspace files are missing.
+            local fetched, source = pcall(function()
+                return game:HttpGet("https://raw.githubusercontent.com/shfjcjvnifs-maker/juju/main/assets/api.lua")
+            end)
+
+            if fetched and type(source) == "string" and #source > 0 then
+                local compiled, result = pcall(compile, source)
+
+                if compiled and usable(result) then
+                    ok = true
+                    lib = result
+                end
+            end
+        end
+
+        if ok and usable(lib) then
             drawing = lib
         else
             drawing = Drawing
@@ -8187,6 +8219,17 @@ local run_service = cloneref(game:GetService("RunService"))
 local core_gui = cloneref(game:GetService("CoreGui"))
 
 local find_first_child_of_class = workspace["FindFirstChildOfClass"]
+
+-- Roblox swaps workspace.CurrentCamera on respawn and resolution changes; every
+-- projection bound to the old camera would point at nothing.
+create_connection(workspace["GetPropertyChangedSignal"](workspace, "CurrentCamera"), function()
+    local new_camera = workspace["CurrentCamera"]
+
+    if new_camera then
+        camera = new_camera
+    end
+end)
+
 local world_to_viewport_point = LPH_NO_VIRTUALIZE(function(cam, position)
     cam = cam or workspace["CurrentCamera"]
 
