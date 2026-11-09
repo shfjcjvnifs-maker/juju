@@ -4556,6 +4556,14 @@ local menu = {
             end
         end)
 
+        local on_right_click = info["on_right_click"]
+
+        if on_right_click then
+            create_right_click_connection(self["holder"], border, function()
+                on_right_click(text["Text"], new_item)
+            end)
+        end
+
         return new_item
     end
 
@@ -11282,6 +11290,7 @@ do
     local player_status = player_editor:create_element({["name"] = "status"}, {["dropdown"] = {["flag"] = "0", ["options"] = {"friendly", "neutral", "enemy"}, ["default"] = {"neutral"}, ["requires_one"] = true}})
     local teleport_to = player_editor:create_element({["name"] = "teleport to"}, {["button"] = {}})
     local set_ragebot_target_button = player_editor:create_element({["name"] = "set ragebot target"}, {["button"] = {["fake"] = true}})
+    local toggle_target_button = player_editor:create_element({["name"] = "toggle target list"}, {["button"] = {}})
 
     create_connection(signals["on_player_status_changed"], function(data, status)
         saved_statuses[data[2]["Name"]] = status
@@ -11305,6 +11314,43 @@ do
         else
             player_wanted:set_visible(false)
         end
+    end)
+
+    -- >> ( player list targets )
+
+    local target_list_color = color3_fromrgb(255, 80, 80)
+
+    local update_player_item_color = LPH_NO_VIRTUALIZE(function(data)
+        local player = data and data[2]
+
+        if player then
+            players:edit_item_color(player["Name"], (data[1] == 3 or ragebot_targets[data]) and target_list_color or menu["colors"]["inactive_text"])
+        end
+    end)
+
+    -- Right click a name in the player list to add or remove it from the
+    -- multi-target list. The list is what the ragebot cycles through.
+    local toggle_ragebot_target = LPH_NO_VIRTUALIZE(function(name)
+        local player = find_first_child(players_service, name)
+        local data = player and player_data[player]
+
+        if not data then
+            return
+        end
+
+        if ragebot_targets[data] then
+            ragebot_targets[data] = nil
+            new_notification(name.." removed from ragebot targets", 1)
+        else
+            ragebot_targets[data] = true
+            new_notification(name.." added to ragebot targets", 1)
+        end
+
+        update_player_item_color(data)
+    end)
+
+    create_connection(signals["on_player_status_changed"], function(data)
+        update_player_item_color(data)
     end)
 
     create_connection(player_status["on_dropdown_change"], function(value)
@@ -11384,6 +11430,12 @@ do
             if data then
                 set_ragebot_target(data, "successfully ragebot target set to "..selected_player["Name"])
             end
+        end
+    end)
+
+    create_connection(toggle_target_button["on_clicked"], function()
+        if selected_player then
+            toggle_ragebot_target(selected_player["Name"])
         end
     end)
 
@@ -11753,8 +11805,11 @@ do
                     staff_player_image_data,
                     blank_player_image_data
                 } or {blank_player_image_data},
-                ["text2"] = player["DisplayName"]
+                ["text2"] = player["DisplayName"],
+                ["on_right_click"] = toggle_ragebot_target
             })
+
+            update_player_item_color(new_data)
 
             if role then
                 new_data[16] = role:lower()
@@ -20560,6 +20615,10 @@ local backtrack_data = {}
         end
     end
 
+    -- Set while the player list has ragebot targets. Every selection heuristic
+    -- then considers only those players, so the picked list wins over statuses.
+    local target_list_only = false
+
     local get_closest_to_mouse_position = LPH_NO_VIRTUALIZE(function(dt, hrp)
         local mouse_pos = get_mouse_location(user_input_service)
         local closest = 9e9
@@ -20570,7 +20629,7 @@ local backtrack_data = {}
             if not data[7] and not data[18] then
                 local status = data[1]
 
-                if status == 3 and target_enemy or status == 2 and target_friendly or status == 1 and target_neutral or ragebot_targets[data] then
+                if (status == 3 and target_enemy or status == 2 and target_friendly or status == 1 and target_neutral or ragebot_targets[data]) and (not target_list_only or ragebot_targets[data]) then
                     local parts = data[4]
                     local hrp = parts["HumanoidRootPart"]
 
@@ -20623,7 +20682,7 @@ local backtrack_data = {}
         for player, data in player_data do
             if not data[7] and not data[18] then
                 local status = data[1]
-                if status == 3 and target_enemy or status == 2 and target_friendly or status == 1 and target_neutral or ragebot_targets[data] then
+                if (status == 3 and target_enemy or status == 2 and target_friendly or status == 1 and target_neutral or ragebot_targets[data]) and (not target_list_only or ragebot_targets[data]) then
                     local parts = data[4]
                     local hrp = parts["HumanoidRootPart"]
 
@@ -20688,7 +20747,7 @@ local backtrack_data = {}
             if not data[7] and not data[18] then
                 local status = data[1]
 
-                if status == 3 and target_enemy or status == 2 and target_friendly or status == 1 and target_neutral or ragebot_targets[data] then
+                if (status == 3 and target_enemy or status == 2 and target_friendly or status == 1 and target_neutral or ragebot_targets[data]) and (not target_list_only or ragebot_targets[data]) then
                     local parts = data[4]
                     local hrp = parts["HumanoidRootPart"]
 
@@ -20750,7 +20809,7 @@ local backtrack_data = {}
             if not data[7] and not data[18] then
                 local status = data[1]
 
-                if status == 3 and target_enemy or status == 2 and target_friendly or status == 1 and target_neutral or ragebot_targets[data] then
+                if (status == 3 and target_enemy or status == 2 and target_friendly or status == 1 and target_neutral or ragebot_targets[data]) and (not target_list_only or ragebot_targets[data]) then
                     local parts = data[4]
                     local hrp = parts["HumanoidRootPart"]
 
@@ -20815,7 +20874,7 @@ local backtrack_data = {}
             if not data[7] and not data[18] then
                 local status = data[1]
 
-                if status == 3 and target_enemy or status == 2 and target_friendly or status == 1 and target_neutral or ragebot_targets[data] then
+                if (status == 3 and target_enemy or status == 2 and target_friendly or status == 1 and target_neutral or ragebot_targets[data]) and (not target_list_only or ragebot_targets[data]) then
                     local parts = data[4]
                     local hrp = parts["HumanoidRootPart"]
 
@@ -20865,6 +20924,52 @@ local backtrack_data = {}
         end
 
         return best, best_hrp
+    end)
+
+    -- >> ( target list loop )
+
+    local last_target_list_target = nil
+
+    -- Next alive player in the list after `current`; wraps around the end.
+    local get_target_list_target = LPH_NO_VIRTUALIZE(function(current)
+        local list = {}
+
+        for player, data in player_data do
+            if ragebot_targets[data] then
+                list[#list+1] = data
+            end
+        end
+
+        local count = #list
+
+        if count == 0 then
+            return nil
+        end
+
+        table.sort(list, function(a, b)
+            return a[2]["Name"]:lower() < b[2]["Name"]:lower()
+        end)
+
+        local start = 1
+
+        if current then
+            for i = 1, count do
+                if list[i] == current then
+                    start = i % count + 1
+                    break
+                end
+            end
+        end
+
+        for i = 0, count - 1 do
+            local data = list[((start - 1 + i) % count) + 1]
+
+            if not data[7] and not data[18] and data[4]["HumanoidRootPart"] then
+                return data
+            end
+        end
+
+        return nil
     end)
 
     -- >> ( main ragebot )
@@ -20925,7 +21030,21 @@ local backtrack_data = {}
         local target = ragebot_target
         local tick = clock()
 
-        if automatic and not target and not (spawn_guard["lock_while_waiting"] and spawn_guard["waiting"]) and tick - last_auto > target_cooldown and flags["ragebot"] then
+        target_list_only = next(ragebot_targets) ~= nil
+
+        -- Cycle the player list targets. When the current one dies the next
+        -- alive name is picked, and the list wraps after the last one.
+        if target_list_only and (not target or target[7]) and flags["ragebot"] and not (spawn_guard["lock_while_waiting"] and spawn_guard["waiting"]) then
+            local new_target = get_target_list_target(last_target_list_target)
+
+            if new_target then
+                last_target_list_target = new_target
+                set_ragebot_target(new_target, "ragebot target set to "..new_target[2]["Name"])
+                target = ragebot_target
+            end
+        end
+
+        if automatic and not target and not target_list_only and not (spawn_guard["lock_while_waiting"] and spawn_guard["waiting"]) and tick - last_auto > target_cooldown and flags["ragebot"] then
             last_auto = tick
             get_ragebot_target(dt, hrp)
             target = ragebot_target
