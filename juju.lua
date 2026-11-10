@@ -13746,7 +13746,7 @@ end
                 and frame_tick - manipulation_solved_tick < 0.5
 
             local manipulation_hit_ok = manipulation_verdict == true and ragebot_target and frame_tick - manipulation_verdict_tick < 1.5
-            local manipulation_ok = flags["manipulation"] and ragebot_target and manipulation_aim_origin and (manipulation_scan_ok or manipulation_hit_ok)
+            local manipulation_ok = flags["manipulation"] and ragebot_target and manipulation_aim_position and (manipulation_scan_ok or manipulation_hit_ok)
 
             -- Void first: manipulation cannot land from there, so a solved
             -- origin must not hide the void state. Follow target next: while it
@@ -22909,16 +22909,16 @@ local backtrack_data = {}
     do
         local target_tick = 0
 
-        -- Spoofed shot origin. The bullet is reported as leaving from a point
-        -- above and in front of the local character, coming down onto the best
-        -- hitbox of the locked target, while the gun never leaves the hand.
-        -- Every candidate is checked with a raycast first, so a roof or a wall
-        -- between that point and the body rules it out.
+        -- Manipulation aim. The shot is served from the character's own muzzle,
+        -- the same origin every shot that lands in this hub uses, and only the
+        -- point it is reported against moves: onto the best hitbox of the locked
+        -- target, or out along that limb's box when the centre is covered. Every
+        -- point is raycast from the muzzle first, so a limb behind cover is never
+        -- named.
         local spoof = {
-            ["range"] = 15,
-            -- Fallback weapon range when the equipped gun reports none. Every
-            -- candidate origin is also checked against the real gun range, so a
-            -- spoof that would land outside it is rejected instead of fired.
+            -- Fallback weapon range when the equipped gun reports none. The
+            -- reported point is also checked against the real gun range, so an
+            -- aim that would land outside it is rejected instead of fired.
             ["gun_range"] = 1000,
             ["cache"] = nil,
             ["last"] = 0,
@@ -22944,12 +22944,6 @@ local backtrack_data = {}
                 {"LeftFoot", 0.9},
                 {"RightFoot", 0.9}
             },
-            ["close_lifts"] = {3, 5, 8, 11},
-            ["lifts"] = {1, 0.7, 0.4, 0.85, 0.55},
-            ["arc_radii"] = {0.5, 0.75, 0.25, 1, 0.35, 0.6},
-            ["radii"] = {0.25, 0.5, 0.75, 1},
-            ["target_radii"] = {0.6, 1, 1.6, 2.4, 3.5},
-            ["ring_steps"] = 8,
             -- Spoofed hitbox expander, calculated instead of listed. The push
             -- out of the limb comes from that limb's own box, so a torso spreads
             -- wider than a forearm, and the margin grows with the shot distance,
@@ -23026,6 +23020,27 @@ local backtrack_data = {}
             local cache = expand_only and nil or spoof["cache"]
             local lead = (velocity or head["AssemblyLinearVelocity"]) * (local_ping/500)
 
+            -- Muzzle. Every shot in this hub that lands is served from here: the
+            -- character's root plus the head offset the game itself reports. An
+            -- origin planted further out - above the character, over the target,
+            -- out at the body - is a shot the server has no reason to accept, and
+            -- it is dropped with nothing shown on screen. That is how the panel
+            -- could sit on "manipulated" over shots that never counted.
+            local anchor = base + vector3_new(0.004, 3.0208, -0.048)
+
+            -- Both searches below raycast from the muzzle, so the filter has to be
+            -- ready before either of them runs.
+            local params = spoof["params"]
+            local filter = {local_character}
+
+            if ignored then
+                filter[#filter+1] = ignored
+            end
+
+            params["FilterType"] = Enum["RaycastFilterType"]["Exclude"]
+            params["RespectCanCollide"] = true
+            params["FilterDescendantsInstances"] = filter
+
             -- Hitbox expander calculator. The centre ray of a limb clips the
             -- shooter or a ledge while the rest of the limb is open, so the aim
             -- walks out to the limb's own box surface: the push is scaled by that
@@ -23089,8 +23104,8 @@ local backtrack_data = {}
                 end
 
                 local slot = {
-                    ["origin"] = base,
-                    ["position"] = base,
+                    ["origin"] = anchor,
+                    ["position"] = anchor,
                     ["part"] = nil,
                     ["target"] = target,
                     ["probe"] = vector3_zero
@@ -23151,11 +23166,9 @@ local backtrack_data = {}
                 if cached_part and cached_part["Parent"] then
                     cache["position"] = cached_part["Position"] + lead + cache["probe"]
 
-                    if cache["origin"] then
-                        manipulation_solved = true
-                        manipulation_solved_target = cache["target"]
-                        manipulation_solved_tick = now
-                    end
+                    manipulation_solved = true
+                    manipulation_solved_target = cache["target"]
+                    manipulation_solved_tick = now
 
                     return cache
                 end
@@ -23167,316 +23180,34 @@ local backtrack_data = {}
                 return nil
             end
 
-            local range = spoof["range"]
-
             local gun_budget = tonumber(gun_range) or spoof["gun_range"]
 
             if gun_budget <= 0 then
                 gun_budget = spoof["gun_range"]
             end
 
-            local params = spoof["params"]
-            local filter = {local_character}
-
-            if ignored then
-                filter[#filter+1] = ignored
-            end
-
-            params["FilterType"] = Enum["RaycastFilterType"]["Exclude"]
-            params["RespectCanCollide"] = true
-            params["FilterDescendantsInstances"] = filter
-
             local aim = head["Position"] + lead
-            local direction = aim - base
-            local flat = vector3_new(direction["X"], 0, direction["Z"])
-            local flat_unit = flat["Magnitude"] > 0.001 and flat["Unit"] or vector3_new(0, 0, 1)
-            local unit = direction["Magnitude"] > 0.001 and direction["Unit"] or flat_unit
-            local candidates = {}
-
-            -- Arcs: high points above the character, leaning toward the target,
-            -- capped at the spoof range.
-            for i = 1, #spoof["lifts"] do
-                for j = 1, #spoof["arc_radii"] do
-                    local offset = flat_unit * (range * spoof["arc_radii"][j] * 0.8) + vector3_new(0, range * spoof["lifts"][i], 0)
-                    local length = offset["Magnitude"]
-
-                    if length > range then
-                        offset = offset * (range / length)
-                    end
-
-                    candidates[#candidates+1] = {base + offset, offset["Magnitude"], 0}
-                end
-            end
-
-            -- Diagonal arcs, swung left and right of the straight line. A roof
-            -- edge or a doorway often blocks straight down but leaves one of
-            -- these two clear.
-            local side = vector3_new(-flat_unit["Z"], 0, flat_unit["X"])
-
-            for i = 1, #spoof["lifts"] do
-                local left = (flat_unit + side)["Unit"] * (range * 0.6) + vector3_new(0, range * spoof["lifts"][i], 0)
-                local right = (flat_unit - side)["Unit"] * (range * 0.6) + vector3_new(0, range * spoof["lifts"][i], 0)
-
-                candidates[#candidates+1] = {base + left, left["Magnitude"], 0}
-                candidates[#candidates+1] = {base + right, right["Magnitude"], 0}
-            end
-
-            -- Arcs leaning away from the target, so the ray still comes down
-            -- onto the body from behind it. A target backed against a wall
-            -- leaves the front blocked while this side stays open.
-            for i = 1, #spoof["lifts"] do
-                local back = -flat_unit * (range * 0.45) + vector3_new(0, range * spoof["lifts"][i], 0)
-                local length = back["Magnitude"]
-
-                if length > range then
-                    back = back * (range / length)
-                end
-
-                candidates[#candidates+1] = {base + back, back["Magnitude"], 0}
-            end
-
-            -- A tight ring around the target's own head, for the case where only
-            -- a narrow gap between cover and the body is open. Penalised, since
-            -- a point right on the body reads oddly to a strict server.
-            for i = 1, #spoof["target_radii"] do
-                local radius = spoof["target_radii"][i]
-
-                -- Eight points instead of four: a ring around the body reads the
-                -- same to the server, and doubling it is what finds a gap when
-                -- the four cardinal points all sit behind cover.
-                for step = 0, spoof["ring_steps"] - 1 do
-                    local theta = step * (math["pi"] * 2 / spoof["ring_steps"])
-                    local lift = (step % 2 == 0) and 0.5 or 0.9
-                    local offset = vector3_new(math["cos"](theta) * radius, radius * lift, math["sin"](theta) * radius)
-                    local point = aim + offset
-                    local away = (point - base)["Magnitude"]
-
-                    -- Measured against the gun range, not the 15 stud search
-                    -- radius: a tight ring on the body is the one origin family
-                    -- that still works when the character is far away.
-                    if away <= gun_budget then
-                        candidates[#candidates+1] = {point, math["min"](away, range), 1}
-                    end
-                end
-            end
-
-            -- Long shot: the character is further from the target than the gun
-            -- reaches. Origins on the character cannot land, so the shot is
-            -- reported from a point just short of the target instead, always
-            -- inside the weapon range and with a short clear trace.
-            local span = (aim - base)["Magnitude"]
-
-            if span > range then
-                for i = 1, #spoof["lifts"] do
-                    local pull = aim - flat_unit * (gun_budget * 0.3) + vector3_new(0, range * 0.5 * spoof["lifts"][i], 0)
-                    local away = (pull - base)["Magnitude"]
-
-                    if away <= gun_budget and (pull - aim)["Magnitude"] <= gun_budget then
-                        candidates[#candidates+1] = {pull, math["min"](away, range), 2}
-                    end
-                end
-            end
-
-            -- Directly over the target, which is the shortest arc there is.
-            -- Only used while the point still sits inside the spoof range of
-            -- the character, so the server sees a plausible origin.
-            for i = 1, #spoof["lifts"] do
-                local high = head["Position"] + vector3_new(0, range * spoof["lifts"][i], 0)
-                local away = (high - base)["Magnitude"]
-
-                if away <= range then
-                    candidates[#candidates+1] = {high, away, 0}
-                end
-            end
-
-            -- A tilted ring above the character, for the case where only a
-            -- corridor down onto the body is open.
-            for step = 0, 7 do
-                local theta = step * (math["pi"]/4)
-                local offset = vector3_new(math["cos"](theta) * range * 0.55, range * 0.5, math["sin"](theta) * range * 0.55)
-
-                candidates[#candidates+1] = {base + offset, offset["Magnitude"], 1}
-            end
-
-            -- Short arcs a few studs over the head. The ray is almost vertical
-            -- and short, so it clears most cover and the hit point stays well
-            -- inside the body.
-            for i = 1, #spoof["close_lifts"] do
-                local high = head["Position"] + vector3_new(0, spoof["close_lifts"][i], 0)
-                local away = (high - base)["Magnitude"]
-
-                if away <= range then
-                    candidates[#candidates+1] = {high, away, 0}
-                end
-            end
-
-            -- Midpoints between the character and the target, lifted, for the
-            -- case where the point straight over the head is outside the range.
-            for i = 1, #spoof["close_lifts"] do
-                local high = base + (aim - base) * 0.5 + vector3_new(0, spoof["close_lifts"][i], 0)
-                local away = (high - base)["Magnitude"]
-
-                if away <= range then
-                    candidates[#candidates+1] = {high, away, 0}
-                end
-            end
-
-            -- Collar ring: points above and around the target's head, between the
-            -- character-side arcs and the tight body ring. A doorway or a window
-            -- usually leaves one of these open while the arcs over the character
-            -- hit the frame.
-            for i = 1, #spoof["target_radii"] do
-                local radius = spoof["target_radii"][i] * 2
-
-                for step = 0, spoof["ring_steps"] - 1 do
-                    local theta = step * (math["pi"] * 2 / spoof["ring_steps"])
-                    local point = aim + vector3_new(math["cos"](theta) * radius, 1.5 + radius * 0.5, math["sin"](theta) * radius)
-                    local away = (point - base)["Magnitude"]
-
-                    if away <= gun_budget and (point - aim)["Magnitude"] <= gun_budget then
-                        candidates[#candidates+1] = {point, math["min"](away, range), 1}
-                    end
-                end
-            end
-
-            -- Fallbacks around the character, penalised so a high origin wins
-            -- whenever one has a clear path.
-            candidates[#candidates+1] = {base, 0, 3}
-            candidates[#candidates+1] = {base + unit * range, range, 3}
-
-            for i = 1, #spoof["radii"] do
-                local radius = range * spoof["radii"][i]
-
-                candidates[#candidates+1] = {base + vector3_new(0, radius, 0), radius, 3}
-
-                for step = 0, 7 do
-                    local theta = step * (math["pi"]/4)
-
-                    candidates[#candidates+1] = {base + vector3_new(math["cos"](theta) * radius, 0, math["sin"](theta) * radius), radius, 3}
-                end
-            end
-
             local head_position = head["Position"]
             local best = nil
-            local best_score = -math["huge"]
 
-            for i = 1, #candidates do
-                local candidate = candidates[i]
-                local origin = candidate[1]
+            -- Silent aim: the highest weighted limb whose centre the muzzle can
+            -- actually reach. Nothing about the shot moves except the point it is
+            -- reported against, so the server sees the shot the game would have
+            -- sent from the character's own muzzle, and it counts.
+            for j = 1, #spoof["weights"] do
+                local entry = spoof["weights"][j]
+                local part = parts[entry[1]]
 
-                -- Spoof range. A redirected shot has to leave from a point the
-                -- server still reads as the shooter: one planted out at the
-                -- target, which the long-range families do, is a shot arriving
-                -- from nowhere and it is dropped with no damage. That is how the
-                -- panel could read solved over a shot that never counted.
-                if candidate[2] > 0 and (origin - base)["Magnitude"] > range then
-                    continue
-                end
+                if part then
+                    local point = aim + (part["Position"] - head_position)
 
-                -- Best score this origin can reach: head weight minus its
-                -- distance and fallback penalties. If that cannot beat the
-                -- current best, skip its raycasts.
-                if 4 - (candidate[2]/range) * 1.5 - candidate[3] <= best_score then
-                    continue
-                end
-
-                for j = 1, #spoof["weights"] do
-                    local entry = spoof["weights"][j]
-                    local part = parts[entry[1]]
-
-                    if part then
-                        local score = entry[2] - (candidate[2]/range) * 1.5 - candidate[3]
-
-                        if score > best_score then
-                            local point = aim + (part["Position"] - head_position)
-
-                            if spoof_visible(origin, point, character) then
-                                best_score = score
-                                best = {
-                                    ["origin"] = candidate[2] > 0 and origin or nil,
-                                    ["position"] = point,
-                                    ["part"] = part,
-                                    ["target"] = target,
-                                    ["probe"] = vector3_zero
-                                }
-                            end
-                        end
-                    end
-                end
-
-                -- Head is the highest weighted limb: nothing later can beat it
-                -- once it is visible.
-                if best and best["part"] == parts["Head"] then
-                    break
-                end
-            end
-
-            -- Hitbox expander, auto-calculated. The search above only accepts an
-            -- origin that can see the exact centre of a limb, and a centre is one
-            -- point in space: the character's own body, a ledge or the limb's own
-            -- rotation in front of it empties the whole search while most of that
-            -- limb is still open. Each origin tried here sits inside the spoof
-            -- range - so the shot still reads as coming from the shooter - and the
-            -- point is walked out across the chosen limb's own box, scaled by that
-            -- limb's size, until one of them is reached. That point is on the body
-            -- and inside the limb the shot is reported against, so it lands, and
-            -- the limb the ragebot picked is tried before the weighted rest.
-            if not best then
-                local expand_origins = {
-                    base + vector3_new(0, range * 0.35, 0),
-                    base + vector3_new(0, range * 0.75, 0),
-                    base + vector3_new(0, range, 0),
-                    base + flat_unit * (range * 0.5) + vector3_new(0, range * 0.6, 0),
-                    base - flat_unit * (range * 0.5) + vector3_new(0, range * 0.6, 0),
-                    base + side * (range * 0.6) + vector3_new(0, range * 0.5, 0),
-                    base - side * (range * 0.6) + vector3_new(0, range * 0.5, 0)
-                }
-
-                local preferred = parts[resolve_ragebot_hitbox_part(parts)] or parts["UpperTorso"] or head
-
-                for i = 1, #expand_origins do
-                    local origin = expand_origins[i]
-                    local slot = {
-                        ["origin"] = origin,
-                        ["position"] = origin,
-                        ["part"] = nil,
-                        ["target"] = target,
-                        ["probe"] = vector3_zero
-                    }
-
-                    local found = (preferred and expand_onto(slot, preferred)) or false
-
-                    if not found then
-                        local attempts = 0
-
-                        for k = 1, #spoof["weights"] do
-                            local part = parts[spoof["weights"][k][1]]
-
-                            if part and part ~= preferred then
-                                attempts = attempts + 1
-
-                                if expand_onto(slot, part) then
-                                    found = true
-                                    break
-                                end
-
-                                if attempts >= spoof["expander_attempts"] then
-                                    break
-                                end
-                            end
-                        end
-                    end
-
-                    -- The trace still has to fit the weapon range, or the server
-                    -- drops it the same way it drops any shot fired past its own
-                    -- range.
-                    if found and (slot["position"] - origin)["Magnitude"] <= gun_budget then
+                    if spoof_visible(anchor, point, character) then
                         best = {
-                            ["origin"] = origin,
-                            ["position"] = slot["position"],
-                            ["part"] = slot["part"],
+                            ["origin"] = nil,
+                            ["position"] = point,
+                            ["part"] = part,
                             ["target"] = target,
-                            ["probe"] = slot["probe"]
+                            ["probe"] = vector3_zero
                         }
 
                         break
@@ -23484,16 +23215,70 @@ local backtrack_data = {}
                 end
             end
 
+            -- Hitbox expander, auto-calculated. The centre of a limb is one point
+            -- in space: a ledge, the character's own body or the limb's own
+            -- rotation in front of it empties the search above while most of that
+            -- limb is still open. The point is walked out across the chosen
+            -- limb's own box, scaled by that limb's size, and accepted only when
+            -- the muzzle reaches it, so the reported hit lands on the body and
+            -- inside the limb the shot is named against. The limb the ragebot
+            -- picked is tried before the weighted rest.
+            if not best then
+                local preferred = parts[resolve_ragebot_hitbox_part(parts)] or parts["UpperTorso"] or head
+                local slot = {
+                    ["origin"] = anchor,
+                    ["position"] = anchor,
+                    ["part"] = nil,
+                    ["target"] = target,
+                    ["probe"] = vector3_zero
+                }
+
+                local found = (preferred and expand_onto(slot, preferred)) or false
+
+                if not found then
+                    local attempts = 0
+
+                    for k = 1, #spoof["weights"] do
+                        local part = parts[spoof["weights"][k][1]]
+
+                        if part and part ~= preferred then
+                            attempts = attempts + 1
+
+                            if expand_onto(slot, part) then
+                                found = true
+                                break
+                            end
+
+                            if attempts >= spoof["expander_attempts"] then
+                                break
+                            end
+                        end
+                    end
+                end
+
+                -- The reported point still has to sit inside the weapon range, or
+                -- the server drops the shot the same way it drops any shot fired
+                -- past its own range.
+                if found and (slot["position"] - anchor)["Magnitude"] <= gun_budget then
+                    best = {
+                        ["origin"] = nil,
+                        ["position"] = slot["position"],
+                        ["part"] = slot["part"],
+                        ["target"] = target,
+                        ["probe"] = slot["probe"]
+                    }
+                end
+            end
+
+
             spoof["last"] = now
 
             if best then
                 spoof["cache"] = best
 
-                if best["origin"] then
-                    manipulation_solved = true
-                    manipulation_solved_target = target
-                    manipulation_solved_tick = now
-                end
+                manipulation_solved = true
+                manipulation_solved_target = target
+                manipulation_solved_tick = now
 
                 return best
             end
