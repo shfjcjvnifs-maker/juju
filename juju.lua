@@ -20,12 +20,26 @@ getgenv()["juju"] = {}
 
 -- > ( bypass )
 
+-- Declared before the connection table so unload can reach this one; it was
+-- the only per-frame loop the script never disconnected.
+local early_connections = {}
+
+-- Lists filled later in the chunk that unload has to empty. They cannot be
+-- referenced directly: a local declared after the unload closure is a global
+-- inside it, and indexing that raises and aborts the whole unload.
+local unload_lists = {}
+
+-- Executor Drawing objects are not children of the menu gui, so destroying the
+-- gui leaves every ESP box and HUD element on screen. They are held here and
+-- destroyed one by one.
+local unload_drawings = {}
+
 do
     local Players = game:GetService("Players")
     local RunService = game:GetService("RunService")
     local localPlayer = Players.LocalPlayer
 
-    RunService.Heartbeat:Connect(function()
+    early_connections[#early_connections+1] = RunService.Heartbeat:Connect(function()
         local character = localPlayer.Character
         local rootPart = character and character:FindFirstChild("HumanoidRootPart")
         local humanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -140,6 +154,11 @@ local menu_references = {}
 local out = Enum["EasingDirection"]["Out"]
 
 local connections = {}
+
+-- Every instance the script builds, kept as weak keys so destroyed ones drop
+-- out on their own. Unload walks it and destroys what is still alive.
+local created_instances = setmetatable({}, {["__mode"] = "k"})
+
 local addon_data = {}
 local heartbeat = {}
 local flags = {
@@ -160,6 +179,8 @@ end)
 
 local create_instance = LPH_NO_VIRTUALIZE(function(class, properties)
     local instance = Instance["new"](class)
+
+    created_instances[instance] = true
 
     for property, value in properties do
         instance[property] = value
@@ -8129,7 +8150,12 @@ local menu = {
         env["_OG"] = real
         env["getrawmetatable"] = newcclosure(function(instance)
             local mt = real(instance)
-            metatables[instance] = mt
+
+            -- First sighting wins. A later read returns the hooked metatable,
+            -- and storing that would install the hook again on unload.
+            if metatables[instance] == nil then
+                metatables[instance] = mt
+            end
 
             return mt
         end)
@@ -8138,6 +8164,30 @@ local menu = {
 
         env["_JUJU"] = function()
             env["_JUJU"] = nil
+
+            -- The menu only owns its drawings. Anything this run left in the
+            -- world (highlights, adornments, impact parts, beams) is destroyed
+            -- through the instance log, and every loop is unregistered so a
+            -- late spawn cannot run a job that belongs to a dead session.
+            for i = #heartbeat, 1, -1 do
+                heartbeat[i] = nil
+            end
+
+            for i = 1, #unload_lists do
+                local list = unload_lists[i]
+
+                for j = #list, 1, -1 do
+                    list[j] = nil
+                end
+            end
+
+            for i = 1, #early_connections do
+                pcall(early_connections[i].Disconnect, early_connections[i])
+            end
+
+            for i = #early_connections, 1, -1 do
+                early_connections[i] = nil
+            end
 
             for _, group in menu["groups"] do
                 for _, tab in group["tabs"] do
@@ -8166,8 +8216,19 @@ local menu = {
             end
 
             for i = 1, #connections do
-                connections[i]:Disconnect()
+                pcall(connections[i].Disconnect, connections[i])
             end
+
+            for i = #connections, 1, -1 do
+                connections[i] = nil
+            end
+
+            -- The menu hides the system cursor while it is open and drive it
+            -- from its own drawing. That drawing dies with the gui, so the
+            -- cursor has to come back or the pointer disappears for good.
+            pcall(function()
+                user_input_service["MouseIconEnabled"] = true
+            end)
 
             context_action_service:UnbindAction(context_action_click)
             context_action_service:UnbindAction(context_action_typing)
@@ -8175,10 +8236,36 @@ local menu = {
             context_action_service:UnbindAction(context_action_scroll)
 
             env["getrawmetatable"] = real
+            env["_OG"] = nil
 
             for instance, mt in metatables do
-                setrawmetatable(instance, mt)
+                pcall(setrawmetatable, instance, mt)
             end
+
+            for i = 1, #unload_drawings do
+                local drawing = unload_drawings[i]
+
+                pcall(function()
+                    drawing:Destroy()
+                end)
+                pcall(function()
+                    drawing["Visible"] = false
+                end)
+            end
+
+            for i = #unload_drawings, 1, -1 do
+                unload_drawings[i] = nil
+            end
+
+            for instance in created_instances do
+                pcall(function()
+                    instance:Destroy()
+                end)
+            end
+
+            -- Executors that only reclaim drawings through the cache call need
+            -- this on top of the per-object Destroy above.
+            pcall(cleardrawcache)
 
             old_drawing["_UNLOAD"]()
         end
@@ -8475,6 +8562,8 @@ local player_data = {}
 local local_guns = {}
 local anti_aim = {}
 
+unload_lists[#unload_lists+1] = anti_aim
+
 
 -- > ( cheat functions )
 
@@ -8562,6 +8651,8 @@ local create_drawing_object = function(backend, backend_is_opacity, class, prope
     if backend_is_opacity ~= (convention == "opacity") then
         target = setmetatable({ ["__TARGET"] = object }, transparency_proxy_mt)
     end
+
+    unload_drawings[#unload_drawings+1] = target
 
     for property, value in properties do
         pcall(function()
@@ -13418,8 +13509,11 @@ end
             local manipulating = flags["manipulation"] and manipulation_aim_origin and manipulation_aim_part
 
             -- Void first: manipulation cannot land from there, so a solved
-            -- origin must not hide the void state.
-            local new = (in_void or in_void == nil) and "void" or manipulating and "manipulated" or (flags["ragebot"] and (getgenv()["juju"] or {})["waiting_protection"]) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or "unsafe" or local_parts["ForceField"] and "invulnerable"
+            -- origin must not hide the void state. Follow target next: while it
+            -- is armed the character is being moved onto the target, which is
+            -- the state worth showing, and manipulation is what happens once it
+            -- is off.
+            local new = (in_void or in_void == nil) and "void" or flags["follow_target"] and "following" or manipulating and "manipulated" or (flags["ragebot"] and (getgenv()["juju"] or {})["waiting_protection"]) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or "unsafe" or local_parts["ForceField"] and "invulnerable"
             if old ~= new then
                 text3["Text"] = new
                 tween(text3, {["Transparency"] = 0.35}, linear, out, 0.09)
@@ -22554,9 +22648,10 @@ local backtrack_data = {}
                 {"RightFoot", 0.9}
             },
             ["close_lifts"] = {3, 5, 8, 11},
-            ["lifts"] = {1, 0.7, 0.4},
-            ["arc_radii"] = {0.5, 0.75, 0.25, 1},
+            ["lifts"] = {1, 0.7, 0.4, 0.85, 0.55},
+            ["arc_radii"] = {0.5, 0.75, 0.25, 1, 0.35, 0.6},
             ["radii"] = {0.25, 0.5, 0.75, 1},
+            ["target_radii"] = {0.6, 1, 1.6},
             -- Spoofed hitbox expander, calculated instead of listed. The push
             -- out of the limb comes from that limb's own box, so a torso spreads
             -- wider than a forearm, and the margin grows with the shot distance,
@@ -22564,8 +22659,8 @@ local backtrack_data = {}
             -- for a limb that is only open further out.
             ["expander_margin"] = 0.12,
             ["expander_growth"] = 0.4,
-            ["expander_rings"] = {1, 2},
-            ["expander_attempts"] = 5
+            ["expander_rings"] = {1, 2, 3},
+            ["expander_attempts"] = 8
         }
 
         -- Box surface directions, smallest push first: six faces, then twelve
@@ -22690,6 +22785,38 @@ local backtrack_data = {}
 
                 candidates[#candidates+1] = {base + left, left["Magnitude"], 0}
                 candidates[#candidates+1] = {base + right, right["Magnitude"], 0}
+            end
+
+            -- Arcs leaning away from the target, so the ray still comes down
+            -- onto the body from behind it. A target backed against a wall
+            -- leaves the front blocked while this side stays open.
+            for i = 1, #spoof["lifts"] do
+                local back = -flat_unit * (range * 0.45) + vector3_new(0, range * spoof["lifts"][i], 0)
+                local length = back["Magnitude"]
+
+                if length > range then
+                    back = back * (range / length)
+                end
+
+                candidates[#candidates+1] = {base + back, back["Magnitude"], 0}
+            end
+
+            -- A tight ring around the target's own head, for the case where only
+            -- a narrow gap between cover and the body is open. Penalised, since
+            -- a point right on the body reads oddly to a strict server.
+            for i = 1, #spoof["target_radii"] do
+                local radius = spoof["target_radii"][i]
+
+                for step = 0, 3 do
+                    local theta = step * (math["pi"]/2)
+                    local offset = vector3_new(math["cos"](theta) * radius, radius * 0.5, math["sin"](theta) * radius)
+                    local point = aim + offset
+                    local away = (point - base)["Magnitude"]
+
+                    if away <= range then
+                        candidates[#candidates+1] = {point, away, 1}
+                    end
+                end
             end
 
             -- Directly over the target, which is the shortest arc there is.
