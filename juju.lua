@@ -8454,6 +8454,12 @@ local manipulation_aim_origin = nil
 local manipulation_verdict = nil
 local manipulation_verdict_tick = 0
 local manipulation_verdict_target = nil
+
+-- Infinite distance. Declared here, before the ShootGun hook, and assigned
+-- inside the anti-aim block further down: a local declared after the hook is a
+-- global as far as the hook is concerned, and the hook runs on every shot.
+local manipulation_bring = nil
+local manipulation_bringing = false
 local ragebot_aim_velocity = nil
 local ragebot_aim_defensive = false
 local local_knocked = false
@@ -9566,6 +9572,14 @@ do
                         local range = gun and tonumber(gun[2]) or 1000
 
                         if redirected then
+                            -- Infinite distance: move the character onto the
+                            -- target for the shot itself, so the weapon range
+                            -- cannot reject it. Off leaves the character where it
+                            -- stands and relies on the spoofed origin alone.
+                            if flags["manipulation_infinite_distance"] and manipulation_bring and ragebot_target and not manipulation_bringing then
+                                manipulation_bring(ragebot_target, flags["manipulation_bring_offset"] or 4)
+                            end
+
                             -- Bullet tp: the shot is reported as leaving from a
                             -- point above the target. The manipulation solver
                             -- picked one with a clear path down onto the body, so
@@ -21000,6 +21014,17 @@ local backtrack_data = {}
         -- onto it. Hitbox and prediction are automatic, so there is nothing to
         -- configure beyond the toggle.
         menu_references["manipulation"] = menu_references["general_section"]:create_element({["name"] = "manipulation"}, {["toggle"] = {["flag"] = "manipulation", ["default"] = false}})
+        menu_references["manipulation_settings"] = menu_references["manipulation"]:create_settings()
+        -- Infinite distance: pull the character onto the target for the shot, so
+        -- the weapon range stops mattering. Off means the spoofed origin does all
+        -- the work and the character stays where it stands.
+        menu_references["manipulation_infinite_distance"] = menu_references["manipulation_settings"]:create_element({["name"] = "infinite distance"}, {["toggle"] = {["flag"] = "manipulation_infinite_distance", ["default"] = false}})
+        menu_references["manipulation_bring_offset"] = menu_references["manipulation_settings"]:create_element({["name"] = "bring offset"}, {["slider"] = {["flag"] = "manipulation_bring_offset", ["min"] = 1, ["max"] = 25, ["default"] = 4, ["suffix"] = " studs"}})
+        menu_references["manipulation_bring_offset"]:set_visible(false)
+
+        create_connection(menu_references["manipulation_infinite_distance"]["on_toggle_change"], function(value)
+            menu_references["manipulation_bring_offset"]:set_visible(value)
+        end)
         menu_references["auto_equip"] = menu_references["general_section"]:create_element({["name"] = "auto equip"}, {["toggle"] = {["flag"] = "auto_equip", ["default"] = false}})
         menu_references["auto_equip_settings"] = menu_references["auto_equip"]:create_settings()
         menu_references["auto_equip_unequip_when"] = menu_references["auto_equip_settings"]:create_element({["name"] = "unequip when"}, {["dropdown"] = {["flag"] = "auto_equip_unequip_when", ["default"] = {"no target"}, ["options"] = {"no target"}, ["multi"] = true}})
@@ -22440,6 +22465,40 @@ local backtrack_data = {}
         local speed = 75
         local height = vector3_zero
 
+        -- Shift the character onto the target for one render frame, then put it
+        -- back. The server samples that frame, so the shot sits inside the
+        -- weapon range while the client never appears to have moved: the same
+        -- trick follow target and auto stomp use.
+        manipulation_bring = LPH_JIT_MAX(function(target, offset)
+            local hrp = local_parts["HumanoidRootPart"]
+
+            if not hrp or not target or not target[3] then
+                return false
+            end
+
+            local part = manipulation_aim_part or target[4]["UpperTorso"] or target[4]["HumanoidRootPart"]
+
+            if not part or not part["Parent"] then
+                return false
+            end
+
+            local old_cframe = hrp["CFrame"]
+            local flat = part["Position"] - hrp["Position"]
+            flat = vector3_new(flat["X"], 0, flat["Z"])
+            local unit = flat["Magnitude"] > 0.001 and flat["Unit"] or vector3_new(0, 0, 1)
+            local goal = part["Position"] - unit * offset + vector3_new(0, 1.2, 0)
+
+            manipulation_bringing = true
+
+            hrp["CFrame"] = cframe_new(goal)
+            render_stepped_wait(render_stepped)
+            hrp["CFrame"] = old_cframe
+
+            manipulation_bringing = false
+
+            return true
+        end)
+
         local function do_void_while_waiting(hrp)
             local old_cframe = hrp["CFrame"]
             local old_velocity = hrp["Velocity"]
@@ -22716,6 +22775,7 @@ local backtrack_data = {}
 
     do
         local target_tick = 0
+        local bring_offset_visible = nil
 
         -- Spoofed shot origin. The bullet is reported as leaving from a point
         -- above and in front of the local character, coming down onto the best
@@ -22756,7 +22816,8 @@ local backtrack_data = {}
             ["lifts"] = {1, 0.7, 0.4, 0.85, 0.55},
             ["arc_radii"] = {0.5, 0.75, 0.25, 1, 0.35, 0.6},
             ["radii"] = {0.25, 0.5, 0.75, 1},
-            ["target_radii"] = {0.6, 1, 1.6},
+            ["target_radii"] = {0.6, 1, 1.6, 2.4, 3.5},
+            ["ring_steps"] = 8,
             -- Spoofed hitbox expander, calculated instead of listed. The push
             -- out of the limb comes from that limb's own box, so a torso spreads
             -- wider than a forearm, and the margin grows with the shot distance,
@@ -22919,9 +22980,13 @@ local backtrack_data = {}
             for i = 1, #spoof["target_radii"] do
                 local radius = spoof["target_radii"][i]
 
-                for step = 0, 3 do
-                    local theta = step * (math["pi"]/2)
-                    local offset = vector3_new(math["cos"](theta) * radius, radius * 0.5, math["sin"](theta) * radius)
+                -- Eight points instead of four: a ring around the body reads the
+                -- same to the server, and doubling it is what finds a gap when
+                -- the four cardinal points all sit behind cover.
+                for step = 0, spoof["ring_steps"] - 1 do
+                    local theta = step * (math["pi"] * 2 / spoof["ring_steps"])
+                    local lift = (step % 2 == 0) and 0.5 or 0.9
+                    local offset = vector3_new(math["cos"](theta) * radius, radius * lift, math["sin"](theta) * radius)
                     local point = aim + offset
                     local away = (point - base)["Magnitude"]
 
@@ -22992,6 +23057,24 @@ local backtrack_data = {}
 
                 if away <= range then
                     candidates[#candidates+1] = {high, away, 0}
+                end
+            end
+
+            -- Collar ring: points above and around the target's head, between the
+            -- character-side arcs and the tight body ring. A doorway or a window
+            -- usually leaves one of these open while the arcs over the character
+            -- hit the frame.
+            for i = 1, #spoof["target_radii"] do
+                local radius = spoof["target_radii"][i] * 2
+
+                for step = 0, spoof["ring_steps"] - 1 do
+                    local theta = step * (math["pi"] * 2 / spoof["ring_steps"])
+                    local point = aim + vector3_new(math["cos"](theta) * radius, 1.5 + radius * 0.5, math["sin"](theta) * radius)
+                    local away = (point - base)["Magnitude"]
+
+                    if away <= gun_budget and (point - aim)["Magnitude"] <= gun_budget then
+                        candidates[#candidates+1] = {point, math["min"](away, range), 1}
+                    end
                 end
             end
 
@@ -23169,6 +23252,15 @@ local backtrack_data = {}
         end)
 
         local do_manipulation = LPH_NO_VIRTUALIZE(function(dt)
+            -- A config load writes the flag without firing the toggle callback,
+            -- so the offset slider follows the flag here instead of the toggle.
+            local bring_visible = flags["manipulation_infinite_distance"] and true or false
+
+            if bring_visible ~= bring_offset_visible then
+                bring_offset_visible = bring_visible
+                menu_references["manipulation_bring_offset"]:set_visible(bring_visible)
+            end
+
             if not flags["manipulation"] then
                 manipulation_aim_part = nil
                 manipulation_aim_origin = nil
