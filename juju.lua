@@ -18,7 +18,7 @@ end
 
 getgenv()["juju"] = {}
 
--- > ( walk spoof )
+-- > ( connections )
 
 -- Declared before the connection table so unload can reach this one; it was
 -- the only per-frame loop the script never disconnected.
@@ -34,50 +34,7 @@ local unload_lists = {}
 -- destroyed one by one.
 local unload_drawings = {}
 
-do
-    local Players = game:GetService("Players")
-    local RunService = game:GetService("RunService")
-    local localPlayer = Players.LocalPlayer
-
-    -- Always-on auto walk, spoofed. Nothing is toggled and nothing is displaced:
-    -- the frame the character stood still on is latched, and every frame after
-    -- that puts the root part back on it, so the walk velocity below is reported
-    -- to the server and never travelled on this client.
-    --
-    -- The latch lets go the moment the body is really moving - a key press, a
-    -- jump, a fall, a knockback - so the game keeps full control of anything the
-    -- player or the map is doing, and only a standing body is held still.
-    local walk_hold = nil
-
-    local walk_spoof = function()
-        local character = localPlayer.Character
-        local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-
-        if not (humanoid and rootPart) then
-            walk_hold = nil
-            return
-        end
-
-        local velocity = rootPart.AssemblyLinearVelocity
-
-        if humanoid.MoveDirection.Magnitude > 0
-            or humanoid.FloorMaterial == Enum.Material.Air
-            or velocity.Magnitude > 2 then
-            walk_hold = nil
-            return
-        end
-
-        walk_hold = walk_hold or rootPart.CFrame
-
-        -- Back onto the latched frame first, so the velocity write below is the
-        -- last word on where the body ends up this frame.
-        rootPart.CFrame = walk_hold
-        rootPart.AssemblyLinearVelocity = Vector3.new(0.1, velocity.Y, 0.1)
-    end
-
-    early_connections[#early_connections+1] = RunService.Heartbeat:Connect(walk_spoof)
-end
+-- The auto walk loop lives at the end of the chunk, once the menu is up.
 
 -- > ( executor compat )
 
@@ -22800,7 +22757,6 @@ local backtrack_data = {}
         local active = false
         local next_fire = 0
         local interval = 1 / 80
-        local do_visual = flags["rapid_fire_visual"] ~= false
 
         local raycast_params = RaycastParams["new"]()
         raycast_params["FilterType"] = Enum["RaycastFilterType"]["Exclude"]
@@ -22869,7 +22825,25 @@ local backtrack_data = {}
 
             next_fire = now + interval
 
-            if do_visual and shoot and data then
+            -- The shot itself is rewritten onto the locked ragebot target by the
+            -- namecall hook, so the visual has to end where the bullet is reported
+            -- to end. Drawn to the mouse hit it showed a line to whatever the
+            -- crosshair was over while the bullet went to the target, and a
+            -- manipulated shot leaves from the spoofed origin, so the visual
+            -- starts there too.
+            local visual_origin = origin
+            local visual_pos = pos
+
+            if ragebot_target and not ragebot_target[7] then
+                visual_origin = (flags["manipulation"] and manipulation_aim_origin) or origin
+                visual_pos = manipulation_aim_position or ragebot_aim_position or pos
+            end
+
+            -- Skipped while local bullet tracers are on: those draw their own
+            -- tracer for every local shot, so this one would be a second line on
+            -- the same bullet. The flag is read live, since a loaded config writes
+            -- it without firing the toggle callback.
+            if flags["rapid_fire_visual"] ~= false and not flags["local_bullet_tracers"] and shoot and data then
                 setthreadidentity(8)
                 pcall(function()
                     local env = getfenv(shoot)
@@ -22877,8 +22851,8 @@ local backtrack_data = {}
                     shoot({
                         Shooter = local_character,
                         Handle = handle,
-                        ForcedOrigin = origin,
-                        AimPosition = pos,
+                        ForcedOrigin = visual_origin,
+                        AimPosition = visual_pos,
                         BeamColor = color3_fromrgb(1, 0.545098, 0.14902),
                         Range = tonumber(data[2]) or 1000
                     })
@@ -22924,9 +22898,6 @@ local backtrack_data = {}
         update_interval(flags["rapid_fire_rate"])
 
         create_connection(menu_references["rapid_fire_rate"]["on_slider_change"], update_interval)
-        create_connection(menu_references["rapid_fire_visual"]["on_toggle_change"], function(value)
-            do_visual = value
-        end)
 
         create_connection(menu_references["rapid_fire"]["on_toggle_change"], LPH_JIT_MAX(function(value)
             if value then
@@ -28873,6 +28844,28 @@ do
         local_crew = crew["Value"]
     end))
 end
+
+-- > ( auto walk )
+
+-- Started here rather than at the top of the chunk, five seconds after the menu
+-- is up: the load is not left competing with a per-frame writer, and the walk
+-- only begins once there is a script to walk under.
+local walk_players = game:GetService("Players")
+local walk_run_service = game:GetService("RunService")
+local walk_local_player = walk_players.LocalPlayer
+
+task.delay(5, function()
+    early_connections[#early_connections+1] = walk_run_service.Heartbeat:Connect(function()
+        local character = walk_local_player.Character
+        local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+        if humanoid and humanoid.MoveDirection.Magnitude == 0 and rootPart then
+            local currentYVelocity = rootPart.AssemblyLinearVelocity.Y
+            rootPart.AssemblyLinearVelocity = Vector3.new(0.1, currentYVelocity, 0.1)
+        end
+    end)
+end)
 
 end, function(err)
     local ok, trace = pcall(debug.traceback, "", 2)
