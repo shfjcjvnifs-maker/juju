@@ -9298,10 +9298,22 @@ do
     -- local bullet tracer never saw a manual shot. Feed the same signal from
     -- every shot this client sends: the tracer draws from the gun to the point
     -- the shot was sent to.
+    local bullet_trace_part = nil
+    local bullet_trace_tick = 0
     local emit_local_bullet_tracer = LPH_NO_VIRTUALIZE(function(to)
         if not flags["local_bullet_tracers"] or typeof(to) ~= "Vector3" then
             return
         end
+
+        -- Rapid fire sends many shots a tick. Each trace allocates drawings and
+        -- a heartbeat closure, so cap how many are started per second.
+        local tick = clock()
+
+        if tick - bullet_trace_tick < 0.05 then
+            return
+        end
+
+        bullet_trace_tick = tick
 
         local handle = local_tool and local_tool["Handle"]
         local from = handle and handle["Position"] or local_server_position and local_server_position["p"]
@@ -9310,24 +9322,41 @@ do
             return
         end
 
-        local ray = create_instance("Part", {
-            ["Anchored"] = true,
-            ["CanCollide"] = false,
-            ["CanQuery"] = false,
-            ["CanTouch"] = false,
-            ["Transparency"] = 1,
-            ["Size"] = vector3_new(0.1, 0.1, 0.1),
-            ["CFrame"] = cframe_new(from),
-            ["Parent"] = ignored
-        })
+        local type_flags = flags["local_bullet_tracers_type"]
+        local is_beam = type_flags and type_flags[1] == "beam"
 
-        -- The beam tracer destroys the part itself, the line tracer keeps
-        -- reading it for the whole lifetime, so clean up after either.
-        delay((flags["local_bullet_tracers_lifetime"] or 0.8) + 0.6, function()
-            if ray["Parent"] then
-                destroy(ray)
+        local ray
+
+        if is_beam then
+            -- The beam handler destroys the part, so it needs its own one.
+            ray = create_instance("Part", {
+                ["Anchored"] = true,
+                ["CanCollide"] = false,
+                ["CanQuery"] = false,
+                ["CanTouch"] = false,
+                ["Transparency"] = 1,
+                ["Size"] = vector3_new(0.1, 0.1, 0.1),
+                ["CFrame"] = cframe_new(from),
+                ["Parent"] = ignored
+            })
+        else
+            -- The line handler only reads the position once, so one part is
+            -- moved per shot instead of creating one part per shot.
+            if not bullet_trace_part or not bullet_trace_part["Parent"] then
+                bullet_trace_part = create_instance("Part", {
+                    ["Anchored"] = true,
+                    ["CanCollide"] = false,
+                    ["CanQuery"] = false,
+                    ["CanTouch"] = false,
+                    ["Transparency"] = 1,
+                    ["Size"] = vector3_new(0.1, 0.1, 0.1),
+                    ["Parent"] = ignored
+                })
             end
-        end)
+
+            bullet_trace_part["CFrame"] = cframe_new(from)
+            ray = bullet_trace_part
+        end
 
         signals["on_local_bullet_fired"]:Fire(ray, nil, cframe_new(to), true)
     end)
@@ -9346,12 +9375,12 @@ do
                     local redirected = false
 
                     -- Locked target: every shot is rewritten onto the ragebot
-                    -- target even when the ragebot is not auto firing, so the
-                    -- crosshair does not have to be on the target and no distance
-                    -- has to be closed. The manipulation feeder picks the hitbox
-                    -- and predicts its position, so the aim point and the part
-                    -- argument always describe the same limb.
-                    if not is_ragebot_shot and flags["manipulation"] and ragebot_target and not ragebot_target[7] then
+                    -- target, auto fired or manual, so the crosshair does not
+                    -- have to be on the target and no distance has to be closed.
+                    -- The manipulation feeder picks the hitbox and predicts its
+                    -- position, so the aim point and the part argument always
+                    -- describe the same limb.
+                    if flags["manipulation"] and ragebot_target and not ragebot_target[7] then
                         silent_part = manipulation_aim_part
                         aim_position = manipulation_aim_position
                         redirected = aim_position ~= nil
@@ -12301,15 +12330,19 @@ do
 
         accumulator = 0
 
-        if not scanning and clock() - last_scan >= RESCAN_INTERVAL then
+        local data = get_grabbed_target()
+
+        if not data then
+            return
+        end
+
+        -- Only look for lasers while someone is actually held: an idle rescan
+        -- walks every descendant in the game for nothing.
+        if not scanning and (#lasers == 0 or clock() - last_scan >= RESCAN_INTERVAL) then
             spawn(scan_lasers)
         end
 
-        local data = get_grabbed_target()
-
-        if data then
-            hit_lasers(data[3])
-        end
+        hit_lasers(data[3])
     end)
 
     local start = function()
@@ -12320,8 +12353,6 @@ do
         active = true
         accumulator = 0
         heartbeat[#heartbeat+1] = do_infinite_grab
-
-        spawn(scan_lasers)
     end
 
     local stop = function()
@@ -22394,14 +22425,33 @@ local backtrack_data = {}
     -- >> ( manipulation )
 
     do
-        local active = false
+        local target_tick = 0
 
         local do_manipulation = LPH_NO_VIRTUALIZE(function(dt)
             if not flags["manipulation"] then
+                manipulation_aim_part = nil
+
+                if not flags["ragebot"] then
+                    ragebot_aim_position = nil
+                end
+
                 return
             end
 
             local target = ragebot_target
+
+            if (not target or target[7]) and not flags["ragebot"] then
+                -- Manipulation on its own: lock whoever is closest to the
+                -- crosshair, the same selection the ragebot uses.
+                local tick = clock()
+
+                if tick - target_tick > 0.1 then
+                    target_tick = tick
+                    get_ragebot_target()
+                end
+
+                target = ragebot_target
+            end
 
             if not target or target[7] then
                 manipulation_aim_part = nil
@@ -22441,47 +22491,10 @@ local backtrack_data = {}
             end
         end)
 
-        local start = function()
-            if active then
-                return
-            end
-
-            active = true
-            heartbeat[#heartbeat+1] = do_manipulation
-        end
-
-        local stop = function()
-            if not active then
-                return
-            end
-
-            active = false
-
-            for i = 1, #heartbeat do
-                if heartbeat[i] == do_manipulation then
-                    table.remove(heartbeat, i)
-                    break
-                end
-            end
-
-            manipulation_aim_part = nil
-
-            if not flags["ragebot"] then
-                ragebot_aim_position = nil
-            end
-        end
-
-        create_connection(menu_references["manipulation"]["on_toggle_change"], LPH_JIT_MAX(function(value)
-            if value then
-                start()
-            else
-                stop()
-            end
-        end))
-
-        if flags["manipulation"] then
-            start()
-        end
+        -- Always on the heartbeat and gated by the flag inside: a config load
+        -- sets the flag without firing the toggle callback, so a start() bound
+        -- to the toggle alone left the feature dead.
+        heartbeat[#heartbeat+1] = do_manipulation
     end
 
     -- >> ( sender rate value )
@@ -24449,6 +24462,16 @@ local backtrack_data = {}
         local outline_transparency = {["Transparency"] = 1}
 
         local do_ragebot_tracer = LPH_JIT_MAX(function(dt, hrp)
+            -- Read the dropdowns straight from the flags. A loaded config writes
+            -- the flags without firing the dropdown callback, so the cached
+            -- copies kept the old choice and the end point drifted to the
+            -- predicted position after auto fire was turned on.
+            local end_point_flags = flags["ragebot_tracer_end_point"]
+            local tracer_end = end_point_flags and end_point_flags[1] or "predicted position"
+
+            local origin_flags = flags["ragebot_tracer_origin"]
+            local tracer_origin = origin_flags and origin_flags[1] or "gun"
+
             local ragebot_aim_position = ragebot_aim_position ~= vector3_zero and ragebot_aim_position or nil
             if not ragebot_aim_position and did then
                 did = false
