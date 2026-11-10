@@ -22757,6 +22757,7 @@ local backtrack_data = {}
         local active = false
         local next_fire = 0
         local interval = 1 / 80
+        local do_visual = flags["rapid_fire_visual"] ~= false
 
         local raycast_params = RaycastParams["new"]()
         raycast_params["FilterType"] = Enum["RaycastFilterType"]["Exclude"]
@@ -22825,25 +22826,7 @@ local backtrack_data = {}
 
             next_fire = now + interval
 
-            -- The shot itself is rewritten onto the locked ragebot target by the
-            -- namecall hook, so the visual has to end where the bullet is reported
-            -- to end. Drawn to the mouse hit it showed a line to whatever the
-            -- crosshair was over while the bullet went to the target, and a
-            -- manipulated shot leaves from the spoofed origin, so the visual
-            -- starts there too.
-            local visual_origin = origin
-            local visual_pos = pos
-
-            if ragebot_target and not ragebot_target[7] then
-                visual_origin = (flags["manipulation"] and manipulation_aim_origin) or origin
-                visual_pos = manipulation_aim_position or ragebot_aim_position or pos
-            end
-
-            -- Skipped while local bullet tracers are on: those draw their own
-            -- tracer for every local shot, so this one would be a second line on
-            -- the same bullet. The flag is read live, since a loaded config writes
-            -- it without firing the toggle callback.
-            if flags["rapid_fire_visual"] ~= false and not flags["local_bullet_tracers"] and shoot and data then
+            if do_visual and shoot and data then
                 setthreadidentity(8)
                 pcall(function()
                     local env = getfenv(shoot)
@@ -22851,8 +22834,8 @@ local backtrack_data = {}
                     shoot({
                         Shooter = local_character,
                         Handle = handle,
-                        ForcedOrigin = visual_origin,
-                        AimPosition = visual_pos,
+                        ForcedOrigin = origin,
+                        AimPosition = pos,
                         BeamColor = color3_fromrgb(1, 0.545098, 0.14902),
                         Range = tonumber(data[2]) or 1000
                     })
@@ -22898,6 +22881,9 @@ local backtrack_data = {}
         update_interval(flags["rapid_fire_rate"])
 
         create_connection(menu_references["rapid_fire_rate"]["on_slider_change"], update_interval)
+        create_connection(menu_references["rapid_fire_visual"]["on_toggle_change"], function(value)
+            do_visual = value
+        end)
 
         create_connection(menu_references["rapid_fire"]["on_toggle_change"], LPH_JIT_MAX(function(value)
             if value then
