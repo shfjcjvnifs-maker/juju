@@ -8341,6 +8341,8 @@ local ragebot_target = nil
 local custom_ragebot_aim_position = nil
 local ragebot_aim_position = nil
 local ragebot_firing_shot = false
+local manipulation_aim_position = nil
+local manipulation_aim_part = nil
 local ragebot_aim_velocity = nil
 local ragebot_aim_defensive = false
 local local_knocked = false
@@ -9303,20 +9305,18 @@ do
                     local aim_position = nil
                     local silent_part = nil
                     local is_ragebot_shot = ragebot_firing_shot
+                    local redirected = false
 
                     -- Locked target: every shot is rewritten onto the ragebot
                     -- target even when the ragebot is not auto firing, so the
-                    -- crosshair does not have to be on the target and no
-                    -- distance has to be closed. The manipulation hitbox is used
-                    -- for both the aim point and the part argument so the server
-                    -- sees the same limb.
-                    if not is_ragebot_shot and (flags["manipulation"] ~= false or flags["manipulation_silent_aim"]) and ragebot_target and not ragebot_target[7] then
-                        local silent_parts = ragebot_target[4]
-                        silent_part = silent_parts[resolve_ragebot_hitbox_part(silent_parts, "manipulation_hitbox")] or silent_parts["HumanoidRootPart"]
-
-                        if silent_part then
-                            aim_position = silent_part["Position"]
-                        end
+                    -- crosshair does not have to be on the target and no distance
+                    -- has to be closed. The manipulation feeder picks the hitbox
+                    -- and predicts its position, so the aim point and the part
+                    -- argument always describe the same limb.
+                    if not is_ragebot_shot and flags["manipulation"] and ragebot_target and not ragebot_target[7] then
+                        silent_part = manipulation_aim_part
+                        aim_position = manipulation_aim_position
+                        redirected = aim_position ~= nil
                     end
 
                     if not aim_position then
@@ -9328,35 +9328,25 @@ do
 
                         local pos = aim_position + vector3_new(math_random(101,105)/100,0.008,-0.008)
                         local origin = local_server_position["p"] + vector3_new(0.004,3.0208,-0.048)
+                        local direction = (pos-origin)["Unit"]
 
-                        -- Wall bang: start the shot right at the target body instead
-                        -- of at the shooter, so the server trace has no wall to stop
-                        -- it. A whole stud away was still far enough for the server
-                        -- to resolve a wall, so this sits much closer.
-                        if flags["auto_fire_wall_bang"] then
-                            local direction = (pos-origin)["Unit"]
+                        -- Long distance: past the weapon range the server drops
+                        -- the shot, and anything standing between shooter and
+                        -- target stops the trace. Starting the shot at the body
+                        -- itself removes both problems. A rewritten shot always
+                        -- travels that way, a ragebot shot only once it is out
+                        -- of range.
+                        local gun = local_guns[handle]
+                        local range = gun and tonumber(gun[2]) or 1000
 
-                            if direction["Magnitude"] > 0.001 then
-                                origin = pos - direction * 0.2
-                            end
+                        if direction["Magnitude"] > 0.001 and (redirected or (pos-origin)["Magnitude"] > range) then
+                            origin = pos - direction * 0.2
                         end
-                
+
                         local dir = (origin-pos)["Unit"]
-
-                        -- Bullet spoof: send a direction pointing somewhere else so
-                        -- other clients draw the beam off the real line. The part
-                        -- argument still carries the hit.
-                        if flags["manipulation_bullet_spoof"] then
-                            local spoof = pos + vector3_new(math_random(-40, 40), math_random(20, 60), math_random(-40, 40))
-                            local spoofed = (spoof-origin)["Unit"]
-
-                            if spoofed["Magnitude"] > 0.001 then
-                                dir = spoofed
-                            end
-                        end
                         local Magnitude = dir["Magnitude"]
                         local part = silent_part or (is_ragebot_shot and args[5]) or (ragebot_target and (ragebot_target[4][resolve_ragebot_hitbox_part(ragebot_target[4])] or ragebot_target[4]["UpperTorso"])) or args[5]
-                        
+
                         if part and ragebot_target then
                             spawn(get_bullet_result, ragebot_target[2], part, local_server_position["p"], aim_position, ragebot_aim_velocity, ragebot_aim_defensive)
                         end
@@ -12060,9 +12050,19 @@ do
     menu_references["infinite_grab"] = menu_references["neckgrab_section"]:create_element({["name"] = "infinite grab"}, {["toggle"] = {["flag"] = "infinite_grab", ["default"] = false}})
 
     local active = false
-    local next_touch = 0
-    local laser_folder = nil
-    local lasers = {}
+
+    -- The game already spawns the grab lasers and drives them with a
+    -- TouchTransmitter. Firing touch interest between the grabbed player and
+    -- those existing lasers re-runs the server side touched handler, so the
+    -- grab keeps dealing damage at any distance. Nothing is created here.
+    local GRAB_CONSTRAINT_NAME = "GRABBING_CONSTRAINT"
+    local LASER_KEYWORD = "laser"
+    local ANCESTOR_DEPTH = 3
+    local TARGET_PART_NAME = "HumanoidRootPart"
+    local TICK_INTERVAL = 0.1
+    local MAX_LASERS_PER_TICK = 8
+    local RESCAN_INTERVAL = 10
+    local SCAN_YIELD_EVERY = 400
 
     local fire_touch = nil
 
@@ -12072,88 +12072,142 @@ do
         fire_touch = getgenv()["firetouchinterest"]
     end
 
-    local touch_parts = {"Head", "UpperTorso", "LowerTorso", "HumanoidRootPart"}
+    local lasers = {}
+    local cursor = 0
+    local scanning = false
+    local last_scan = 0
+    local accumulator = 0
 
-    local get_character_from_part = function(object)
-        local current = object
+    local is_laser = function(part)
+        if not find_first_child_of_class(part, "TouchTransmitter") then
+            return false
+        end
 
-        for _ = 1, 10 do
-            if not current or current == workspace then
-                return nil
-            end
+        local current = part["Parent"]
+        local depth = 0
 
+        -- A laser parented inside a humanoid model is a player held part, not
+        -- one of the game lasers.
+        while current and current ~= workspace and depth <= ANCESTOR_DEPTH do
             if current["ClassName"] == "Model" and find_first_child_of_class(current, "Humanoid") then
-                return current
+                return false
             end
 
+            depth += 1
             current = current["Parent"]
         end
 
-        return nil
-    end
+        current = part
+        depth = 0
 
-    local get_data_from_character = function(character)
-        if not character then
-            return nil
+        while current and current ~= workspace and depth <= ANCESTOR_DEPTH do
+            local name = current["Name"]
+
+            if type(name) == "string" and string["find"](string["lower"](name), LASER_KEYWORD, 1, true) then
+                return true
+            end
+
+            depth += 1
+            current = current["Parent"]
         end
 
-        for player, data in player_data do
-            if data[3] == character then
-                return data
+        return false
+    end
+
+    local scan_lasers = LPH_NO_VIRTUALIZE(function()
+        if scanning then
+            return
+        end
+
+        scanning = true
+
+        local found = {}
+        local descendants = workspace:GetDescendants()
+
+        for i = 1, #descendants do
+            local instance = descendants[i]
+
+            if instance:IsA("BasePart") and is_laser(instance) then
+                found[#found+1] = instance
+            end
+
+            if i % SCAN_YIELD_EVERY == 0 then
+                wait()
             end
         end
 
-        return nil
-    end
+        lasers = found
+        cursor = 0
+        last_scan = clock()
+        scanning = false
+    end)
 
-    -- The grabbed player: read the far side of the local grab constraint, and
-    -- fall back to the nearest other player that carries one.
+    -- Whoever the local player is holding: the nearest other player carrying
+    -- the grab constraint, linked to us through the local one when present.
     local get_grabbed_target = LPH_NO_VIRTUALIZE(function()
-        local constraint = local_parts["GRABBING_CONSTRAINT"]
-
-        if not constraint then
-            return nil
-        end
-
-        local keys = {"Part0", "Part1", "Attachment0", "Attachment1"}
-
-        for i = 1, #keys do
-            local ok, object = pcall(function()
-                return constraint[keys[i]]
-            end)
-
-            if ok and object then
-                local character = get_character_from_part(object)
-
-                if character and character ~= local_character then
-                    local data = get_data_from_character(character)
-
-                    if data and not data[7] then
-                        return data
-                    end
-                end
-            end
-        end
-
         local local_root = local_parts["HumanoidRootPart"]
 
         if not local_root then
             return nil
         end
 
+        local constraint = local_parts[GRAB_CONSTRAINT_NAME]
         local best = nil
         local best_distance = nil
 
         for player, data in player_data do
-            if not data[7] and data[4]["GRABBING_CONSTRAINT"] then
+            local character = data[3]
+
+            if character and not data[7] and character ~= local_character and character["Parent"] then
                 local root = data[4]["HumanoidRootPart"]
 
-                if root then
+                if root and find_first_child(character, GRAB_CONSTRAINT_NAME, true) then
                     local distance = (root["Position"]-local_root["Position"])["Magnitude"]
 
-                    if distance < 15 and (not best_distance or distance < best_distance) then
+                    if not best_distance or distance < best_distance then
                         best = data
                         best_distance = distance
+                    end
+                end
+            end
+        end
+
+        if constraint then
+            local keys = {"Part0", "Part1", "Attachment0", "Attachment1"}
+
+            for i = 1, #keys do
+                local ok, object = pcall(function()
+                    return constraint[keys[i]]
+                end)
+
+                if ok and object then
+                    local current = object
+
+                    for _ = 1, 10 do
+                        if not current or current == workspace then
+                            break
+                        end
+
+                        if current["ClassName"] == "Model" and find_first_child_of_class(current, "Humanoid") then
+                            if current ~= local_character then
+                                local data = nil
+
+                                for player, entry in player_data do
+                                    if entry[3] == current then
+                                        data = entry
+                                        break
+                                    end
+                                end
+
+                                if data and not data[7] then
+                                    return data
+                                end
+                            end
+
+                            break
+                        end
+
+                        current = current["Parent"]
                     end
                 end
             end
@@ -12162,120 +12216,58 @@ do
         return best
     end)
 
-    local clear_lasers = function()
-        if laser_folder then
-            laser_folder:Destroy()
-            laser_folder = nil
-        end
+    local hit_lasers = LPH_NO_VIRTUALIZE(function(character)
+        local part = character and find_first_child(character, TARGET_PART_NAME)
 
-        lasers = {}
-    end
-
-    local ensure_lasers = function()
-        if laser_folder and laser_folder["Parent"] then
+        if not part or not part:IsA("BasePart") then
             return
         end
 
-        laser_folder = create_instance("Folder", {
-            ["Name"] = "neckgrab_lasers",
-            ["Parent"] = workspace
-        })
+        local total = #lasers
 
-        lasers = {}
-
-        for i = 1, 2 do
-            lasers[i] = create_instance("Part", {
-                ["Name"] = "laser_"..i,
-                ["Anchored"] = true,
-                ["CanCollide"] = false,
-                ["CanQuery"] = false,
-                ["CanTouch"] = true,
-                ["CastShadow"] = false,
-                ["Material"] = Enum["Material"]["Neon"],
-                ["Color"] = color3_fromrgb(255, 45, 45),
-                ["Transparency"] = 0.3,
-                ["Size"] = vector3_new(0.12, 0.12, 1),
-                ["Parent"] = laser_folder
-            })
-        end
-    end
-
-    local update_laser = function(part, from, to)
-        local distance = (to-from)["Magnitude"]
-
-        if distance < 0.05 then
-            part["Transparency"] = 1
-
+        if total == 0 then
             return
         end
 
-        part["Transparency"] = 0.3
-        part["Size"] = vector3_new(0.12, 0.12, distance)
-        part["CFrame"] = cframe_new((from+to)/2, to)
-    end
+        local fired = 0
+        local checked = 0
 
-    local do_touch = function(parts)
+        while fired < MAX_LASERS_PER_TICK and checked < total do
+            cursor = cursor % total + 1
+            checked += 1
+
+            local laser = lasers[cursor]
+
+            if laser and laser["Parent"] then
+                pcall(fire_touch, part, laser, 0)
+                pcall(fire_touch, part, laser, 1)
+                fired += 1
+            end
+        end
+    end)
+
+    local do_infinite_grab = LPH_NO_VIRTUALIZE(function(dt)
         if not fire_touch then
             return
         end
 
-        for i = 1, #lasers do
-            local laser = lasers[i]
+        accumulator += dt
 
-            if laser then
-                for j = 1, #touch_parts do
-                    local part = parts[touch_parts[j]]
-
-                    if part then
-                        pcall(fire_touch, laser, part, true)
-                        pcall(fire_touch, laser, part, false)
-                    end
-                end
-            end
+        if accumulator < TICK_INTERVAL then
+            return
         end
-    end
 
-    local do_infinite_grab = LPH_NO_VIRTUALIZE(function(dt)
+        accumulator = 0
+
+        if not scanning and clock() - last_scan >= RESCAN_INTERVAL then
+            spawn(scan_lasers)
+        end
+
         local data = get_grabbed_target()
 
-        if not data then
-            clear_lasers()
-
-            return
+        if data then
+            hit_lasers(data[3])
         end
-
-        local parts = data[4]
-        local head = parts["Head"] or parts["UpperTorso"] or parts["HumanoidRootPart"]
-
-        if not head then
-            clear_lasers()
-
-            return
-        end
-
-        ensure_lasers()
-
-        local target_position = head["Position"]
-        local right_hand = local_parts["RightHand"] or local_parts["RightLowerArm"] or local_parts["HumanoidRootPart"]
-        local left_hand = local_parts["LeftHand"] or local_parts["LeftLowerArm"] or local_parts["HumanoidRootPart"]
-
-        if right_hand and lasers[1] then
-            update_laser(lasers[1], right_hand["Position"], target_position)
-        end
-
-        if left_hand and lasers[2] then
-            update_laser(lasers[2], left_hand["Position"], target_position)
-        end
-
-        local now = clock()
-
-        if now < next_touch then
-            return
-        end
-
-        next_touch = now + 0.1
-
-        do_touch(parts)
     end)
 
     local start = function()
@@ -12284,8 +12276,10 @@ do
         end
 
         active = true
-        next_touch = 0
+        accumulator = 0
         heartbeat[#heartbeat+1] = do_infinite_grab
+
+        spawn(scan_lasers)
     end
 
     local stop = function()
@@ -12301,8 +12295,6 @@ do
                 break
             end
         end
-
-        clear_lasers()
     end
 
     create_connection(menu_references["infinite_grab"]["on_toggle_change"], LPH_JIT_MAX(function(value)
@@ -20641,12 +20633,10 @@ local backtrack_data = {}
         menu_references["auto_fire_always_fire"] = menu_references["auto_fire_settings"]:create_element({["name"] = "always fire"}, {["toggle"] = {["flag"] = "auto_fire_always_fire", ["default"] = true}})
         menu_references["auto_fire_dont_render"] = menu_references["auto_fire_settings"]:create_element({["name"] = "dont render"}, {["toggle"] = {["flag"] = "auto_fire_dont_render", ["default"] = false}})
 
-        menu_references["manipulation"] = menu_references["general_section"]:create_element({["name"] = "manipulation"}, {["toggle"] = {["flag"] = "manipulation", ["default"] = true}})
-        menu_references["manipulation_settings"] = menu_references["manipulation"]:create_settings()
-        menu_references["manipulation_silent_aim"] = menu_references["manipulation_settings"]:create_element({["name"] = "silent aim"}, {["toggle"] = {["flag"] = "manipulation_silent_aim", ["default"] = false}})
-        menu_references["manipulation_target_hitbox"] = menu_references["manipulation_settings"]:create_element({["name"] = "target hitbox"}, {["dropdown"] = {["flag"] = "manipulation_hitbox", ["options"] = {"head", "root", "torso", "arms", "legs", "randomize"}, ["default"] = {"head"}}})
-        menu_references["manipulation_wall_bang"] = menu_references["manipulation_settings"]:create_element({["name"] = "wall bang"}, {["toggle"] = {["flag"] = "auto_fire_wall_bang", ["default"] = false}})
-        menu_references["manipulation_bullet_spoof"] = menu_references["manipulation_settings"]:create_element({["name"] = "bullet spoof"}, {["toggle"] = {["flag"] = "manipulation_bullet_spoof", ["default"] = false}})
+        -- Manipulation reads the locked ragebot target and rewrites the shot
+        -- onto it. Hitbox and prediction are automatic, so there is nothing to
+        -- configure beyond the toggle.
+        menu_references["manipulation"] = menu_references["general_section"]:create_element({["name"] = "manipulation"}, {["toggle"] = {["flag"] = "manipulation", ["default"] = false}})
         menu_references["auto_equip"] = menu_references["general_section"]:create_element({["name"] = "auto equip"}, {["toggle"] = {["flag"] = "auto_equip", ["default"] = false}})
         menu_references["auto_equip_settings"] = menu_references["auto_equip"]:create_settings()
         menu_references["auto_equip_unequip_when"] = menu_references["auto_equip_settings"]:create_element({["name"] = "unequip when"}, {["dropdown"] = {["flag"] = "auto_equip_unequip_when", ["default"] = {"no target"}, ["options"] = {"no target"}, ["multi"] = true}})
@@ -21618,7 +21608,7 @@ local backtrack_data = {}
                 ragebot_aim_velocity = target_velocity
                 ragebot_aim_defensive = did_defensive
 
-                if local_gun and (((not local_reloading or auto_fire_always_fire) and not target[18] and not target[7] and not spawn_guard["check"](target) and not grabbing_constraint) and (flags["auto_fire"] and (auto_fire_always_fire or ((flags["auto_fire_wall_bang"] or (local_server_position-ragebot_aim_position)["Magnitude"] <= local_gun) or flags["follow_target"] or did_defensive)) and old_time-last_fire > fire_cooldown)) then
+                if local_gun and (((not local_reloading or auto_fire_always_fire) and not target[18] and not target[7] and not spawn_guard["check"](target) and not grabbing_constraint) and (flags["auto_fire"] and (auto_fire_always_fire or (((local_server_position-ragebot_aim_position)["Magnitude"] > 0) or flags["follow_target"] or did_defensive)) and old_time-last_fire > fire_cooldown)) then
                     local delay = flags["shot_delay"]
                     if delay > 0 then
                         wait(delay/1000)
@@ -22365,15 +22355,18 @@ local backtrack_data = {}
         local active = false
 
         local do_manipulation = LPH_NO_VIRTUALIZE(function(dt)
-            if not (flags["manipulation"] ~= false or flags["manipulation_silent_aim"]) then
+            if not flags["manipulation"] then
                 return
             end
 
             local target = ragebot_target
 
             if not target or target[7] then
-                -- Target died or went away: drop the aim point we were feeding.
-                -- The ragebot clears its own frame by frame.
+                manipulation_aim_part = nil
+
+                -- Drop the aim point we were feeding so nothing keeps locking
+                -- onto a target after it went away. The ragebot owns it
+                -- otherwise and recomputes every frame.
                 if not flags["ragebot"] then
                     ragebot_aim_position = nil
                 end
@@ -22382,19 +22375,27 @@ local backtrack_data = {}
             end
 
             local parts = target[4]
-            local hitbox = parts[resolve_ragebot_hitbox_part(parts, "manipulation_hitbox")] or parts["HumanoidRootPart"]
+
+            -- Hitbox is automatic: the limbs the server counts as a hit, head
+            -- first. Aim point and part argument stay on the same limb.
+            local hitbox = parts["Head"] or parts["UpperTorso"] or parts["Torso"] or parts["HumanoidRootPart"]
 
             if not hitbox then
                 return
             end
 
-            local position = hitbox["Position"]
+            -- Prediction: the hit registers where the target was when the shot
+            -- left, so lead by the measured velocity over the round trip.
+            local velocity = target_velocity or hitbox["AssemblyLinearVelocity"]
+
+            manipulation_aim_part = hitbox
+            manipulation_aim_position = hitbox["Position"] + velocity * (local_ping/500)
 
             -- The ragebot owns the aim point when it computed one this frame.
-            -- Outside that the manipulation hitbox feeds it, which is what the
+            -- Outside that the manipulation aim feeds it, which is what the
             -- mouse Hit hook (silent aim) and the tracer both read.
-            if not ragebot_aim_position or ragebot_aim_position == vector3_zero then
-                ragebot_aim_position = position
+            if not flags["ragebot"] or not ragebot_aim_position then
+                ragebot_aim_position = manipulation_aim_position
             end
         end)
 
@@ -22421,26 +22422,24 @@ local backtrack_data = {}
                 end
             end
 
-            -- Drop the aim point we were feeding so nothing keeps locking onto
-            -- a target after the toggle goes off. The ragebot owns it otherwise
-            -- and recomputes every frame.
+            manipulation_aim_part = nil
+
             if not flags["ragebot"] then
                 ragebot_aim_position = nil
             end
         end
 
-        local update_active = LPH_JIT_MAX(function()
-            if flags["manipulation"] ~= false or flags["manipulation_silent_aim"] then
+        create_connection(menu_references["manipulation"]["on_toggle_change"], LPH_JIT_MAX(function(value)
+            if value then
                 start()
             else
                 stop()
             end
-        end)
+        end))
 
-        create_connection(menu_references["manipulation"]["on_toggle_change"], update_active)
-        create_connection(menu_references["manipulation_silent_aim"]["on_toggle_change"], update_active)
-
-        update_active()
+        if flags["manipulation"] then
+            start()
+        end
     end
 
     -- >> ( sender rate value )
