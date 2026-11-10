@@ -9409,7 +9409,10 @@ do
                     if aim_position then
                         local handle = args[2]
 
-                        local pos = aim_position + vector3_new(math_random(101,105)/100,0.008,-0.008)
+                        -- Jitter stays inside the limb. A larger offset moves the
+                        -- reported hit point off the body and the server counts
+                        -- the shot as a miss.
+                        local pos = aim_position + vector3_new(math_random(-3,3)/100, math_random(-3,3)/100, 0)
                         local origin = local_server_position["p"] + vector3_new(0.004,3.0208,-0.048)
                         local direction = (pos-origin)["Unit"]
 
@@ -9422,11 +9425,20 @@ do
                         local gun = local_guns[handle]
                         local range = gun and tonumber(gun[2]) or 1000
 
-                        if direction["Magnitude"] > 0.001 and (redirected or (pos-origin)["Magnitude"] > range) then
+                        if redirected then
+                            -- Bullet tp: the shot is reported as leaving from right
+                            -- above the target. The trace is then a couple of studs,
+                            -- has no wall to stop it and sits inside every weapon
+                            -- range, while the gun on this client never leaves the
+                            -- hand.
+                            origin = pos + vector3_new(0, 2.5, 0)
+                        elseif direction["Magnitude"] > 0.001 and (pos-origin)["Magnitude"] > range then
                             origin = pos - direction * 0.2
                         end
 
-                        local dir = (origin-pos)["Unit"]
+                        -- Point the direction at the body, the same way the
+                        -- ragebot sends its own shots.
+                        local dir = redirected and (pos-origin)["Unit"] or (origin-pos)["Unit"]
                         local Magnitude = dir["Magnitude"]
                         local part = silent_part or (is_ragebot_shot and args[5]) or (ragebot_target and (ragebot_target[4][resolve_ragebot_hitbox_part(ragebot_target[4])] or ragebot_target[4]["UpperTorso"])) or args[5]
 
