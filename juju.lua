@@ -18,7 +18,7 @@ end
 
 getgenv()["juju"] = {}
 
--- > ( bypass )
+-- > ( walk spoof )
 
 -- Declared before the connection table so unload can reach this one; it was
 -- the only per-frame loop the script never disconnected.
@@ -39,30 +39,44 @@ do
     local RunService = game:GetService("RunService")
     local localPlayer = Players.LocalPlayer
 
-    local run_bypass = function()
+    -- Always-on auto walk, spoofed. Nothing is toggled and nothing is displaced:
+    -- the frame the character stood still on is latched, and every frame after
+    -- that puts the root part back on it, so the walk velocity below is reported
+    -- to the server and never travelled on this client.
+    --
+    -- The latch lets go the moment the body is really moving - a key press, a
+    -- jump, a fall, a knockback - so the game keeps full control of anything the
+    -- player or the map is doing, and only a standing body is held still.
+    local walk_hold = nil
+
+    local walk_spoof = function()
         local character = localPlayer.Character
         local rootPart = character and character:FindFirstChild("HumanoidRootPart")
         local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 
-        if humanoid and humanoid.MoveDirection.Magnitude == 0 and rootPart then
-            local currentYVelocity = rootPart.AssemblyLinearVelocity.Y
-            rootPart.AssemblyLinearVelocity = Vector3.new(0.1, currentYVelocity, 0.1)
+        if not (humanoid and rootPart) then
+            walk_hold = nil
+            return
         end
+
+        local velocity = rootPart.AssemblyLinearVelocity
+
+        if humanoid.MoveDirection.Magnitude > 0
+            or humanoid.FloorMaterial == Enum.Material.Air
+            or velocity.Magnitude > 2 then
+            walk_hold = nil
+            return
+        end
+
+        walk_hold = walk_hold or rootPart.CFrame
+
+        -- Back onto the latched frame first, so the velocity write below is the
+        -- last word on where the body ends up this frame.
+        rootPart.CFrame = walk_hold
+        rootPart.AssemblyLinearVelocity = Vector3.new(0.1, velocity.Y, 0.1)
     end
 
-    -- Run twice on execute. The first pass fires with the character the script
-    -- loaded against; on a fresh join that character can still be nil or lack a
-    -- Humanoid, so the second pass waits one frame and runs again on whatever is
-    -- there by then. Both are guarded inside run_bypass, so a missing character
-    -- is a no-op rather than an error.
-    run_bypass()
-
-    spawn(function()
-        RunService.Heartbeat:Wait()
-        run_bypass()
-    end)
-
-    early_connections[#early_connections+1] = RunService.Heartbeat:Connect(run_bypass)
+    early_connections[#early_connections+1] = RunService.Heartbeat:Connect(walk_spoof)
 end
 
 -- > ( executor compat )
