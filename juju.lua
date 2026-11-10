@@ -22979,9 +22979,7 @@ local backtrack_data = {}
             -- wider than a forearm, and the margin grows with the shot distance,
             -- where the aim error is largest. The second ring doubles the push
             -- for a limb that is only open further out.
-            ["expander_margin"] = 0.12,
-            ["expander_growth"] = 0.4,
-            ["expander_rings"] = {1, 2, 3},
+            ["expander_rings"] = {0.45, 0.7, 0.92},
             ["expander_attempts"] = 8
         }
 
@@ -23022,10 +23020,14 @@ local backtrack_data = {}
         -- A candidate is clear when the ray reaches the body without hitting
         -- anything other than the target's own character.
         local spoof_visible = LPH_NO_VIRTUALIZE(function(origin, point, character)
-            local result = workspace:Raycast(origin, point - origin, spoof["params"])
+            local delta = point - origin
+            local result = workspace:Raycast(origin, delta * 1.02, spoof["params"])
 
+            -- Nothing hit means the point is not on the body, so the shot would
+            -- have nothing to land on. Only a hit that belongs to the target
+            -- counts as clear.
             if not result then
-                return true
+                return false
             end
 
             return result["Instance"]:IsDescendantOf(character)
@@ -23314,20 +23316,20 @@ local backtrack_data = {}
             local expand_onto = function(slot, part)
                 local size = part["Size"]
                 local half = vector3_new(size["X"] * 0.5, size["Y"] * 0.5, size["Z"] * 0.5)
-                local reach = (slot["position"] - slot["origin"])["Magnitude"]
-                -- Ping widens the margin on its own: the further the server
-                -- sees the body from where the client drew it, the further out
-                -- the aim point has to sit to still count as a hit.
-                local margin = (spoof["expander_margin"] + (reach / range) * spoof["expander_growth"]) * (1 + math["min"](local_ping / 400, 1))
                 local cframe = part["CFrame"]
                 local position = part["Position"] + lead
 
+                -- A limb can be larger than the aim tolerance, so the point is
+                -- walked over the limb's own box instead of its centre. Every
+                -- ring is a fraction of the half-extent and none exceeds it, so
+                -- each point sits inside the part and the ray lands on the body
+                -- rather than past it.
                 for ring = 1, #spoof["expander_rings"] do
-                    local push = margin * spoof["expander_rings"][ring]
+                    local scale = spoof["expander_rings"][ring]
 
                     for i = 1, #directions do
                         local direction = directions[i]
-                        local offset = vector3_new(direction["X"] * (half["X"] + push), direction["Y"] * (half["Y"] + push), direction["Z"] * (half["Z"] + push))
+                        local offset = vector3_new(direction["X"] * half["X"] * scale, direction["Y"] * half["Y"] * scale, direction["Z"] * half["Z"] * scale)
                         local world = cframe["RightVector"] * offset["X"] + cframe["UpVector"] * offset["Y"] + cframe["LookVector"] * offset["Z"]
                         local point = position + world
 
@@ -23484,9 +23486,13 @@ local backtrack_data = {}
                 manipulation_aim_origin = solution["origin"]
             else
                 -- Nothing clear: still report the shot as leaving from over the
-                -- body, the way bullet tp did.
-                manipulation_aim_part = hitbox
-                manipulation_aim_position = hitbox["Position"] + velocity * (local_ping/500)
+                -- body, the way bullet tp did. The torso is preferred over the
+                -- head here because it is the widest solid target on the body,
+                -- so an unsolved shot still has something to land on.
+                local fallback = parts["UpperTorso"] or parts["HumanoidRootPart"] or hitbox
+
+                manipulation_aim_part = fallback
+                manipulation_aim_position = fallback["Position"] + velocity * (local_ping/500)
                 manipulation_aim_origin = nil
 
                 if manipulation_solved_target == target then
