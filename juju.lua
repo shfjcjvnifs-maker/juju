@@ -8445,6 +8445,15 @@ local ragebot_firing_shot = false
 local manipulation_aim_position = nil
 local manipulation_aim_part = nil
 local manipulation_aim_origin = nil
+
+-- Verdict state for the center panel. `manipulation_verdict` is what the last
+-- rewritten shot actually did: nil = no shot sent yet this lock, true = the
+-- server confirmed damage, false = the shot was dropped. The panel shows
+-- "manipulated" only on a confirmed hit and "unsafe" otherwise, so a solved
+-- origin alone can no longer claim the feature is working.
+local manipulation_verdict = nil
+local manipulation_verdict_tick = 0
+local manipulation_verdict_target = nil
 local ragebot_aim_velocity = nil
 local ragebot_aim_defensive = false
 local local_knocked = false
@@ -9303,7 +9312,7 @@ do
 
     -- >> ( event setup )
 
-    get_bullet_result = LPH_JIT_MAX(function(player, part, old_server_position, aim_position, target_velocity, did_defensive)
+    get_bullet_result = LPH_JIT_MAX(function(player, part, old_server_position, aim_position, target_velocity, did_defensive, judges_manipulation)
         setthreadidentity(8)
 
         local data = player_data[player]
@@ -9325,14 +9334,32 @@ do
             local message = old_server_position and part and aim_position and " (pred miss: "..tostring(round((aim_position-part["Position"])["Magnitude"], 1))..") (velocity: "..tostring(round((target_velocity or vector3_zero)["Magnitude"], 1))..(did_defensive and ") (defensive: true)" or ") (defensive: false)")
 
             if shot_count == old_count then
+                if judges_manipulation then
+                    manipulation_verdict = false
+                    manipulation_verdict_tick = clock()
+                    manipulation_verdict_target = player
+                end
+
                 return signals["on_local_bullet_failed"]:Fire(player, part, not local_parts["Head"] and "death" or "unknown"..(message or ""), shot_count)
             end
 
             local new_health = data[9]
 
             if new_health < old_health then
+                if judges_manipulation then
+                    manipulation_verdict = true
+                    manipulation_verdict_tick = clock()
+                    manipulation_verdict_target = player
+                end
+
                 return signals["on_local_bullet_confirmed"]:Fire(player, part, tostring(floor(new_health-old_health)), shot_count, message)
             else
+                if judges_manipulation then
+                    manipulation_verdict = false
+                    manipulation_verdict_tick = clock()
+                    manipulation_verdict_target = player
+                end
+
                 return signals["on_local_bullet_failed"]:Fire(player, part, "unknown"..(message or ""), shot_count)
             end
         end
@@ -9565,7 +9592,7 @@ do
                         local part = silent_part or (is_ragebot_shot and args[5]) or (ragebot_target and (ragebot_target[4][resolve_ragebot_hitbox_part(ragebot_target[4])] or ragebot_target[4]["UpperTorso"])) or args[5]
 
                         if part and ragebot_target then
-                            spawn(get_bullet_result, ragebot_target[2], part, local_server_position["p"], aim_position, ragebot_aim_velocity, ragebot_aim_defensive)
+                            spawn(get_bullet_result, ragebot_target[2], part, local_server_position["p"], aim_position, ragebot_aim_velocity, ragebot_aim_defensive, redirected)
                         end
 
                         emit_local_bullet_tracer(pos)
@@ -13539,16 +13566,23 @@ end
                 local juju_env = getgenv()["juju"]
                 center_panel_waiting_protection = juju_env and juju_env["waiting_protection"] and true or false
             end
-            -- Manipulated as soon as the solver found a spoofed origin and a
-            -- hitbox on the locked target, no shot needed.
-            local manipulating = flags["manipulation"] and manipulation_aim_origin and manipulation_aim_part
+            -- Manipulated only while the last rewritten shot is confirmed to have
+            -- landed. A solved origin means the solver had an answer, not that
+            -- the server accepted it, so holding an origin is not enough. The
+            -- verdict goes stale after a moment, and clears when the locked
+            -- target changes, so a hit on one player never vouches for the next.
+            if manipulation_verdict_target and manipulation_verdict_target ~= (ragebot_target and ragebot_target[2]) then
+                manipulation_verdict = nil
+            end
+
+            local manipulation_ok = flags["manipulation"] and ragebot_target and manipulation_aim_origin and manipulation_verdict == true and frame_tick - manipulation_verdict_tick < 1.5
 
             -- Void first: manipulation cannot land from there, so a solved
             -- origin must not hide the void state. Follow target next: while it
             -- is armed the character is being moved onto the target, which is
             -- the state worth showing, and manipulation is what happens once it
             -- is off.
-            local new = (in_void or in_void == nil) and "void" or flags["follow_target"] and "following" or manipulating and "manipulated" or (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or "unsafe" or local_parts["ForceField"] and "invulnerable"
+            local new = (in_void or in_void == nil) and "void" or flags["follow_target"] and "following" or manipulation_ok and "manipulated" or (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or "unsafe" or local_parts["ForceField"] and "invulnerable"
             if old ~= new then
                 text3["Text"] = new
                 tween(text3, {["Transparency"] = 0.35}, linear, out, 0.09)
@@ -13752,6 +13786,8 @@ end
         local old_position = nil
         local animation = "none"
         local connection = nil
+        local last_drawn_x = nil
+        local last_drawn_y = nil
 
         local do_drawing_crosshair = LPH_JIT_MAX(function(dt)
             local new_position = nil
@@ -13778,6 +13814,16 @@ end
             local position = old_position + (new_position - old_position) * dt * 16
             local px = position["X"]
             local py = position["Y"]
+
+            -- Crosshair at rest: no mouse movement, no rotation, no animation,
+            -- and the arm set is already on screen. Nothing below can change it,
+            -- so the frame is skipped before any trig runs.
+            if animation == "none" and rotation == 0 and px == last_drawn_x and py == last_drawn_y then
+                return
+            end
+
+            last_drawn_x = px
+            last_drawn_y = py
     
             local anim_time = clock()
     
@@ -14240,6 +14286,9 @@ end
     local do_smooth_server_position_indicator = nil
 
     local do_server_position_indicator = LPH_JIT_MAX(function(dt)
+        -- The indicator only moves when the server position moves. Comparing the
+        -- two CFrames per frame is cheaper than two projections plus six drawing
+        -- writes, and an idle character sends no new position at all.
         if local_client_position ~= local_server_position then
             local local_server_position = local_server_position["p"]
             
@@ -18240,6 +18289,13 @@ end
         using_adornment_highlight = do_highlight and highlight_needs_adornments()
 
         if not flags["esp"] and not do_highlight then
+            -- Nothing to reconcile. Hand any adornment mirrors back before
+            -- leaving, so a later esp or highlight run starts clean instead of
+            -- finding stale boxes from the previous pass.
+            if using_adornment_highlight then
+                using_adornment_highlight = false
+            end
+
             return
         end
 
