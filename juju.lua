@@ -8343,6 +8343,7 @@ local ragebot_aim_position = nil
 local ragebot_firing_shot = false
 local manipulation_aim_position = nil
 local manipulation_aim_part = nil
+local manipulation_aim_origin = nil
 local ragebot_aim_velocity = nil
 local ragebot_aim_defensive = false
 local local_knocked = false
@@ -9426,12 +9427,13 @@ do
                         local range = gun and tonumber(gun[2]) or 1000
 
                         if redirected then
-                            -- Bullet tp: the shot is reported as leaving from right
-                            -- above the target. The trace is then a couple of studs,
-                            -- has no wall to stop it and sits inside every weapon
-                            -- range, while the gun on this client never leaves the
-                            -- hand.
-                            origin = pos + vector3_new(0, 2.5, 0)
+                            -- Bullet tp: the shot is reported as leaving from a
+                            -- point above the target. The manipulation solver
+                            -- picked one with a clear path down onto the body, so
+                            -- the trace is short, has no wall to stop it and sits
+                            -- inside every weapon range, while the gun on this
+                            -- client never leaves the hand.
+                            origin = manipulation_aim_origin or (pos + vector3_new(0, 2.5, 0))
                         elseif direction["Magnitude"] > 0.001 and (pos-origin)["Magnitude"] > range then
                             origin = pos - direction * 0.2
                         end
@@ -22453,79 +22455,185 @@ local backtrack_data = {}
         end
     end
 
-    -- >> ( hitbox expander )
-
-    do
-        local originals = {}
-        local active_target = nil
-
-        local restore = LPH_JIT_MAX(function()
-            for part, size in originals do
-                if part["Parent"] then
-                    part["Size"] = size
-                end
-            end
-
-            originals = {}
-            active_target = nil
-        end)
-
-        -- Blows the locked target's body parts up on this client only, so any
-        -- raycast this game runs locally has a much wider body to land on. It
-        -- rides on manipulation: on while manipulation holds a target, off
-        -- otherwise, nothing to configure.
-        local EXPAND_SCALE = 4
-
-        local do_hitbox_expander = LPH_NO_VIRTUALIZE(function(dt)
-            local target = flags["manipulation"] and ragebot_target
-
-            if not target or target[7] then
-                if active_target then
-                    restore()
-                end
-
-                return
-            end
-
-            if target ~= active_target then
-                restore()
-                active_target = target
-            end
-
-            local parts = target[4]
-            local names = {"Head", "UpperTorso", "LowerTorso", "HumanoidRootPart"}
-
-            for i = 1, #names do
-                local part = parts[names[i]]
-
-                if typeof(part) == "Instance" then
-                    local original = originals[part]
-
-                    if not original then
-                        original = part["Size"]
-                        originals[part] = original
-                    end
-
-                    local wanted = original * EXPAND_SCALE
-
-                    if part["Size"] ~= wanted then
-                        part["Size"] = wanted
-                    end
-                end
-            end
-        end)
-
-        heartbeat[#heartbeat+1] = do_hitbox_expander
-    end
-
     -- >> ( manipulation )
 
     do
         local target_tick = 0
 
+        -- Spoofed shot origin. The bullet is reported as leaving from a point
+        -- above and in front of the local character, coming down onto the best
+        -- hitbox of the locked target, while the gun never leaves the hand.
+        -- Every candidate is checked with a raycast first, so a roof or a wall
+        -- between that point and the body rules it out.
+        local spoof = {
+            ["range"] = 15,
+            ["cache"] = nil,
+            ["last"] = 0,
+            ["failed"] = 0,
+            ["failed_target"] = nil,
+            ["params"] = RaycastParams["new"](),
+            ["weights"] = {
+                {"Head", 4},
+                {"UpperTorso", 3},
+                {"LowerTorso", 2.4},
+                {"HumanoidRootPart", 2.2},
+                {"LeftUpperLeg", 1.2},
+                {"RightUpperLeg", 1.2}
+            },
+            ["lifts"] = {1, 0.7, 0.4},
+            ["arc_radii"] = {0.5, 0.75, 0.25, 1},
+            ["radii"] = {0.25, 0.5, 0.75, 1}
+        }
+
+        -- A candidate is clear when the ray reaches the body without hitting
+        -- anything other than the target's own character.
+        local spoof_visible = LPH_NO_VIRTUALIZE(function(origin, point, character)
+            local result = workspace:Raycast(origin, point - origin, spoof["params"])
+
+            if not result then
+                return true
+            end
+
+            return result["Instance"]:IsDescendantOf(character)
+        end)
+
+        local solve_spoof = LPH_NO_VIRTUALIZE(function(target, base, velocity)
+            local character = target[3]
+            local parts = target[4]
+            local head = parts["Head"] or parts["UpperTorso"] or parts["HumanoidRootPart"]
+
+            if not character or not head then
+                return nil
+            end
+
+            local now = clock()
+            local cache = spoof["cache"]
+            local lead = (velocity or head["AssemblyLinearVelocity"]) * (local_ping/500)
+
+            -- Reuse the last solution for 0.05 s. The body moves, so the aimed
+            -- point is re-derived from the cached limb every frame instead of
+            -- re-running the whole search.
+            if cache and cache["target"] == target and now - spoof["last"] < 0.05 then
+                local cached_part = cache["part"]
+
+                if cached_part and cached_part["Parent"] then
+                    cache["position"] = cached_part["Position"] + lead
+                    return cache
+                end
+            end
+
+            -- A target that was fully blocked stays blocked for at least 0.1 s;
+            -- re-searching it every frame burns FPS for nothing.
+            if spoof["failed_target"] == target and now - spoof["failed"] < 0.1 then
+                return nil
+            end
+
+            local range = spoof["range"]
+            local params = spoof["params"]
+            local filter = {local_character}
+
+            if ignored then
+                filter[#filter+1] = ignored
+            end
+
+            params["FilterType"] = Enum["RaycastFilterType"]["Exclude"]
+            params["RespectCanCollide"] = true
+            params["FilterDescendantsInstances"] = filter
+
+            local aim = head["Position"] + lead
+            local direction = aim - base
+            local flat = vector3_new(direction["X"], 0, direction["Z"])
+            local flat_unit = flat["Magnitude"] > 0.001 and flat["Unit"] or vector3_new(0, 0, 1)
+            local unit = direction["Magnitude"] > 0.001 and direction["Unit"] or flat_unit
+            local candidates = {}
+
+            -- Arcs: high points above the character, leaning toward the target,
+            -- capped at the spoof range.
+            for i = 1, #spoof["lifts"] do
+                for j = 1, #spoof["arc_radii"] do
+                    local offset = flat_unit * (range * spoof["arc_radii"][j] * 0.8) + vector3_new(0, range * spoof["lifts"][i], 0)
+                    local length = offset["Magnitude"]
+
+                    if length > range then
+                        offset = offset * (range / length)
+                    end
+
+                    candidates[#candidates+1] = {base + offset, offset["Magnitude"], 0}
+                end
+            end
+
+            -- Fallbacks around the character, penalised so a high origin wins
+            -- whenever one has a clear path.
+            candidates[#candidates+1] = {base, 0, 3}
+            candidates[#candidates+1] = {base + unit * range, range, 3}
+
+            for i = 1, #spoof["radii"] do
+                local radius = range * spoof["radii"][i]
+
+                candidates[#candidates+1] = {base + vector3_new(0, radius, 0), radius, 3}
+
+                for step = 0, 7 do
+                    local theta = step * (math["pi"]/4)
+
+                    candidates[#candidates+1] = {base + vector3_new(math["cos"](theta) * radius, 0, math["sin"](theta) * radius), radius, 3}
+                end
+            end
+
+            local head_position = head["Position"]
+            local best = nil
+            local best_score = -math["huge"]
+
+            for i = 1, #candidates do
+                local candidate = candidates[i]
+                local origin = candidate[1]
+
+                for j = 1, #spoof["weights"] do
+                    local entry = spoof["weights"][j]
+                    local part = parts[entry[1]]
+
+                    if part then
+                        local score = entry[2] - (candidate[2]/range) * 1.5 - candidate[3]
+
+                        if score > best_score then
+                            local point = aim + (part["Position"] - head_position)
+
+                            if spoof_visible(origin, point, character) then
+                                best_score = score
+                                best = {
+                                    ["origin"] = candidate[2] > 0 and origin or nil,
+                                    ["position"] = point,
+                                    ["part"] = part,
+                                    ["target"] = target
+                                }
+                            end
+                        end
+                    end
+                end
+
+                -- Head is the highest weighted limb: nothing later can beat it
+                -- once it is visible.
+                if best and best["part"] == parts["Head"] then
+                    break
+                end
+            end
+
+            spoof["last"] = now
+
+            if best then
+                spoof["cache"] = best
+                return best
+            end
+
+            spoof["cache"] = nil
+            spoof["failed"] = now
+            spoof["failed_target"] = target
+            return nil
+        end)
+
         local do_manipulation = LPH_NO_VIRTUALIZE(function(dt)
             if not flags["manipulation"] then
                 manipulation_aim_part = nil
+                manipulation_aim_origin = nil
 
                 if not flags["ragebot"] then
                     ragebot_aim_position = nil
@@ -22551,6 +22659,7 @@ local backtrack_data = {}
 
             if not target or target[7] then
                 manipulation_aim_part = nil
+                manipulation_aim_origin = nil
 
                 -- Drop the aim point we were feeding so nothing keeps locking
                 -- onto a target after it went away. The ragebot owns it
@@ -22563,10 +22672,7 @@ local backtrack_data = {}
             end
 
             local parts = target[4]
-
-            -- Hitbox is automatic: the limbs the server counts as a hit, head
-            -- first. Aim point and part argument stay on the same limb.
-            local hitbox = parts["Head"] or parts["UpperTorso"] or parts["Torso"] or parts["HumanoidRootPart"]
+            local hitbox = parts["Head"] or parts["UpperTorso"] or parts["HumanoidRootPart"]
 
             if not hitbox then
                 return
@@ -22575,9 +22681,19 @@ local backtrack_data = {}
             -- Prediction: the hit registers where the target was when the shot
             -- left, so lead by the measured velocity over the round trip.
             local velocity = target_velocity or hitbox["AssemblyLinearVelocity"]
+            local solution = solve_spoof(target, local_server_position["p"], velocity)
 
-            manipulation_aim_part = hitbox
-            manipulation_aim_position = hitbox["Position"] + velocity * (local_ping/500)
+            if solution then
+                manipulation_aim_part = solution["part"]
+                manipulation_aim_position = solution["position"]
+                manipulation_aim_origin = solution["origin"]
+            else
+                -- Nothing clear: still report the shot as leaving from over the
+                -- body, the way bullet tp did.
+                manipulation_aim_part = hitbox
+                manipulation_aim_position = hitbox["Position"] + velocity * (local_ping/500)
+                manipulation_aim_origin = nil
+            end
 
             -- The ragebot owns the aim point when it computed one this frame.
             -- Outside that the manipulation aim feeds it, which is what the
@@ -23935,34 +24051,6 @@ local backtrack_data = {}
         local auto_stomp_target_friendly = false
         local auto_stomp_target_enemy = false
         local auto_stomp_stop_when_dead = true
-        local stomp_weld = nil
-
-        -- Stomp weld: hold the local character onto the target while the stomp
-        -- runs. The server samples the contact over its own round trip, and a
-        -- single teleported frame gets missed, which is why the stomp missed
-        -- sometimes.
-        local set_stomp_weld = LPH_JIT_MAX(function(torso)
-            local root = local_parts["HumanoidRootPart"]
-
-            if not root then
-                return
-            end
-
-            if not stomp_weld or not stomp_weld["Parent"] then
-                stomp_weld = create_instance("WeldConstraint", {
-                    ["Name"] = "stomp_weld",
-                    ["Parent"] = root
-                })
-            end
-
-            if torso then
-                stomp_weld["Part0"] = root
-                stomp_weld["Part1"] = torso
-                stomp_weld["Enabled"] = true
-            else
-                stomp_weld["Enabled"] = false
-            end
-        end)
 
         local do_auto_stomp = LPH_JIT_MAX(function(dt, hrp, bypass)
             if hrp and not purchasing and not local_reloading and (not in_void or bypass) then
@@ -24003,12 +24091,6 @@ local backtrack_data = {}
 
                             hrp["CFrame"] = new_cframe
 
-                            -- Weld once the character sits on the target, so the
-                            -- offset the weld holds is the stomp pose itself.
-                            if not stomp_weld or not stomp_weld["Enabled"] then
-                                set_stomp_weld(torso)
-                            end
-
                             render_stepped_wait(render_stepped)
 
                             if tick - auto_stomp_tick > 0.025 then
@@ -24025,29 +24107,17 @@ local backtrack_data = {}
 
                 stomping = found_target
 
-                if not found_target and stomp_weld then
-                    set_stomp_weld(nil)
-                end
-
                 if not found_target and last_position and not bypass then
                     render_stepped_wait(render_stepped)
                     hrp["CFrame"] = old
                 end
             elseif stomping then
                 stomping = false
-
-                if stomp_weld then
-                    set_stomp_weld(nil)
-                end
             end
         end)
 
         create_connection(menu_references["auto_stomp"]["on_toggle_change"], function(value)
             stomping = false
-
-            if stomp_weld then
-                set_stomp_weld(nil)
-            end
 
             for i = 1, #anti_aim do
                 if anti_aim[i] == do_auto_stomp then
