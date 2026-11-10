@@ -22557,22 +22557,50 @@ local backtrack_data = {}
             ["lifts"] = {1, 0.7, 0.4},
             ["arc_radii"] = {0.5, 0.75, 0.25, 1},
             ["radii"] = {0.25, 0.5, 0.75, 1},
-            -- Spoofed hitbox expander: aim points spread across the limb. The
-            -- shot lands on whichever one has the clearest path, so a limb
-            -- that is only half exposed still gets hit.
-            ["probes"] = {
-                vector3_new(0, 0.4, 0), vector3_new(0, -0.4, 0),
-                vector3_new(0.4, 0, 0), vector3_new(-0.4, 0, 0),
-                vector3_new(0, 0.8, 0), vector3_new(0, -0.8, 0),
-                vector3_new(0.8, 0, 0), vector3_new(-0.8, 0, 0),
-                vector3_new(0.55, 0.55, 0), vector3_new(-0.55, 0.55, 0),
-                vector3_new(0.55, -0.55, 0), vector3_new(-0.55, -0.55, 0),
-                vector3_new(0, 0.25, 0), vector3_new(0, -0.25, 0),
-                vector3_new(0.25, 0, 0), vector3_new(-0.25, 0, 0),
-                vector3_new(0.8, 0.8, 0), vector3_new(-0.8, 0.8, 0),
-                vector3_new(0.8, -0.8, 0), vector3_new(-0.8, -0.8, 0)
-            }
+            -- Spoofed hitbox expander, calculated instead of listed. The push
+            -- out of the limb comes from that limb's own box, so a torso spreads
+            -- wider than a forearm, and the margin grows with the shot distance,
+            -- where the aim error is largest. The second ring doubles the push
+            -- for a limb that is only open further out.
+            ["expander_margin"] = 0.12,
+            ["expander_growth"] = 0.4,
+            ["expander_rings"] = {1, 2},
+            ["expander_attempts"] = 5
         }
+
+        -- Box surface directions, smallest push first: six faces, then twelve
+        -- edges, then eight corners.
+        local expander_buckets = {}
+
+        for x = -1, 1 do
+            for y = -1, 1 do
+                for z = -1, 1 do
+                    if x ~= 0 or y ~= 0 or z ~= 0 then
+                        local zeros = (x == 0 and 1 or 0) + (y == 0 and 1 or 0) + (z == 0 and 1 or 0)
+                        local bucket = expander_buckets[zeros + 1]
+
+                        if not bucket then
+                            bucket = {}
+                            expander_buckets[zeros + 1] = bucket
+                        end
+
+                        bucket[#bucket+1] = vector3_new(x, y, z)
+                    end
+                end
+            end
+        end
+
+        spoof["expander_directions"] = {}
+
+        for bucket = 3, 1, -1 do
+            local list = expander_buckets[bucket]
+
+            if list then
+                for i = 1, #list do
+                    spoof["expander_directions"][#spoof["expander_directions"]+1] = list[i]
+                end
+            end
+        end
 
         -- A candidate is clear when the ray reaches the body without hitting
         -- anything other than the target's own character.
@@ -22771,19 +22799,96 @@ local backtrack_data = {}
                 end
             end
 
-            -- The centre ray of a limb can clip the shooter or a ledge while
-            -- the rest of the limb is open. Once a candidate wins, walk a few
-            -- points across the limb and keep the first clear one.
+            -- Hitbox expander calculator. The centre ray of a limb clips the
+            -- shooter or a ledge while the rest of the limb is open, so the aim
+            -- walks out to the limb's own box surface: the push is scaled by that
+            -- limb's size along its own axes, so the point stays on the body at
+            -- every rotation, and the margin grows with the shot distance, where
+            -- the aim error is largest.
+            local directions = spoof["expander_directions"]
+
+            local expand_onto = function(slot, part)
+                local size = part["Size"]
+                local half = vector3_new(size["X"] * 0.5, size["Y"] * 0.5, size["Z"] * 0.5)
+                local reach = (slot["position"] - slot["origin"])["Magnitude"]
+                local margin = spoof["expander_margin"] + (reach / range) * spoof["expander_growth"]
+                local cframe = part["CFrame"]
+                local position = part["Position"] + lead
+
+                for ring = 1, #spoof["expander_rings"] do
+                    local push = margin * spoof["expander_rings"][ring]
+
+                    for i = 1, #directions do
+                        local direction = directions[i]
+                        local offset = vector3_new(direction["X"] * (half["X"] + push), direction["Y"] * (half["Y"] + push), direction["Z"] * (half["Z"] + push))
+                        local world = cframe["RightVector"] * offset["X"] + cframe["UpVector"] * offset["Y"] + cframe["LookVector"] * offset["Z"]
+                        local point = position + world
+
+                        if spoof_visible(slot["origin"], point, character) then
+                            slot["part"] = part
+                            slot["position"] = point
+                            slot["probe"] = world
+                            return true
+                        end
+                    end
+                end
+
+                return false
+            end
+
             if best and best["origin"] then
-                local probes = spoof["probes"]
+                -- The locked limb can be blocked on the centre while its edges
+                -- are open, so widen across that limb first.
+                if not expand_onto(best, best["part"]) then
+                    -- Blocked all around. Widen to the other hitboxes, heaviest
+                    -- first, and take the first one with a clear surface.
+                    local attempts = 0
 
-                for i = 1, #probes do
-                    local point = best["position"] + probes[i]
+                    for i = 1, #spoof["weights"] do
+                        local part = parts[spoof["weights"][i][1]]
 
-                    if spoof_visible(best["origin"], point, character) then
-                        best["probe"] = probes[i]
-                        best["position"] = point
-                        break
+                        if part and part ~= best["part"] then
+                            attempts = attempts + 1
+
+                            if expand_onto(best, part) then
+                                break
+                            end
+
+                            if attempts >= spoof["expander_attempts"] then
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+
+            if not best then
+                -- Every limb centre was blocked from every origin. The expander
+                -- still gets a chance from straight above the character, walking
+                -- the box surfaces instead of the centres.
+                local slot = {
+                    ["origin"] = base + vector3_new(0, range, 0),
+                    ["position"] = base,
+                    ["part"] = nil,
+                    ["target"] = target,
+                    ["probe"] = vector3_zero
+                }
+                local attempts = 0
+
+                for i = 1, #spoof["weights"] do
+                    local part = parts[spoof["weights"][i][1]]
+
+                    if part then
+                        attempts = attempts + 1
+
+                        if expand_onto(slot, part) then
+                            best = slot
+                            break
+                        end
+
+                        if attempts >= spoof["expander_attempts"] then
+                            break
+                        end
                     end
                 end
             end
