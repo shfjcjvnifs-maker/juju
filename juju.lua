@@ -8487,6 +8487,13 @@ local manipulation_verdict = nil
 local manipulation_verdict_tick = 0
 local manipulation_verdict_target = nil
 
+-- The solver result for the currently locked target. Set the moment a spoofed
+-- origin and a hitbox are found, cleared the moment the target changes or the
+-- next solve fails, so the panel reports what this target's last solve actually
+-- produced rather than whatever the previous one left behind.
+local manipulation_solved = false
+local manipulation_solved_target = nil
+
 -- Infinite distance needs no state of its own: the flag decides whether the
 -- origin is spoofed beside the body or taken from the solver.
 local ragebot_aim_velocity = nil
@@ -13693,16 +13700,20 @@ end
                 local juju_env = getgenv()["juju"]
                 center_panel_waiting_protection = juju_env and juju_env["waiting_protection"] and true or false
             end
-            -- Manipulated only while the last rewritten shot is confirmed to have
-            -- landed. A solved origin means the solver had an answer, not that
-            -- the server accepted it, so holding an origin is not enough. The
-            -- verdict goes stale after a moment, and clears when the locked
-            -- target changes, so a hit on one player never vouches for the next.
+            -- Manipulated the moment the solver succeeds for the locked target:
+            -- a spoofed origin plus a hitbox with a clear path. No shot needed.
+            -- The flag is per target, so a solve for the previous player never
+            -- carries over, and a failed solve clears it again.
+            --
+            -- A confirmed hit still counts as proof even if the live solve is
+            -- between refreshes, so the verdict is checked as well.
             if manipulation_verdict_target and manipulation_verdict_target ~= (ragebot_target and ragebot_target[2]) then
                 manipulation_verdict = nil
             end
 
-            local manipulation_ok = flags["manipulation"] and ragebot_target and manipulation_aim_origin and manipulation_verdict == true and frame_tick - manipulation_verdict_tick < 1.5
+            local manipulation_solve_ok = manipulation_solved and ragebot_target and manipulation_solved_target == ragebot_target
+            local manipulation_hit_ok = manipulation_verdict == true and ragebot_target and frame_tick - manipulation_verdict_tick < 1.5
+            local manipulation_ok = flags["manipulation"] and ragebot_target and manipulation_aim_origin and (manipulation_solve_ok or manipulation_hit_ok)
 
             -- Void first: manipulation cannot land from there, so a solved
             -- origin must not hide the void state. Follow target next: while it
@@ -21856,6 +21867,13 @@ local backtrack_data = {}
         ragebot_aim_defensive = false
         target_velocity = vector3_zero
         ragebot_target = target
+
+        -- A new target has not been solved yet. Clearing here is what makes the
+        -- next "manipulated" mean this player, not the one before.
+        manipulation_solved = false
+        manipulation_solved_target = nil
+        manipulation_verdict = nil
+
         target_last_position = nil
         target_changed_signal:Fire(target)
 
@@ -22974,6 +22992,12 @@ local backtrack_data = {}
 
                 if cached_part and cached_part["Parent"] then
                     cache["position"] = cached_part["Position"] + lead + cache["probe"]
+
+                    if cache["origin"] then
+                        manipulation_solved = true
+                        manipulation_solved_target = cache["target"]
+                    end
+
                     return cache
                 end
             end
@@ -23320,12 +23344,24 @@ local backtrack_data = {}
 
             if best then
                 spoof["cache"] = best
+
+                if best["origin"] then
+                    manipulation_solved = true
+                    manipulation_solved_target = target
+                end
+
                 return best
             end
 
             spoof["cache"] = nil
             spoof["failed"] = now
             spoof["failed_target"] = target
+
+            if manipulation_solved_target == target then
+                manipulation_solved = false
+                manipulation_solved_target = nil
+            end
+
             return nil
         end)
 
@@ -23392,6 +23428,11 @@ local backtrack_data = {}
                 manipulation_aim_part = hitbox
                 manipulation_aim_position = hitbox["Position"] + velocity * (local_ping/500)
                 manipulation_aim_origin = nil
+
+                if manipulation_solved_target == target then
+                    manipulation_solved = false
+                    manipulation_solved_target = nil
+                end
             end
 
             -- The ragebot owns the aim point when it computed one this frame.
