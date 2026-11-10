@@ -8344,6 +8344,7 @@ local ragebot_firing_shot = false
 local manipulation_aim_position = nil
 local manipulation_aim_part = nil
 local manipulation_aim_origin = nil
+local manipulation_last_shot = 0
 local ragebot_aim_velocity = nil
 local ragebot_aim_defensive = false
 local local_knocked = false
@@ -9434,6 +9435,7 @@ do
                             -- inside every weapon range, while the gun on this
                             -- client never leaves the hand.
                             origin = manipulation_aim_origin or (pos + vector3_new(0, 2.5, 0))
+                            manipulation_last_shot = clock()
                         elseif direction["Magnitude"] > 0.001 and (pos-origin)["Magnitude"] > range then
                             origin = pos - direction * 0.2
                         end
@@ -13406,10 +13408,13 @@ end
 
         local do_center_panel = LPH_JIT_MAX(function(dt)
             local old = text3["Text"]
-            -- Manipulation on and a target locked: every own shot is being
-            -- rewritten onto that target, so say so. It outranks the other
-            -- states because it happens while shooting.
-            local new = (flags["manipulation"] and manipulation_aim_part) and "manipulated" or (flags["ragebot"] and (getgenv()["juju"] or {})["waiting_protection"]) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or (in_void or in_void == nil) and "void" or "unsafe" or local_parts["ForceField"] and "invulnerable"
+            -- Manipulated only while manipulation is actually rewriting shots:
+            -- a solved origin plus a shot sent in the last moment. Locking a
+            -- target alone does not count, so the panel keeps showing the real
+            -- state (unsafe and so on) until a shot goes out.
+            local manipulating = flags["manipulation"] and manipulation_aim_origin and manipulation_aim_part and clock() - manipulation_last_shot < 0.75
+
+            local new = manipulating and "manipulated" or (flags["ragebot"] and (getgenv()["juju"] or {})["waiting_protection"]) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or (in_void or in_void == nil) and "void" or "unsafe" or local_parts["ForceField"] and "invulnerable"
             if old ~= new then
                 text3["Text"] = new
                 tween(text3, {["Transparency"] = 0.35}, linear, out, 0.09)
@@ -22477,8 +22482,14 @@ local backtrack_data = {}
                 {"UpperTorso", 3},
                 {"LowerTorso", 2.4},
                 {"HumanoidRootPart", 2.2},
-                {"LeftUpperLeg", 1.2},
-                {"RightUpperLeg", 1.2}
+                {"LeftUpperArm", 1.8},
+                {"RightUpperArm", 1.8},
+                {"LeftUpperLeg", 1.4},
+                {"RightUpperLeg", 1.4},
+                {"LeftLowerArm", 1.2},
+                {"RightLowerArm", 1.2},
+                {"LeftLowerLeg", 1},
+                {"RightLowerLeg", 1}
             },
             ["lifts"] = {1, 0.7, 0.4},
             ["arc_radii"] = {0.5, 0.75, 0.25, 1},
@@ -22517,7 +22528,7 @@ local backtrack_data = {}
                 local cached_part = cache["part"]
 
                 if cached_part and cached_part["Parent"] then
-                    cache["position"] = cached_part["Position"] + lead
+                    cache["position"] = cached_part["Position"] + lead + cache["probe"]
                     return cache
                 end
             end
@@ -22562,6 +22573,19 @@ local backtrack_data = {}
                 end
             end
 
+            -- Diagonal arcs, swung left and right of the straight line. A roof
+            -- edge or a doorway often blocks straight down but leaves one of
+            -- these two clear.
+            local side = vector3_new(-flat_unit["Z"], 0, flat_unit["X"])
+
+            for i = 1, #spoof["lifts"] do
+                local left = (flat_unit + side)["Unit"] * (range * 0.6) + vector3_new(0, range * spoof["lifts"][i], 0)
+                local right = (flat_unit - side)["Unit"] * (range * 0.6) + vector3_new(0, range * spoof["lifts"][i], 0)
+
+                candidates[#candidates+1] = {base + left, left["Magnitude"], 0}
+                candidates[#candidates+1] = {base + right, right["Magnitude"], 0}
+            end
+
             -- Fallbacks around the character, penalised so a high origin wins
             -- whenever one has a clear path.
             candidates[#candidates+1] = {base, 0, 3}
@@ -22603,7 +22627,8 @@ local backtrack_data = {}
                                     ["origin"] = candidate[2] > 0 and origin or nil,
                                     ["position"] = point,
                                     ["part"] = part,
-                                    ["target"] = target
+                                    ["target"] = target,
+                                    ["probe"] = vector3_zero
                                 }
                             end
                         end
@@ -22614,6 +22639,28 @@ local backtrack_data = {}
                 -- once it is visible.
                 if best and best["part"] == parts["Head"] then
                     break
+                end
+            end
+
+            -- The centre ray of a limb can clip the shooter or a ledge while
+            -- the rest of the limb is open. Once a candidate wins, walk a few
+            -- points across the limb and keep the first clear one.
+            if best and best["origin"] then
+                local probes = {
+                    vector3_new(0, 0.4, 0),
+                    vector3_new(0, -0.4, 0),
+                    vector3_new(0.4, 0, 0),
+                    vector3_new(-0.4, 0, 0)
+                }
+
+                for i = 1, #probes do
+                    local point = best["position"] + probes[i]
+
+                    if spoof_visible(best["origin"], point, character) then
+                        best["probe"] = probes[i]
+                        best["position"] = point
+                        break
+                    end
                 end
             end
 
