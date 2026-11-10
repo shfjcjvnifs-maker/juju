@@ -8170,6 +8170,15 @@ local menu = {
                     getrawmetatable = previous
                 end)
             end
+
+            local previous_set = getgenv()["_OG_SET"]
+
+            if type(previous_set) == "function" then
+                pcall(function()
+                    getgenv()["setrawmetatable"] = previous_set
+                    setrawmetatable = previous_set
+                end)
+            end
         end
 
         local env = getgenv()
@@ -8200,6 +8209,32 @@ local menu = {
         end)
 
         getrawmetatable = env["getrawmetatable"]
+
+        -- Same idea for writes. Every setrawmetatable records the metatable that
+        -- was there first, so unload can put all of them back whether or not the
+        -- call site kept its own copy. `_OG_SET` persists across runs for the
+        -- same reason `_OG` does.
+        local raw_getmetatable = real
+        local real_setrawmetatable = env["_OG_SET"] or setrawmetatable
+        local touched_metatables = {}
+
+        if real_setrawmetatable then
+            env["_OG_SET"] = real_setrawmetatable
+
+            env["setrawmetatable"] = newcclosure(function(instance, mt)
+                if touched_metatables[instance] == nil then
+                    local ok, original = pcall(raw_getmetatable, instance)
+
+                    if ok and original then
+                        touched_metatables[instance] = original
+                    end
+                end
+
+                return real_setrawmetatable(instance, mt)
+            end)
+
+            setrawmetatable = env["setrawmetatable"]
+        end
 
         env["_JUJU"] = function()
             env["_JUJU"] = nil
@@ -8285,6 +8320,20 @@ local menu = {
             end
 
             metatables = {}
+
+            -- Undo the writes too, through the executor's own function. The Aim
+            -- frame in particular is never put back by the feature that hooked
+            -- it, so without this a leftover fake metatable survives the unload.
+            if real_setrawmetatable then
+                env["setrawmetatable"] = real_setrawmetatable
+                setrawmetatable = real_setrawmetatable
+
+                for instance, mt in touched_metatables do
+                    pcall(real_setrawmetatable, instance, mt)
+                end
+            end
+
+            touched_metatables = {}
 
             for i = 1, #unload_drawings do
                 local drawing = unload_drawings[i]
@@ -8440,6 +8489,11 @@ local raw_world_to_viewport_point = function(cam, position)
     return cam["WorldToViewportPoint"](cam, position)
 end
 
+-- The pcall is only there to survive an executor that rejects the method. Once
+-- one call proves it works the guard is dropped: this runs twice per visible
+-- player every frame, and a pcall costs more than the projection itself.
+local viewport_direct = false
+
 local world_to_viewport_point = LPH_NO_VIRTUALIZE(function(cam, position)
     cam = cam or workspace["CurrentCamera"]
 
@@ -8447,11 +8501,17 @@ local world_to_viewport_point = LPH_NO_VIRTUALIZE(function(cam, position)
         return vector2_new(0, 0), false
     end
 
+    if viewport_direct then
+        return cam["WorldToViewportPoint"](cam, position)
+    end
+
     local ok, screen, on_screen = pcall(raw_world_to_viewport_point, cam, position)
 
     if not ok then
         return vector2_new(0, 0), false
     end
+
+    viewport_direct = true
 
     return screen, on_screen
 end)
