@@ -8563,11 +8563,12 @@ local manipulation_verdict_target = nil
 
 -- The solver result for the currently locked target. Set the moment a spoofed
 -- origin and a hitbox are found, cleared the moment the target changes or the
--- next solve fails. Kept for the panel's own bookkeeping and for anything that
--- needs to know whether the current target has an answer; the panel's
--- "manipulated" status no longer rests on it, because a solve is not a hit.
+-- next solve fails. Kept for everything that needs to know whether the current
+-- target has an answer, the panel's status included; the tick is what the panel
+-- reads to tell a live scan from an answer left behind by a target that is gone.
 local manipulation_solved = false
 local manipulation_solved_target = nil
+local manipulation_solved_tick = 0
 
 -- Infinite distance needs no state of its own: the flag decides whether the
 -- origin is spoofed beside the body or taken from the solver.
@@ -13767,17 +13768,22 @@ end
                 local juju_env = getgenv()["juju"]
                 center_panel_waiting_protection = juju_env and juju_env["waiting_protection"] and true or false
             end
-            -- Manipulated means the server took the shot. A solved origin only says
-            -- the solver had an answer, and showing that was the panel claiming a
-            -- hit for shots that never landed, which is exactly the case that reads
-            -- as working while nothing connects. The verdict is what the last
-            -- rewritten shot actually did.
+            -- Manipulated means the scan has an answer for the locked target and
+            -- is still producing it. The solver re-runs on its own every frame and
+            -- stamps the result, so the status clears by itself when the scan stops
+            -- finding one, without waiting on a shot to land or on the target to be
+            -- re-picked.
             if manipulation_verdict_target and manipulation_verdict_target ~= (ragebot_target and ragebot_target[2]) then
                 manipulation_verdict = nil
             end
 
+            local manipulation_scan_ok = manipulation_solved
+                and ragebot_target
+                and manipulation_solved_target == ragebot_target
+                and frame_tick - manipulation_solved_tick < 0.5
+
             local manipulation_hit_ok = manipulation_verdict == true and ragebot_target and frame_tick - manipulation_verdict_tick < 1.5
-            local manipulation_ok = flags["manipulation"] and ragebot_target and manipulation_aim_origin and manipulation_hit_ok
+            local manipulation_ok = flags["manipulation"] and ragebot_target and manipulation_aim_origin and (manipulation_scan_ok or manipulation_hit_ok)
 
             -- Void first: manipulation cannot land from there, so a solved
             -- origin must not hide the void state. Follow target next: while it
@@ -23185,6 +23191,7 @@ local backtrack_data = {}
                     if cache["origin"] then
                         manipulation_solved = true
                         manipulation_solved_target = cache["target"]
+                        manipulation_solved_tick = now
                     end
 
                     return cache
@@ -23452,6 +23459,7 @@ local backtrack_data = {}
                 if best["origin"] then
                     manipulation_solved = true
                     manipulation_solved_target = target
+                    manipulation_solved_tick = now
                 end
 
                 return best
