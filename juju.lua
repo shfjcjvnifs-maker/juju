@@ -8152,7 +8152,24 @@ local menu = {
         local unload = getgenv()["_JUJU"]
 
         if unload then
-            unload()
+            -- Guarded: a teardown that throws halfway is why a re-execute used
+            -- to crash. Whatever it missed, the rawmetatable restore below
+            -- still puts the executor's own function back.
+            pcall(unload)
+        end
+
+        -- The previous run may have died without restoring this. Putting the
+        -- real function back here means `_OG` below is the executor's, not a
+        -- hook belonging to a script that no longer exists.
+        do
+            local previous = getgenv()["_OG"]
+
+            if type(previous) == "function" then
+                pcall(function()
+                    getgenv()["getrawmetatable"] = previous
+                    getrawmetatable = previous
+                end)
+            end
         end
 
         local env = getgenv()
@@ -8160,8 +8177,16 @@ local menu = {
 
         local metatables = {}
 
-        local real = getrawmetatable
+        -- Always wrap the executor's own getrawmetatable, never a previous
+        -- run's hook. `_OG` is written once and kept across runs for exactly
+        -- that reason: on a re-execute the live getrawmetatable is already our
+        -- last wrapper, and wrapping it again is what turned the second run into
+        -- a stack of closures over a dead script.
+        local real = env["_OG"] or getrawmetatable
         env["_OG"] = real
+
+        -- A previous run that never unloaded left its wrapper live. Replace the
+        -- global rather than nesting on top of it.
         env["getrawmetatable"] = newcclosure(function(instance)
             local mt = real(instance)
 
@@ -8211,7 +8236,7 @@ local menu = {
                             local element = elements[i]
 
                             if element["toggle_flag"] then
-                                element:set_toggle(false)
+                                pcall(element.set_toggle, element, false)
                             end
                         end
                     end
@@ -8224,7 +8249,7 @@ local menu = {
                     local element = elements[i]
 
                     if element["toggle_flag"] then
-                        element:set_toggle(false)
+                        pcall(element.set_toggle, element, false)
                     end
                 end
             end
@@ -8244,17 +8269,22 @@ local menu = {
                 user_input_service["MouseIconEnabled"] = true
             end)
 
-            context_action_service:UnbindAction(context_action_click)
-            context_action_service:UnbindAction(context_action_typing)
-            context_action_service:UnbindCoreAction(context_action_typing_core)
-            context_action_service:UnbindAction(context_action_scroll)
+            pcall(context_action_service.UnbindAction, context_action_service, context_action_click)
+            pcall(context_action_service.UnbindAction, context_action_service, context_action_typing)
+            pcall(context_action_service.UnbindCoreAction, context_action_service, context_action_typing_core)
+            pcall(context_action_service.UnbindAction, context_action_service, context_action_scroll)
 
+            -- `_OG` is deliberately kept: the next run needs it to skip past any
+            -- wrapper this one leaves behind.
             env["getrawmetatable"] = real
-            env["_OG"] = nil
 
+            -- Restored ahead of the drawing pass, because that pass talks to the
+            -- executor and a throw in it must not leave hooks installed.
             for instance, mt in metatables do
                 pcall(setrawmetatable, instance, mt)
             end
+
+            metatables = {}
 
             for i = 1, #unload_drawings do
                 local drawing = unload_drawings[i]
@@ -8281,7 +8311,9 @@ local menu = {
             -- this on top of the per-object Destroy above.
             pcall(cleardrawcache)
 
-            old_drawing["_UNLOAD"]()
+            if old_drawing and old_drawing["_UNLOAD"] then
+                pcall(old_drawing["_UNLOAD"])
+            end
         end
 
         -- >> ( data )
@@ -8662,9 +8694,64 @@ transparency_proxy_mt["__newindex"] = function(self, key, value)
     target[key] = value
 end
 
+-- Which classes a backend actually renders. Executors differ: a few ship only
+-- Square/Text, some silently accept Circle and never draw it. The first object
+-- of each class is probed once and the result is cached, so a missing class
+-- becomes a stub instead of an object that holds a slot in every ESP loop and
+-- never appears.
+local drawing_class_support = {}
+
+local drawing_class_works = function(backend, class)
+    local key = tostring(backend) .. "|" .. class
+    local cached = drawing_class_support[key]
+
+    if cached ~= nil then
+        return cached
+    end
+
+    local ok, works = pcall(function()
+        local object = backend["new"](class)
+
+        if object == nil then
+            return false
+        end
+
+        -- A backend that accepts the class but drops the property silently is
+        -- the common failure. Visible exists on every drawing class and is
+        -- cheap, so setting it and reading it back is the proof that the object
+        -- is real rather than a no-op handle.
+        object["Visible"] = true
+        local read_back = object["Visible"]
+
+        pcall(function()
+            object:Destroy()
+        end)
+        pcall(function()
+            object:Remove()
+        end)
+
+        return read_back == true
+    end)
+
+    works = ok and works == true
+    drawing_class_support[key] = works
+
+    return works
+end
+
 local create_drawing_object = function(backend, backend_is_opacity, class, properties, convention)
-    if not backend then
-        return setmetatable({}, drawing_stub_mt)
+    -- One backend lacking a class must not cost the whole feature. Fall back to
+    -- the other before giving up: an executor Drawing that never draws Circle
+    -- still builds the menu through Drawing2, and the reverse holds too.
+    if not backend or not drawing_class_works(backend, class) then
+        local alternate = backend == real_drawing and fake_drawing or real_drawing
+
+        if alternate and alternate ~= backend and drawing_class_works(alternate, class) then
+            backend = alternate
+            backend_is_opacity = alternate == fake_drawing and fake_is_opacity or real_is_opacity
+        else
+            return setmetatable({}, drawing_stub_mt)
+        end
     end
 
     local ok, object = pcall(function()
@@ -8672,6 +8759,7 @@ local create_drawing_object = function(backend, backend_is_opacity, class, prope
     end)
 
     if not ok or object == nil then
+        drawing_class_support[tostring(backend) .. "|" .. class] = false
         return setmetatable({}, drawing_stub_mt)
     end
 
