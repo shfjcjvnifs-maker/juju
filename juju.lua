@@ -9703,7 +9703,13 @@ do
                     if ragebot_target and not ragebot_target[7] and (flags["manipulation"] or (is_ragebot_shot and manipulation_aim_position)) then
                         silent_part = manipulation_aim_part
                         aim_position = manipulation_aim_position
-                        redirected = flags["manipulation"] and aim_position ~= nil
+
+                        -- Redirecting means reporting the shot from the spoofed
+                        -- origin, so it only happens when the solver actually found
+                        -- one. Without it the shot stays on the character and is
+                        -- served the way the ragebot serves its own shots, which is
+                        -- a shot the server accepts.
+                        redirected = flags["manipulation"] and aim_position ~= nil and manipulation_aim_origin ~= nil
                     end
 
                     if not aim_position then
@@ -9751,7 +9757,7 @@ do
                         local part = silent_part or (is_ragebot_shot and args[5]) or (ragebot_target and (ragebot_target[4][resolve_ragebot_hitbox_part(ragebot_target[4])] or ragebot_target[4]["UpperTorso"])) or args[5]
 
                         if part and ragebot_target then
-                            spawn(get_bullet_result, ragebot_target[2], part, local_server_position["p"], aim_position, ragebot_aim_velocity, ragebot_aim_defensive, redirected)
+                            spawn(get_bullet_result, ragebot_target[2], part, local_server_position["p"], aim_position, ragebot_aim_velocity, ragebot_aim_defensive, flags["manipulation"])
                         end
 
                         emit_local_bullet_tracer(pos)
@@ -23358,6 +23364,15 @@ local backtrack_data = {}
                 local candidate = candidates[i]
                 local origin = candidate[1]
 
+                -- Spoof range. A redirected shot has to leave from a point the
+                -- server still reads as the shooter: one planted out at the
+                -- target, which the long-range families do, is a shot arriving
+                -- from nowhere and it is dropped with no damage. That is how the
+                -- panel could read solved over a shot that never counted.
+                if candidate[2] > 0 and (origin - base)["Magnitude"] > range then
+                    continue
+                end
+
                 -- Best score this origin can reach: head weight minus its
                 -- distance and fallback penalties. If that cannot beat the
                 -- current best, skip its raycasts.
@@ -23396,17 +23411,78 @@ local backtrack_data = {}
                 end
             end
 
-            -- No expander on the spoofed path. Walking the aim point out to the
-            -- limb's box surface is what produced the answers that read as solved
-            -- and missed: the point drifted off the limb the shot was reported
-            -- against, so the server had nothing to land it on. The origin search
-            -- already aims at the limb's predicted centre, which is on the body,
-            -- and a limb whose centre is blocked from every origin stays unsolved
-            -- instead of being approximated. A limb with any open surface is
-            -- already covered by the head/limb candidate families above.
-            --
-            -- The expander still runs with manipulation off, where nothing is
-            -- spoofed and moving the aim point is the only job there is.
+            -- Hitbox expander, auto-calculated. The search above only accepts an
+            -- origin that can see the exact centre of a limb, and a centre is one
+            -- point in space: the character's own body, a ledge or the limb's own
+            -- rotation in front of it empties the whole search while most of that
+            -- limb is still open. Each origin tried here sits inside the spoof
+            -- range - so the shot still reads as coming from the shooter - and the
+            -- point is walked out across the chosen limb's own box, scaled by that
+            -- limb's size, until one of them is reached. That point is on the body
+            -- and inside the limb the shot is reported against, so it lands, and
+            -- the limb the ragebot picked is tried before the weighted rest.
+            if not best then
+                local expand_origins = {
+                    base + vector3_new(0, range * 0.35, 0),
+                    base + vector3_new(0, range * 0.75, 0),
+                    base + vector3_new(0, range, 0),
+                    base + flat_unit * (range * 0.5) + vector3_new(0, range * 0.6, 0),
+                    base - flat_unit * (range * 0.5) + vector3_new(0, range * 0.6, 0),
+                    base + side * (range * 0.6) + vector3_new(0, range * 0.5, 0),
+                    base - side * (range * 0.6) + vector3_new(0, range * 0.5, 0)
+                }
+
+                local preferred = parts[resolve_ragebot_hitbox_part(parts)] or parts["UpperTorso"] or head
+
+                for i = 1, #expand_origins do
+                    local origin = expand_origins[i]
+                    local slot = {
+                        ["origin"] = origin,
+                        ["position"] = origin,
+                        ["part"] = nil,
+                        ["target"] = target,
+                        ["probe"] = vector3_zero
+                    }
+
+                    local found = (preferred and expand_onto(slot, preferred)) or false
+
+                    if not found then
+                        local attempts = 0
+
+                        for k = 1, #spoof["weights"] do
+                            local part = parts[spoof["weights"][k][1]]
+
+                            if part and part ~= preferred then
+                                attempts = attempts + 1
+
+                                if expand_onto(slot, part) then
+                                    found = true
+                                    break
+                                end
+
+                                if attempts >= spoof["expander_attempts"] then
+                                    break
+                                end
+                            end
+                        end
+                    end
+
+                    -- The trace still has to fit the weapon range, or the server
+                    -- drops it the same way it drops any shot fired past its own
+                    -- range.
+                    if found and (slot["position"] - origin)["Magnitude"] <= gun_budget then
+                        best = {
+                            ["origin"] = origin,
+                            ["position"] = slot["position"],
+                            ["part"] = slot["part"],
+                            ["target"] = target,
+                            ["probe"] = slot["probe"]
+                        }
+
+                        break
+                    end
+                end
+            end
 
             spoof["last"] = now
 
