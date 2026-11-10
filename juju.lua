@@ -8507,8 +8507,6 @@ local ragebot_aim_position = nil
 local ragebot_firing_shot = false
 local manipulation_aim_position = nil
 local manipulation_aim_part = nil
-local manipulation_aim_origin = nil
-
 -- Verdict state for the center panel. `manipulation_verdict` is what the last
 -- rewritten shot actually did: nil = no shot sent yet this lock, true = the
 -- server confirmed damage, false = the shot was dropped. The panel shows
@@ -9686,7 +9684,6 @@ do
                     local aim_position = nil
                     local silent_part = nil
                     local is_ragebot_shot = ragebot_firing_shot
-                    local redirected = false
 
                     -- Locked target: every shot is rewritten onto the ragebot
                     -- target, auto fired or manual, so the crosshair does not
@@ -9704,12 +9701,9 @@ do
                         silent_part = manipulation_aim_part
                         aim_position = manipulation_aim_position
 
-                        -- Redirecting means reporting the shot from the spoofed
-                        -- origin, so it only happens when the solver actually found
-                        -- one. Without it the shot stays on the character and is
-                        -- served the way the ragebot serves its own shots, which is
-                        -- a shot the server accepts.
-                        redirected = flags["manipulation"] and aim_position ~= nil and manipulation_aim_origin ~= nil
+                        -- Only the aim point and the limb come from the solve. The
+                        -- shot itself is served the way the ragebot serves its own,
+                        -- from the character, which is the shot the server accepts.
                     end
 
                     if not aim_position then
@@ -9723,36 +9717,21 @@ do
                         -- reported hit point off the body and the server counts
                         -- the shot as a miss.
                         local pos = aim_position + vector3_new(math_random(-3,3)/100, math_random(-3,3)/100, 0)
-                        local origin = local_server_position["p"] + vector3_new(0.004,3.0208,-0.048)
-                        local direction = (pos-origin)["Unit"]
 
-                        -- Long distance: past the weapon range the server drops
-                        -- the shot, and anything standing between shooter and
-                        -- target stops the trace. Starting the shot at the body
-                        -- itself removes both problems. A rewritten shot always
-                        -- travels that way, a ragebot shot only once it is out
-                        -- of range.
-                        local gun = local_guns[handle]
-                        local range = gun and tonumber(gun[2]) or 1000
-
-                        if redirected then
-                            -- Bullet tp: leave from the point the solver picked,
-                            -- one with a clear path down onto the body, so the
-                            -- trace is short and has no wall to stop it. Pulled
-                            -- inside the weapon range when it would fall outside,
-                            -- because a shot starting past the range is dropped.
-                            origin = manipulation_aim_origin or (pos + vector3_new(0, 2.5, 0))
-
-                            if (pos - origin)["Magnitude"] > range then
-                                origin = pos - direction * math["min"](range * 0.5, 4)
-                            end
-                        elseif direction["Magnitude"] > 0.001 and (pos-origin)["Magnitude"] > range then
-                            origin = pos - direction * 0.2
-                        end
+                        -- Reported origin. This is the character's own muzzle, the
+                        -- same one the ragebot's shots leave from, and it is the
+                        -- only origin this hook ever sends. A shot reported from
+                        -- anywhere else - planted above the character, or moved out
+                        -- to the body to skip the distance to it - is a shot the
+                        -- server has no reason to accept, and it is dropped with no
+                        -- damage and nothing shown on screen. A target past the
+                        -- weapon's own range is out of reach either way, so there is
+                        -- nothing to gain by reporting it from somewhere else.
+                        local origin = local_server_position["p"] + vector3_new(0.004, 3.0208, -0.048)
 
                         -- Point the direction at the body, the same way the
                         -- ragebot sends its own shots.
-                        local dir = redirected and (pos-origin)["Unit"] or (origin-pos)["Unit"]
+                        local dir = (origin-pos)["Unit"]
                         local Magnitude = dir["Magnitude"]
                         local part = silent_part or (is_ragebot_shot and args[5]) or (ragebot_target and (ragebot_target[4][resolve_ragebot_hitbox_part(ragebot_target[4])] or ragebot_target[4]["UpperTorso"])) or args[5]
 
@@ -23305,8 +23284,6 @@ local backtrack_data = {}
 
             if expand_only and not ragebot_locked then
                 manipulation_aim_part = nil
-                manipulation_aim_origin = nil
-
                 if not flags["ragebot"] then
                     ragebot_aim_position = nil
                 end
@@ -23331,7 +23308,6 @@ local backtrack_data = {}
 
             if not target or target[7] then
                 manipulation_aim_part = nil
-                manipulation_aim_origin = nil
 
                 -- Drop the aim point we were feeding so nothing keeps locking
                 -- onto a target after it went away. The ragebot owns it
@@ -23358,16 +23334,11 @@ local backtrack_data = {}
             if solution then
                 manipulation_aim_part = solution["part"]
                 manipulation_aim_position = solution["position"]
-
-                -- No origin outside the manipulation flag: the shot stays on the
-                -- character and only the expanded aim point is used.
-                manipulation_aim_origin = expand_only and nil or solution["origin"]
             elseif expand_only then
                 -- Nothing to expand onto this frame. Leave the ragebot's own aim
                 -- point alone rather than replacing it with a led centre.
                 manipulation_aim_part = nil
                 manipulation_aim_position = nil
-                manipulation_aim_origin = nil
             else
                 -- Nothing clear: still report the shot as leaving from over the
                 -- body, the way bullet tp did. The torso is preferred over the
@@ -23377,7 +23348,6 @@ local backtrack_data = {}
 
                 manipulation_aim_part = fallback
                 manipulation_aim_position = fallback["Position"] + velocity * (local_ping/500)
-                manipulation_aim_origin = nil
 
                 if manipulation_solved_target == target then
                     manipulation_solved = false
