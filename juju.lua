@@ -8603,10 +8603,28 @@ local real_drawing = resolve_drawing_backend(Drawing)
 
 local fake_drawing = resolve_drawing_backend(getgenv()["fake_drawing"]) or real_drawing
 
--- Potassium's executor Drawing drops whole classes without raising: boxes and
--- name text are created fine and never appear. Drawing2 renders there (the menu
--- proves it), so ESP runs on the same backend as the menu on that executor.
-if fake_drawing and identifyexecutor() == "Potassium" then
+-- Executor names whose own Drawing backend is too thin to trust for ESP.
+-- Potassium drops whole classes without raising: boxes and name text are created
+-- fine and never appear. Project Real documents only Drawing.new plus the
+-- render-property helpers, with no Font table, no per-class properties and no
+-- per-object Destroy, so the same holds. Drawing2 renders on both - the menu is
+-- built on it - so ESP runs on the menu backend there.
+local thin_drawing_executors = {
+    ["potassium"] = true,
+    ["real"] = true,
+    ["real executor"] = true,
+    ["projectreal"] = true,
+    ["project real"] = true,
+    ["projectrealgg"] = true
+}
+
+local executor_name = ""
+
+pcall(function()
+    executor_name = tostring(identifyexecutor()):lower()
+end)
+
+if fake_drawing and thin_drawing_executors[executor_name] then
     real_drawing = fake_drawing
 end
 
@@ -8650,6 +8668,9 @@ local drawing_stub_mt = {
 -- other, so an object takes the inverter whenever its backend disagrees with the
 -- caller, which keeps tween math consistent in both directions. Drawing2 is the
 -- only backend that exposes a Font constructor, which is how it is told apart.
+-- Project Real documents no Font table, so it reads as executor-style here. That
+-- only matters when it is actually used, and the class-support probe below is
+-- what decides that per class.
 local is_opacity_backend = function(backend)
     if not backend then
         return false
@@ -8664,6 +8685,12 @@ end
 
 local real_is_opacity = is_opacity_backend(real_drawing)
 local fake_is_opacity = is_opacity_backend(fake_drawing)
+
+-- Both now point at Drawing2 on a thin backend, so they must agree or every ESP
+-- object takes an inverter it should not have.
+if real_drawing == fake_drawing then
+    real_is_opacity = fake_is_opacity
+end
 
 local transparency_proxy_mt = {}
 
