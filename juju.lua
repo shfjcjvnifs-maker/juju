@@ -8343,6 +8343,8 @@ local ragebot_aim_position = nil
 local ragebot_firing_shot = false
 local manipulation_aim_position = nil
 local manipulation_aim_part = nil
+local tracer_shot_position = nil
+local tracer_shot_time = 0
 local ragebot_aim_velocity = nil
 local ragebot_aim_defensive = false
 local local_knocked = false
@@ -9351,12 +9353,23 @@ do
                             spawn(get_bullet_result, ragebot_target[2], part, local_server_position["p"], aim_position, ragebot_aim_velocity, ragebot_aim_defensive)
                         end
 
+                        -- Stamp where this shot went, the tracer draws the bullet
+                        -- line from it for a moment whether the ragebot fired it
+                        -- or the player did.
+                        tracer_shot_position = pos
+                        tracer_shot_time = clock()
+
                         return old_namecall(self, "ShootGun", handle, origin, pos, part, (Magnitude <= 0 or Magnitude ~= Magnitude) and (handle["Position"]-pos)["Unit"] or dir)
                     end
 
                     local part = args[5]
 
                     if part then
+                        -- Plain shot, nothing rewritten: still record where it was
+                        -- sent so the tracer has an end point for it.
+                        tracer_shot_position = args[4]
+                        tracer_shot_time = clock()
+
                         local parent = part["Parent"]
 
                         if parent then
@@ -23784,6 +23797,34 @@ local backtrack_data = {}
         local auto_stomp_target_friendly = false
         local auto_stomp_target_enemy = false
         local auto_stomp_stop_when_dead = true
+        local stomp_weld = nil
+
+        -- Stomp weld: hold the local character onto the target while the stomp
+        -- runs. The server samples the contact over its own round trip, and a
+        -- single teleported frame gets missed, which is why the stomp missed
+        -- sometimes.
+        local set_stomp_weld = LPH_JIT_MAX(function(torso)
+            local root = local_parts["HumanoidRootPart"]
+
+            if not root then
+                return
+            end
+
+            if not stomp_weld or not stomp_weld["Parent"] then
+                stomp_weld = create_instance("WeldConstraint", {
+                    ["Name"] = "stomp_weld",
+                    ["Parent"] = root
+                })
+            end
+
+            if torso then
+                stomp_weld["Part0"] = root
+                stomp_weld["Part1"] = torso
+                stomp_weld["Enabled"] = true
+            else
+                stomp_weld["Enabled"] = false
+            end
+        end)
 
         local do_auto_stomp = LPH_JIT_MAX(function(dt, hrp, bypass)
             if hrp and not purchasing and not local_reloading and (not in_void or bypass) then
@@ -23807,11 +23848,6 @@ local backtrack_data = {}
                         local velocity = torso["Velocity"]
 
                         if not target[4]["GRABBING_CONSTRAINT"] and (not auto_stomp_stop_when_dead or not target[7]) and target[18] and torso and velocity["Magnitude"] < 100 then
-                            if tick - auto_stomp_tick > 0.025 then
-                                auto_stomp_tick = tick
-                                event:FireServer("Stomp")
-                            end
-
                             local new_cframe = old
                             local old_velocity = hrp["Velocity"]
 
@@ -23828,7 +23864,20 @@ local backtrack_data = {}
                             stomping = true
 
                             hrp["CFrame"] = new_cframe
+
+                            -- Weld once the character sits on the target, so the
+                            -- offset the weld holds is the stomp pose itself.
+                            if not stomp_weld or not stomp_weld["Enabled"] then
+                                set_stomp_weld(torso)
+                            end
+
                             render_stepped_wait(render_stepped)
+
+                            if tick - auto_stomp_tick > 0.025 then
+                                auto_stomp_tick = tick
+                                event:FireServer("Stomp")
+                            end
+
                             hrp["Velocity"] = old_velocity
                             hrp["CFrame"] = old
                             break
@@ -23838,17 +23887,29 @@ local backtrack_data = {}
 
                 stomping = found_target
 
+                if not found_target and stomp_weld then
+                    set_stomp_weld(nil)
+                end
+
                 if not found_target and last_position and not bypass then
                     render_stepped_wait(render_stepped)
                     hrp["CFrame"] = old
                 end
             elseif stomping then
                 stomping = false
+
+                if stomp_weld then
+                    set_stomp_weld(nil)
+                end
             end
         end)
 
         create_connection(menu_references["auto_stomp"]["on_toggle_change"], function(value)
             stomping = false
+
+            if stomp_weld then
+                set_stomp_weld(nil)
+            end
 
             for i = 1, #anti_aim do
                 if anti_aim[i] == do_auto_stomp then
@@ -24360,7 +24421,16 @@ local backtrack_data = {}
 
         local do_ragebot_tracer = LPH_JIT_MAX(function(dt, hrp)
             local ragebot_aim_position = ragebot_aim_position ~= vector3_zero and ragebot_aim_position or nil
-            if not ragebot_aim_position and did then
+
+            -- Shot trace: the ShootGun hook stamps the end point of every shot
+            -- the player sends, so a manual shot draws its line even when the
+            -- ragebot is not the one firing. It lives for a moment after the
+            -- shot instead of only while a target is locked.
+            local shot_position = tracer_shot_position and clock() - tracer_shot_time <= 0.15 and tracer_shot_position or nil
+
+            local trace = shot_position or ragebot_aim_position
+
+            if not trace and did then
                 did = false
 
                 tween(tracer, hide_transparency, circular, out, 0.12)
@@ -24369,14 +24439,14 @@ local backtrack_data = {}
                 delay(0.12, function()
                     last_to = nil
                 end)
-            elseif ragebot_aim_position and not did then
+            elseif trace and not did then
                 did = true
 
                 tween(tracer, transparency, circular, out, 0.12)
                 tween(outline, outline_transparency, circular, out, 0.12)
             end
 
-            last_to = tracer_end == "predicted position" and ragebot_aim_position or (ragebot_target and (ragebot_target[4]["UpperTorso"] and ragebot_target[4]["UpperTorso"]["Position"] or vector3_new())) or last_to
+            last_to = shot_position or (tracer_end == "predicted position" and ragebot_aim_position or (ragebot_target and (ragebot_target[4]["UpperTorso"] and ragebot_target[4]["UpperTorso"]["Position"] or vector3_new()))) or last_to
 
             local origin = nil
             if tracer_origin == "gun" and local_gun and local_tool then
