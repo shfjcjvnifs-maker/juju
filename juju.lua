@@ -8344,7 +8344,6 @@ local ragebot_firing_shot = false
 local manipulation_aim_position = nil
 local manipulation_aim_part = nil
 local manipulation_aim_origin = nil
-local manipulation_last_shot = 0
 local ragebot_aim_velocity = nil
 local ragebot_aim_defensive = false
 local local_knocked = false
@@ -9435,7 +9434,6 @@ do
                             -- inside every weapon range, while the gun on this
                             -- client never leaves the hand.
                             origin = manipulation_aim_origin or (pos + vector3_new(0, 2.5, 0))
-                            manipulation_last_shot = clock()
                         elseif direction["Magnitude"] > 0.001 and (pos-origin)["Magnitude"] > range then
                             origin = pos - direction * 0.2
                         end
@@ -13408,11 +13406,9 @@ end
 
         local do_center_panel = LPH_JIT_MAX(function(dt)
             local old = text3["Text"]
-            -- Manipulated only while manipulation is actually rewriting shots:
-            -- a solved origin plus a shot sent in the last moment. Locking a
-            -- target alone does not count, so the panel keeps showing the real
-            -- state (unsafe and so on) until a shot goes out.
-            local manipulating = flags["manipulation"] and manipulation_aim_origin and manipulation_aim_part and clock() - manipulation_last_shot < 0.75
+            -- Manipulated as soon as the solver found a spoofed origin and a
+            -- hitbox on the locked target, no shot needed.
+            local manipulating = flags["manipulation"] and manipulation_aim_origin and manipulation_aim_part
 
             local new = manipulating and "manipulated" or (flags["ragebot"] and (getgenv()["juju"] or {})["waiting_protection"]) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or (in_void or in_void == nil) and "void" or "unsafe" or local_parts["ForceField"] and "invulnerable"
             if old ~= new then
@@ -17092,10 +17088,11 @@ do
     end
 end
 
--- Only the "glow" toggle raises the preset, and it raises it to the first level
--- that renders Highlight and bloom, never higher.
+-- The "glow" and "highlight" toggles raise the preset to the first level that
+-- renders Highlight and bloom, never higher. Below it the client skips the whole
+-- Highlight pass and nothing shows on the body.
 local raise_render_quality = function()
-    if not flags["material_glow"] or not render_settings then
+    if not (flags["material_glow"] or flags["highlight"]) or not render_settings then
         return
     end
 
@@ -17978,7 +17975,7 @@ end
             return
         end
 
-        if not data[6] then
+        if not data[6] and not do_highlight then
             if adornment and adornment["Visible"] then
                 adornment["Visible"] = false
             end
@@ -18086,11 +18083,15 @@ end
 
         last_visual_guard = now
 
+        -- A config load writes the flags without firing the toggle callbacks,
+        -- so the cached copy is refreshed here instead of trusting the toggle.
+        do_highlight = flags["highlight"] and true or false
+
         raise_render_quality()
 
         using_adornment_highlight = do_highlight and highlight_needs_adornments()
 
-        if not flags["esp"] then
+        if not flags["esp"] and not do_highlight then
             return
         end
 
@@ -18125,7 +18126,7 @@ end
                     end
                 elseif highlight["Adornee"] ~= character then
                     update_highlight(data)
-                elseif data[6] then
+                elseif data[6] or do_highlight then
                     if not highlight["Enabled"] then
                         highlight["Enabled"] = true
                     end
@@ -18757,18 +18758,20 @@ end
                     drawings[_] = nil
                 end
 
-                local highlight = data[8]
-                if highlight then
-                    destroy(highlight)
-                    data[8] = nil
-                end
+                if not do_highlight then
+                    local highlight = data[8]
+                    if highlight then
+                        destroy(highlight)
+                        data[8] = nil
+                    end
 
-                local adornment = data[21]
+                    local adornment = data[21]
 
-                if adornment then
-                    adornment["Adornee"] = nil
-                    destroy(adornment)
-                    data[21] = nil
+                    if adornment then
+                        adornment["Adornee"] = nil
+                        destroy(adornment)
+                        data[21] = nil
+                    end
                 end
 
                 local chams = data[12]
@@ -18815,7 +18818,7 @@ end
                 chams_character_added_connection = nil
             end
 
-            if highlight_character_added_connection then
+            if not do_highlight and highlight_character_added_connection then
                 highlight_character_added_connection:Disconnect()
                 highlight_character_added_connection = nil
             end
@@ -19226,7 +19229,9 @@ end
                 end
             end
 
-            if value and flags["esp"] then
+            if value then
+                raise_render_quality()
+
                 for player, data in player_data do
                     create_highlight(data)
                 end
@@ -22493,7 +22498,18 @@ local backtrack_data = {}
             },
             ["lifts"] = {1, 0.7, 0.4},
             ["arc_radii"] = {0.5, 0.75, 0.25, 1},
-            ["radii"] = {0.25, 0.5, 0.75, 1}
+            ["radii"] = {0.25, 0.5, 0.75, 1},
+            -- Spoofed hitbox expander: aim points spread across the limb. The
+            -- shot lands on whichever one has the clearest path, so a limb
+            -- that is only half exposed still gets hit.
+            ["probes"] = {
+                vector3_new(0, 0.4, 0), vector3_new(0, -0.4, 0),
+                vector3_new(0.4, 0, 0), vector3_new(-0.4, 0, 0),
+                vector3_new(0, 0.8, 0), vector3_new(0, -0.8, 0),
+                vector3_new(0.8, 0, 0), vector3_new(-0.8, 0, 0),
+                vector3_new(0.55, 0.55, 0), vector3_new(-0.55, 0.55, 0),
+                vector3_new(0.55, -0.55, 0), vector3_new(-0.55, -0.55, 0)
+            }
         }
 
         -- A candidate is clear when the ray reaches the body without hitting
@@ -22524,7 +22540,7 @@ local backtrack_data = {}
             -- Reuse the last solution for 0.05 s. The body moves, so the aimed
             -- point is re-derived from the cached limb every frame instead of
             -- re-running the whole search.
-            if cache and cache["target"] == target and now - spoof["last"] < 0.05 then
+            if cache and cache["target"] == target and now - spoof["last"] < 0.1 then
                 local cached_part = cache["part"]
 
                 if cached_part and cached_part["Parent"] then
@@ -22535,7 +22551,7 @@ local backtrack_data = {}
 
             -- A target that was fully blocked stays blocked for at least 0.1 s;
             -- re-searching it every frame burns FPS for nothing.
-            if spoof["failed_target"] == target and now - spoof["failed"] < 0.1 then
+            if spoof["failed_target"] == target and now - spoof["failed"] < 0.25 then
                 return nil
             end
 
@@ -22586,6 +22602,27 @@ local backtrack_data = {}
                 candidates[#candidates+1] = {base + right, right["Magnitude"], 0}
             end
 
+            -- Directly over the target, which is the shortest arc there is.
+            -- Only used while the point still sits inside the spoof range of
+            -- the character, so the server sees a plausible origin.
+            for i = 1, #spoof["lifts"] do
+                local high = head["Position"] + vector3_new(0, range * spoof["lifts"][i], 0)
+                local away = (high - base)["Magnitude"]
+
+                if away <= range then
+                    candidates[#candidates+1] = {high, away, 0}
+                end
+            end
+
+            -- A tilted ring above the character, for the case where only a
+            -- corridor down onto the body is open.
+            for step = 0, 7 do
+                local theta = step * (math["pi"]/4)
+                local offset = vector3_new(math["cos"](theta) * range * 0.55, range * 0.5, math["sin"](theta) * range * 0.55)
+
+                candidates[#candidates+1] = {base + offset, offset["Magnitude"], 1}
+            end
+
             -- Fallbacks around the character, penalised so a high origin wins
             -- whenever one has a clear path.
             candidates[#candidates+1] = {base, 0, 3}
@@ -22610,6 +22647,13 @@ local backtrack_data = {}
             for i = 1, #candidates do
                 local candidate = candidates[i]
                 local origin = candidate[1]
+
+                -- Best score this origin can reach: head weight minus its
+                -- distance and fallback penalties. If that cannot beat the
+                -- current best, skip its raycasts.
+                if 4 - (candidate[2]/range) * 1.5 - candidate[3] <= best_score then
+                    continue
+                end
 
                 for j = 1, #spoof["weights"] do
                     local entry = spoof["weights"][j]
@@ -22646,12 +22690,7 @@ local backtrack_data = {}
             -- the rest of the limb is open. Once a candidate wins, walk a few
             -- points across the limb and keep the first clear one.
             if best and best["origin"] then
-                local probes = {
-                    vector3_new(0, 0.4, 0),
-                    vector3_new(0, -0.4, 0),
-                    vector3_new(0.4, 0, 0),
-                    vector3_new(-0.4, 0, 0)
-                }
+                local probes = spoof["probes"]
 
                 for i = 1, #probes do
                     local point = best["position"] + probes[i]
