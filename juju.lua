@@ -7836,6 +7836,7 @@ local menu = {
             local main = menu.create_group("main")
                 main:create_tab("ragebot")
                 main:create_tab("legitbot")
+                main:create_tab("neckgrab")
 
             local visuals = menu.create_group("visuals")
                 visuals:create_tab("players")
@@ -8339,6 +8340,7 @@ local legitbot_target = nil
 local ragebot_target = nil
 local custom_ragebot_aim_position = nil
 local ragebot_aim_position = nil
+local ragebot_firing_shot = false
 local ragebot_aim_velocity = nil
 local ragebot_aim_defensive = false
 local local_knocked = false
@@ -9300,13 +9302,15 @@ do
                 if packet == "ShootGun" then
                     local aim_position = nil
                     local silent_part = nil
+                    local is_ragebot_shot = ragebot_firing_shot
 
-                    -- Silent aim: with a target selected the shot is rewritten even
-                    -- when the ragebot is not auto firing, so the crosshair does
-                    -- not have to be on the target and no distance has to be closed.
-                    -- The manipulation hitbox is used for both the aim point and
-                    -- the part argument so the server sees the same limb.
-                    if flags["manipulation_silent_aim"] and ragebot_target and not ragebot_target[7] then
+                    -- Locked target: every shot is rewritten onto the ragebot
+                    -- target even when the ragebot is not auto firing, so the
+                    -- crosshair does not have to be on the target and no
+                    -- distance has to be closed. The manipulation hitbox is used
+                    -- for both the aim point and the part argument so the server
+                    -- sees the same limb.
+                    if not is_ragebot_shot and (flags["manipulation"] ~= false or flags["manipulation_silent_aim"]) and ragebot_target and not ragebot_target[7] then
                         local silent_parts = ragebot_target[4]
                         silent_part = silent_parts[resolve_ragebot_hitbox_part(silent_parts, "manipulation_hitbox")] or silent_parts["HumanoidRootPart"]
 
@@ -9351,7 +9355,7 @@ do
                             end
                         end
                         local Magnitude = dir["Magnitude"]
-                        local part = silent_part or (ragebot_target and (ragebot_target[4][resolve_ragebot_hitbox_part(ragebot_target[4])] or ragebot_target[4]["UpperTorso"])) or args[5]
+                        local part = silent_part or (is_ragebot_shot and args[5]) or (ragebot_target and (ragebot_target[4][resolve_ragebot_hitbox_part(ragebot_target[4])] or ragebot_target[4]["UpperTorso"])) or args[5]
                         
                         if part and ragebot_target then
                             spawn(get_bullet_result, ragebot_target[2], part, local_server_position["p"], aim_position, ragebot_aim_velocity, ragebot_aim_defensive)
@@ -12046,6 +12050,271 @@ do
                 anti_aim[#anti_aim + 1] = do_auto_save
             end
         end)
+    end
+end
+
+-- > ( neck grab )
+
+do
+    menu_references["neckgrab_section"] = menu["groups"]["main"]:create_section("neckgrab", "neckgrab", 1, 1, 0)
+    menu_references["infinite_grab"] = menu_references["neckgrab_section"]:create_element({["name"] = "infinite grab"}, {["toggle"] = {["flag"] = "infinite_grab", ["default"] = false}})
+
+    local active = false
+    local next_touch = 0
+    local laser_folder = nil
+    local lasers = {}
+
+    local fire_touch = nil
+
+    if type(firetouchinterest) == "function" then
+        fire_touch = firetouchinterest
+    elseif type(getgenv()["firetouchinterest"]) == "function" then
+        fire_touch = getgenv()["firetouchinterest"]
+    end
+
+    local touch_parts = {"Head", "UpperTorso", "LowerTorso", "HumanoidRootPart"}
+
+    local get_character_from_part = function(object)
+        local current = object
+
+        for _ = 1, 10 do
+            if not current or current == workspace then
+                return nil
+            end
+
+            if current["ClassName"] == "Model" and find_first_child_of_class(current, "Humanoid") then
+                return current
+            end
+
+            current = current["Parent"]
+        end
+
+        return nil
+    end
+
+    local get_data_from_character = function(character)
+        if not character then
+            return nil
+        end
+
+        for player, data in player_data do
+            if data[3] == character then
+                return data
+            end
+        end
+
+        return nil
+    end
+
+    -- The grabbed player: read the far side of the local grab constraint, and
+    -- fall back to the nearest other player that carries one.
+    local get_grabbed_target = LPH_NO_VIRTUALIZE(function()
+        local constraint = local_parts["GRABBING_CONSTRAINT"]
+
+        if not constraint then
+            return nil
+        end
+
+        local keys = {"Part0", "Part1", "Attachment0", "Attachment1"}
+
+        for i = 1, #keys do
+            local ok, object = pcall(function()
+                return constraint[keys[i]]
+            end)
+
+            if ok and object then
+                local character = get_character_from_part(object)
+
+                if character and character ~= local_character then
+                    local data = get_data_from_character(character)
+
+                    if data and not data[7] then
+                        return data
+                    end
+                end
+            end
+        end
+
+        local local_root = local_parts["HumanoidRootPart"]
+
+        if not local_root then
+            return nil
+        end
+
+        local best = nil
+        local best_distance = nil
+
+        for player, data in player_data do
+            if not data[7] and data[4]["GRABBING_CONSTRAINT"] then
+                local root = data[4]["HumanoidRootPart"]
+
+                if root then
+                    local distance = (root["Position"]-local_root["Position"])["Magnitude"]
+
+                    if distance < 15 and (not best_distance or distance < best_distance) then
+                        best = data
+                        best_distance = distance
+                    end
+                end
+            end
+        end
+
+        return best
+    end)
+
+    local clear_lasers = function()
+        if laser_folder then
+            laser_folder:Destroy()
+            laser_folder = nil
+        end
+
+        lasers = {}
+    end
+
+    local ensure_lasers = function()
+        if laser_folder and laser_folder["Parent"] then
+            return
+        end
+
+        laser_folder = create_instance("Folder", {
+            ["Name"] = "neckgrab_lasers",
+            ["Parent"] = workspace
+        })
+
+        lasers = {}
+
+        for i = 1, 2 do
+            lasers[i] = create_instance("Part", {
+                ["Name"] = "laser_"..i,
+                ["Anchored"] = true,
+                ["CanCollide"] = false,
+                ["CanQuery"] = false,
+                ["CanTouch"] = true,
+                ["CastShadow"] = false,
+                ["Material"] = Enum["Material"]["Neon"],
+                ["Color"] = color3_fromrgb(255, 45, 45),
+                ["Transparency"] = 0.3,
+                ["Size"] = vector3_new(0.12, 0.12, 1),
+                ["Parent"] = laser_folder
+            })
+        end
+    end
+
+    local update_laser = function(part, from, to)
+        local distance = (to-from)["Magnitude"]
+
+        if distance < 0.05 then
+            part["Transparency"] = 1
+
+            return
+        end
+
+        part["Transparency"] = 0.3
+        part["Size"] = vector3_new(0.12, 0.12, distance)
+        part["CFrame"] = cframe_new((from+to)/2, to)
+    end
+
+    local do_touch = function(parts)
+        if not fire_touch then
+            return
+        end
+
+        for i = 1, #lasers do
+            local laser = lasers[i]
+
+            if laser then
+                for j = 1, #touch_parts do
+                    local part = parts[touch_parts[j]]
+
+                    if part then
+                        pcall(fire_touch, laser, part, true)
+                        pcall(fire_touch, laser, part, false)
+                    end
+                end
+            end
+        end
+    end
+
+    local do_infinite_grab = LPH_NO_VIRTUALIZE(function(dt)
+        local data = get_grabbed_target()
+
+        if not data then
+            clear_lasers()
+
+            return
+        end
+
+        local parts = data[4]
+        local head = parts["Head"] or parts["UpperTorso"] or parts["HumanoidRootPart"]
+
+        if not head then
+            clear_lasers()
+
+            return
+        end
+
+        ensure_lasers()
+
+        local target_position = head["Position"]
+        local right_hand = local_parts["RightHand"] or local_parts["RightLowerArm"] or local_parts["HumanoidRootPart"]
+        local left_hand = local_parts["LeftHand"] or local_parts["LeftLowerArm"] or local_parts["HumanoidRootPart"]
+
+        if right_hand and lasers[1] then
+            update_laser(lasers[1], right_hand["Position"], target_position)
+        end
+
+        if left_hand and lasers[2] then
+            update_laser(lasers[2], left_hand["Position"], target_position)
+        end
+
+        local now = clock()
+
+        if now < next_touch then
+            return
+        end
+
+        next_touch = now + 0.1
+
+        do_touch(parts)
+    end)
+
+    local start = function()
+        if active then
+            return
+        end
+
+        active = true
+        next_touch = 0
+        heartbeat[#heartbeat+1] = do_infinite_grab
+    end
+
+    local stop = function()
+        if not active then
+            return
+        end
+
+        active = false
+
+        for i = 1, #heartbeat do
+            if heartbeat[i] == do_infinite_grab then
+                table.remove(heartbeat, i)
+                break
+            end
+        end
+
+        clear_lasers()
+    end
+
+    create_connection(menu_references["infinite_grab"]["on_toggle_change"], LPH_JIT_MAX(function(value)
+        if value then
+            start()
+        else
+            stop()
+        end
+    end))
+
+    if flags["infinite_grab"] then
+        start()
     end
 end
 
@@ -20369,14 +20638,15 @@ local backtrack_data = {}
         menu_references["auto_fire_settings"] = menu_references["auto_fire"]:create_settings()
         menu_references["auto_fire_at_target_vehicle"] = menu_references["auto_fire_settings"]:create_element({["name"] = "at target vehicle"}, {["toggle"] = {["flag"] = "auto_fire_at_target_vehicle", ["default"] = true}})
         menu_references["auto_fire_at_backtrack"] = menu_references["auto_fire_settings"]:create_element({["name"] = "at backtrack"}, {["toggle"] = {["flag"] = "auto_fire_at_backtrack", ["default"] = false}})
-        menu_references["manipulation"] = menu_references["utility_section"]:create_element({["name"] = "manipulation"}, {})
+        menu_references["auto_fire_always_fire"] = menu_references["auto_fire_settings"]:create_element({["name"] = "always fire"}, {["toggle"] = {["flag"] = "auto_fire_always_fire", ["default"] = true}})
+        menu_references["auto_fire_dont_render"] = menu_references["auto_fire_settings"]:create_element({["name"] = "dont render"}, {["toggle"] = {["flag"] = "auto_fire_dont_render", ["default"] = false}})
+
+        menu_references["manipulation"] = menu_references["general_section"]:create_element({["name"] = "manipulation"}, {["toggle"] = {["flag"] = "manipulation", ["default"] = true}})
         menu_references["manipulation_settings"] = menu_references["manipulation"]:create_settings()
         menu_references["manipulation_silent_aim"] = menu_references["manipulation_settings"]:create_element({["name"] = "silent aim"}, {["toggle"] = {["flag"] = "manipulation_silent_aim", ["default"] = false}})
         menu_references["manipulation_target_hitbox"] = menu_references["manipulation_settings"]:create_element({["name"] = "target hitbox"}, {["dropdown"] = {["flag"] = "manipulation_hitbox", ["options"] = {"head", "root", "torso", "arms", "legs", "randomize"}, ["default"] = {"head"}}})
         menu_references["manipulation_wall_bang"] = menu_references["manipulation_settings"]:create_element({["name"] = "wall bang"}, {["toggle"] = {["flag"] = "auto_fire_wall_bang", ["default"] = false}})
         menu_references["manipulation_bullet_spoof"] = menu_references["manipulation_settings"]:create_element({["name"] = "bullet spoof"}, {["toggle"] = {["flag"] = "manipulation_bullet_spoof", ["default"] = false}})
-        menu_references["auto_fire_always_fire"] = menu_references["auto_fire_settings"]:create_element({["name"] = "always fire"}, {["toggle"] = {["flag"] = "auto_fire_always_fire", ["default"] = true}})
-        menu_references["auto_fire_dont_render"] = menu_references["auto_fire_settings"]:create_element({["name"] = "dont render"}, {["toggle"] = {["flag"] = "auto_fire_dont_render", ["default"] = false}})
         menu_references["auto_equip"] = menu_references["general_section"]:create_element({["name"] = "auto equip"}, {["toggle"] = {["flag"] = "auto_equip", ["default"] = false}})
         menu_references["auto_equip_settings"] = menu_references["auto_equip"]:create_settings()
         menu_references["auto_equip_unequip_when"] = menu_references["auto_equip_settings"]:create_element({["name"] = "unequip when"}, {["dropdown"] = {["flag"] = "auto_equip_unequip_when", ["default"] = {"no target"}, ["options"] = {"no target"}, ["multi"] = true}})
@@ -21406,7 +21676,9 @@ local backtrack_data = {}
                                 local Magnitude = dir["Magnitude"]
                                 
                                 for i = 1, ragebot_force_position and 2 or 1 do
+                                    ragebot_firing_shot = true
                                     event:FireServer("ShootGun", handle, origin, pos, hitbox, (Magnitude <= 0 or Magnitude ~= Magnitude) and ((handle["Position"])-pos)["Unit"] or dir)
+                                    ragebot_firing_shot = false
                                 end
 
                                 spawn(get_bullet_result, target[2], hitbox, origin, pos, target_velocity, did_defensive)
@@ -22093,7 +22365,7 @@ local backtrack_data = {}
         local active = false
 
         local do_manipulation = LPH_NO_VIRTUALIZE(function(dt)
-            if not flags["manipulation_silent_aim"] then
+            if not (flags["manipulation"] ~= false or flags["manipulation_silent_aim"]) then
                 return
             end
 
@@ -22157,17 +22429,18 @@ local backtrack_data = {}
             end
         end
 
-        create_connection(menu_references["manipulation_silent_aim"]["on_toggle_change"], LPH_JIT_MAX(function(value)
-            if value then
+        local update_active = LPH_JIT_MAX(function()
+            if flags["manipulation"] ~= false or flags["manipulation_silent_aim"] then
                 start()
             else
                 stop()
             end
-        end))
+        end)
 
-        if flags["manipulation_silent_aim"] then
-            start()
-        end
+        create_connection(menu_references["manipulation"]["on_toggle_change"], update_active)
+        create_connection(menu_references["manipulation_silent_aim"]["on_toggle_change"], update_active)
+
+        update_active()
     end
 
     -- >> ( sender rate value )
