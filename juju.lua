@@ -13714,11 +13714,12 @@ end
                 local juju_env = getgenv()["juju"]
                 center_panel_waiting_protection = juju_env and juju_env["waiting_protection"] and true or false
             end
-            -- Manipulated means the scan has an answer for the locked target and
-            -- is still producing it. The solver re-runs on its own every frame and
-            -- stamps the result, so the status clears by itself when the scan stops
-            -- finding one, without waiting on a shot to land or on the target to be
-            -- re-picked.
+            -- Aiming means the scan has an answer for the locked target and is
+            -- still producing it. Manipulated is the next state, and it is only
+            -- shown after a rewritten shot was followed by damage. The solver
+            -- re-runs every frame and stamps the result, so aiming clears by itself
+            -- when the scan stops finding one; manipulated expires on its own once
+            -- the confirmed hit is older than the verdict window.
             if manipulation_verdict_target and manipulation_verdict_target ~= (ragebot_target and ragebot_target[2]) then
                 manipulation_verdict = nil
             end
@@ -13728,15 +13729,22 @@ end
                 and manipulation_solved_target == ragebot_target
                 and frame_tick - manipulation_solved_tick < 0.5
 
-            local manipulation_hit_ok = manipulation_verdict == true and ragebot_target and frame_tick - manipulation_verdict_tick < 1.5
-            local manipulation_ok = flags["manipulation"] and ragebot_target and manipulation_aim_position and (manipulation_scan_ok or manipulation_hit_ok)
+            local manipulation_hit_ok = manipulation_verdict == true and ragebot_target and manipulation_verdict_target == ragebot_target[2] and frame_tick - manipulation_verdict_tick < 1.5
+
+            -- "manipulated" is a claim that the shot works, so it waits for the
+            -- evidence: the verdict is only set true when a rewritten shot was
+            -- followed by the target's health dropping. A solved scan is not that
+            -- evidence. It used to print "manipulated" for it, which is the state
+            -- the panel showed while the shots were landing nothing.
+            local manipulation_ok = flags["manipulation"] and ragebot_target and manipulation_aim_position and manipulation_hit_ok
+            local manipulation_aim_ok = flags["manipulation"] and ragebot_target and manipulation_aim_position and manipulation_scan_ok
 
             -- Void first: manipulation cannot land from there, so a solved
             -- origin must not hide the void state. Follow target next: while it
             -- is armed the character is being moved onto the target, which is
             -- the state worth showing, and manipulation is what happens once it
             -- is off.
-            local new = (in_void or in_void == nil) and "void" or flags["follow_target"] and ragebot_target and "following" or manipulation_ok and "manipulated" or (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or "unsafe" or local_parts["ForceField"] and "invulnerable"
+            local new = (in_void or in_void == nil) and "void" or flags["follow_target"] and ragebot_target and "following" or manipulation_ok and "manipulated" or manipulation_aim_ok and "aiming" or (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or "unsafe" or local_parts["ForceField"] and "invulnerable"
             if old ~= new then
                 text3["Text"] = new
                 tween(text3, {["Transparency"] = 0.35}, linear, out, 0.09)
