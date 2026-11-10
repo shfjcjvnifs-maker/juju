@@ -8487,11 +8487,8 @@ local manipulation_verdict = nil
 local manipulation_verdict_tick = 0
 local manipulation_verdict_target = nil
 
--- Infinite distance. Declared here, before the ShootGun hook, and assigned
--- inside the anti-aim block further down: a local declared after the hook is a
--- global as far as the hook is concerned, and the hook runs on every shot.
-local manipulation_bring = nil
-local manipulation_bringing = false
+-- Infinite distance needs no state of its own: the flag decides whether the
+-- origin is spoofed beside the body or taken from the solver.
 local ragebot_aim_velocity = nil
 local ragebot_aim_defensive = false
 local local_knocked = false
@@ -9687,28 +9684,29 @@ do
                         local range = gun and tonumber(gun[2]) or 1000
 
                         if redirected then
-                            -- Infinite distance: move the character onto the
-                            -- target for the shot itself, so the weapon range
-                            -- cannot reject it. Off leaves the character where it
-                            -- stands and relies on the spoofed origin alone.
-                            if flags["manipulation_infinite_distance"] and manipulation_bring and ragebot_target and not manipulation_bringing then
-                                manipulation_bring(ragebot_target, flags["manipulation_bring_offset"] or 4)
-                            end
+                            -- Infinite distance is a pure origin spoof. Nothing
+                            -- on this client moves: not the character, not the
+                            -- gun, not the camera. The shot is only reported to
+                            -- leave from a point beside the body, so the weapon
+                            -- range and every wall in between stop mattering.
+                            --
+                            -- With the flag off the shot keeps the solver origin
+                            -- and is still pulled inside the gun range when it
+                            -- would fall outside it.
+                            if flags["manipulation_infinite_distance"] then
+                                local gap = math["min"](flags["manipulation_spoof_distance"] or 2, range * 0.5)
 
-                            -- Bullet tp: the shot is reported as leaving from a
-                            -- point above the target. The manipulation solver
-                            -- picked one with a clear path down onto the body, so
-                            -- the trace is short, has no wall to stop it and sits
-                            -- inside every weapon range, while the gun on this
-                            -- client never leaves the hand.
-                            origin = manipulation_aim_origin or (pos + vector3_new(0, 2.5, 0))
+                                origin = pos - direction * gap + vector3_new(0, 0.15, 0)
+                            else
+                                -- Bullet tp: leave from a point above the target.
+                                -- The solver picked one with a clear path down
+                                -- onto the body, so the trace is short and has no
+                                -- wall to stop it.
+                                origin = manipulation_aim_origin or (pos + vector3_new(0, 2.5, 0))
 
-                            -- A shot has to start inside the weapon range or the
-                            -- server drops it. Long shots keep the solver origin
-                            -- only while it is close enough, otherwise the trace
-                            -- starts short of the body.
-                            if (pos - origin)["Magnitude"] > range then
-                                origin = pos - direction * math["min"](range * 0.5, 4)
+                                if (pos - origin)["Magnitude"] > range then
+                                    origin = pos - direction * math["min"](range * 0.5, 4)
+                                end
                             end
                         elseif direction["Magnitude"] > 0.001 and (pos-origin)["Magnitude"] > range then
                             origin = pos - direction * 0.2
@@ -21134,12 +21132,11 @@ local backtrack_data = {}
         -- the weapon range stops mattering. Off means the spoofed origin does all
         -- the work and the character stays where it stands.
         menu_references["manipulation_infinite_distance"] = menu_references["manipulation_settings"]:create_element({["name"] = "infinite distance"}, {["toggle"] = {["flag"] = "manipulation_infinite_distance", ["default"] = false}})
-        menu_references["manipulation_bring_offset"] = menu_references["manipulation_settings"]:create_element({["name"] = "bring offset"}, {["slider"] = {["flag"] = "manipulation_bring_offset", ["min"] = 1, ["max"] = 25, ["default"] = 4, ["suffix"] = " studs"}})
-        menu_references["manipulation_bring_offset"]:set_visible(false)
+        -- Spoof distance: how far from the body the shot is reported to start.
+        -- A pure origin offset. Nothing on this client is moved, so the camera
+        -- and the character stay exactly where the player put them.
+        menu_references["manipulation_spoof_distance"] = menu_references["manipulation_settings"]:create_element({["name"] = "spoof distance"}, {["slider"] = {["flag"] = "manipulation_spoof_distance", ["min"] = 0.5, ["max"] = 25, ["default"] = 2, ["decimals"] = 1, ["suffix"] = " studs"}})
 
-        create_connection(menu_references["manipulation_infinite_distance"]["on_toggle_change"], function(value)
-            menu_references["manipulation_bring_offset"]:set_visible(value)
-        end)
 
         menu_references["auto_equip"] = menu_references["general_section"]:create_element({["name"] = "auto equip"}, {["toggle"] = {["flag"] = "auto_equip", ["default"] = false}})
         menu_references["auto_equip_settings"] = menu_references["auto_equip"]:create_settings()
@@ -22581,54 +22578,6 @@ local backtrack_data = {}
         local speed = 75
         local height = vector3_zero
 
-        -- Bring the gun, not the character. Moving the HRP dragged the camera
-        -- and the body with it, which is what made infinite distance look like a
-        -- teleport. The weapon is what the shot is measured from, so only the
-        -- tool's handle is moved for one render frame and put back: the character
-        -- never leaves where the player is standing.
-        manipulation_bring = LPH_JIT_MAX(function(target, offset)
-            local tool = local_tool
-
-            if not tool or not target or not target[3] then
-                return false
-            end
-
-            local handle = tool["Handle"] or tool:FindFirstChild("GunHandle") or tool:FindFirstChildOfClass("BasePart")
-
-            if not handle then
-                return false
-            end
-
-            local part = manipulation_aim_part or target[4]["UpperTorso"] or target[4]["HumanoidRootPart"]
-
-            if not part or not part["Parent"] then
-                return false
-            end
-
-            local old_cframe = handle["CFrame"]
-            local flat = part["Position"] - handle["Position"]
-            flat = vector3_new(flat["X"], 0, flat["Z"])
-            local unit = flat["Magnitude"] > 0.001 and flat["Unit"] or vector3_new(0, 0, 1)
-
-            -- Same offset rule as follow target: sit short of the body, never
-            -- inside it, so the shot still has room to travel.
-            local goal = part["Position"] - unit * offset + vector3_new(0, 0.6, 0)
-
-            manipulation_bringing = true
-
-            pcall(function()
-                handle["CFrame"] = cframe_new(goal)
-            end)
-            render_stepped_wait(render_stepped)
-            pcall(function()
-                handle["CFrame"] = old_cframe
-            end)
-
-            manipulation_bringing = false
-
-            return true
-        end)
-
         local function do_void_while_waiting(hrp)
             local old_cframe = hrp["CFrame"]
             local old_velocity = hrp["Velocity"]
@@ -22905,7 +22854,6 @@ local backtrack_data = {}
 
     do
         local target_tick = 0
-        local bring_offset_visible = nil
 
         -- Spoofed shot origin. The bullet is reported as leaving from a point
         -- above and in front of the local character, coming down onto the best
@@ -23382,15 +23330,6 @@ local backtrack_data = {}
         end)
 
         local do_manipulation = LPH_NO_VIRTUALIZE(function(dt)
-            -- A config load writes the flag without firing the toggle callback,
-            -- so the offset slider follows the flag here instead of the toggle.
-            local bring_visible = flags["manipulation_infinite_distance"] and true or false
-
-            if bring_visible ~= bring_offset_visible then
-                bring_offset_visible = bring_visible
-                menu_references["manipulation_bring_offset"]:set_visible(bring_visible)
-            end
-
             if not flags["manipulation"] then
                 manipulation_aim_part = nil
                 manipulation_aim_origin = nil
