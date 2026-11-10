@@ -21203,6 +21203,11 @@ local backtrack_data = {}
         menu_references["shot_delay"] = menu_references["general_section"]:create_element({["name"] = "shot delay"}, {["slider"] = {["flag"] = "shot_delay", ["min"] = 0, ["max"] = 1000, ["suffix"] = "ms", ["default"] = 0, ["min_text"] = "none"}})
         menu_references["ragebot_field_of_view"] = menu_references["general_section"]:create_element({["name"] = "field of view"}, {["slider"] = {["flag"] = "ragebot_field_of_view", ["min"] = 5, ["max"] = 180, ["suffix"] = "°", ["default"] = 180, ["max_text"] = "full"}})
         menu_references["fire_cooldown"] = menu_references["general_section"]:create_element({["name"] = "fire cooldown"}, {["slider"] = {["flag"] = "fire_cooldown", ["min"] = 0, ["max"] = 300, ["suffix"] = "ms", ["default"] = 5, ["min_text"] = "none"}})
+        -- How far away the ragebot will still pull the trigger. 0 hands the
+        -- decision to the equipped gun's own range, 2500 means no limit. Past the
+        -- limit the shot is dropped by the server anyway, so firing only marks the
+        -- shooter and wastes the clip.
+        menu_references["ragebot_max_distance"] = menu_references["general_section"]:create_element({["name"] = "max distance"}, {["slider"] = {["flag"] = "ragebot_max_distance", ["min"] = 0, ["max"] = 2500, ["default"] = 0, ["suffix"] = " studs", ["min_text"] = "gun range", ["max_text"] = "infinite"}})
         menu_references["target_selection"] = menu_references["general_section"]:create_element({["name"] = "target selection"}, {})
         menu_references["target_selection_settings"] = menu_references["target_selection"]:create_settings()
         menu_references["target_selection_notification"] = menu_references["target_selection_settings"]:create_element({["name"] = "notification"}, {["toggle"] = {["flag"] = "target_selection_notification", ["default"] = false}})
@@ -22163,7 +22168,15 @@ local backtrack_data = {}
                 ragebot_aim_velocity = target_velocity
                 ragebot_aim_defensive = did_defensive
 
-                if local_gun and (((not local_reloading or auto_fire_always_fire) and not target[18] and not target[7] and not spawn_guard["check"](target) and not grabbing_constraint) and (flags["auto_fire"] and (auto_fire_always_fire or (((local_server_position-ragebot_aim_position)["Magnitude"] > 0) or flags["follow_target"] or did_defensive)) and old_time-last_fire > fire_cooldown)) then
+                -- Max shoot distance. Read straight off the flag every frame, since
+                -- a loaded config writes the flag without firing the slider
+                -- callback. 0 means the equipped gun's own range decides, 2500
+                -- means the target's distance never holds the trigger.
+                local ragebot_max_distance = flags["ragebot_max_distance"] or 0
+                local shoot_distance = ragebot_max_distance == 2500 and math["huge"] or (ragebot_max_distance == 0 and (local_gun or 250) or ragebot_max_distance)
+                local in_shoot_distance = (local_server_position - ragebot_aim_position)["Magnitude"] <= shoot_distance
+
+                if in_shoot_distance and local_gun and (((not local_reloading or auto_fire_always_fire) and not target[18] and not target[7] and not spawn_guard["check"](target) and not grabbing_constraint) and (flags["auto_fire"] and (auto_fire_always_fire or (((local_server_position-ragebot_aim_position)["Magnitude"] > 0) or flags["follow_target"] or did_defensive)) and old_time-last_fire > fire_cooldown)) then
                     local delay = flags["shot_delay"]
                     if delay > 0 then
                         wait(delay/1000)
