@@ -13417,7 +13417,9 @@ end
             -- hitbox on the locked target, no shot needed.
             local manipulating = flags["manipulation"] and manipulation_aim_origin and manipulation_aim_part
 
-            local new = manipulating and "manipulated" or (flags["ragebot"] and (getgenv()["juju"] or {})["waiting_protection"]) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or (in_void or in_void == nil) and "void" or "unsafe" or local_parts["ForceField"] and "invulnerable"
+            -- Void first: manipulation cannot land from there, so a solved
+            -- origin must not hide the void state.
+            local new = (in_void or in_void == nil) and "void" or manipulating and "manipulated" or (flags["ragebot"] and (getgenv()["juju"] or {})["waiting_protection"]) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or "unsafe" or local_parts["ForceField"] and "invulnerable"
             if old ~= new then
                 text3["Text"] = new
                 tween(text3, {["Transparency"] = 0.35}, linear, out, 0.09)
@@ -17099,7 +17101,7 @@ end
 -- renders Highlight and bloom, never higher. Below it the client skips the whole
 -- Highlight pass and nothing shows on the body.
 local raise_render_quality = function()
-    if not (flags["material_glow"] or flags["highlight"]) or not render_settings then
+    if not (flags["material_glow"] or flags["highlight"] or flags["character_highlight"]) or not render_settings then
         return
     end
 
@@ -20110,6 +20112,49 @@ do
         end
     end))
 
+    -- A config load writes the flags without firing the toggle callback, so the
+    -- self highlight was never created on load. This guard builds it from the
+    -- flag, re-adorns it after a respawn and lifts the render quality that the
+    -- Highlight pass needs, once a second.
+    local character_highlight_guard = {
+        ["tick"] = 0,
+        ["run"] = LPH_NO_VIRTUALIZE(function()
+            local tick = clock()
+
+            if tick - character_highlight_guard["tick"] < 1 then
+                return
+            end
+
+            character_highlight_guard["tick"] = tick
+
+            if not flags["character_highlight"] then
+                return
+            end
+
+            raise_render_quality()
+
+            if not character_highlight then
+                character_highlight = create_instance("Highlight", {
+                    FillColor = flags["character_highlight_color"],
+                    FillTransparency = flags["character_highlight_transparency"],
+                    OutlineColor = flags["character_highlight_outline_color"],
+                    OutlineTransparency = flags["character_highlight_outline_transparency"],
+                    DepthMode = Enum["HighlightDepthMode"]["AlwaysOnTop"],
+                    Enabled = true,
+                    Parent = hui
+                })
+
+                character_highlight_connection = create_connection(signals["on_local_character_added"], apply_character_highlight)
+            end
+
+            if local_character and character_highlight["Adornee"] ~= local_character then
+                apply_character_highlight()
+            end
+        end)
+    }
+
+    heartbeat[#heartbeat+1] = character_highlight_guard["run"]
+
     menu_references["custom_character"] = menu_references["local_character_section"]:create_element({["name"] = "custom character"}, {["toggle"] = {["flag"] = "custom_character"}})
     menu_references["custom_character_settings"] = menu_references["custom_character"]:create_settings()
     menu_references["custom_character_model_type"] = menu_references["custom_character_settings"]:create_element({["name"] = "model type"}, {["dropdown"] = {["flag"] = "custom_character_model_type", ["options"] = {"user id", "file"}, ["default"] = {"file"}, ["requires_one"] = true}})
@@ -20856,7 +20901,7 @@ local backtrack_data = {}
         menu_references["void_hide_force_when"] = menu_references["void_hide_settings"]:create_element({["name"] = "force when"}, {["dropdown"] = {["options"] = {"not full health", "tabbed out", "reloading"}, ["flag"] = "void_hide_force_when", ["multi"] = true, ["requires_one"] = false}})
         menu_references["void_hide_exploit"] = menu_references["void_hide_settings"]:create_element({["name"] = "spam"}, {["toggle"] = {["flag"] = "void_hide_exploit"}})
         menu_references["void_hide_stop_if_forced"] = menu_references["void_hide_settings"]:create_element({["name"] = "stop if forced"}, {["toggle"] = {["flag"] = "void_hide_stop_if_forced"}})
-        menu_references["void_hide_offset"] = menu_references["void_hide_settings"]:create_element({["name"] = "offset"}, {["slider"] = {["min"] = 0, ["max"] = 250, ["flag"] = "void_hide_offset", ["min_text"] = "off", ["suffix"] = "studs"}})
+        menu_references["void_hide_offset"] = menu_references["void_hide_settings"]:create_element({["name"] = "offset"}, {["slider"] = {["min"] = 0, ["max"] = 500, ["flag"] = "void_hide_offset", ["min_text"] = "off", ["suffix"] = "studs"}})
         menu_references["void_hide_void_time"] = menu_references["void_hide_settings"]:create_element({["name"] = "void time"}, {["slider"] = {["min"] = 0.01, ["max"] = 2, ["decimals"] = 3, ["default"] = 0.47, ["flag"] = "void_hide_void_time", ["suffix"] = "s"}})
         menu_references["void_hide_teleport_time"] = menu_references["void_hide_settings"]:create_element({["name"] = "teleport time"}, {["slider"] = {["min"] = 0.01, ["max"] = 2, ["decimals"] = 3, ["default"] = 0.1, ["flag"] = "void_hide_teleport_time", ["suffix"] = "s"}})
         menu_references["void_hide_stop_if_forced"]:set_visible(false)
@@ -22501,8 +22546,14 @@ local backtrack_data = {}
                 {"LeftLowerArm", 1.2},
                 {"RightLowerArm", 1.2},
                 {"LeftLowerLeg", 1},
-                {"RightLowerLeg", 1}
+                {"RightLowerLeg", 1},
+                {"Torso", 2},
+                {"LeftHand", 0.9},
+                {"RightHand", 0.9},
+                {"LeftFoot", 0.9},
+                {"RightFoot", 0.9}
             },
+            ["close_lifts"] = {3, 5, 8, 11},
             ["lifts"] = {1, 0.7, 0.4},
             ["arc_radii"] = {0.5, 0.75, 0.25, 1},
             ["radii"] = {0.25, 0.5, 0.75, 1},
@@ -22515,7 +22566,11 @@ local backtrack_data = {}
                 vector3_new(0, 0.8, 0), vector3_new(0, -0.8, 0),
                 vector3_new(0.8, 0, 0), vector3_new(-0.8, 0, 0),
                 vector3_new(0.55, 0.55, 0), vector3_new(-0.55, 0.55, 0),
-                vector3_new(0.55, -0.55, 0), vector3_new(-0.55, -0.55, 0)
+                vector3_new(0.55, -0.55, 0), vector3_new(-0.55, -0.55, 0),
+                vector3_new(0, 0.25, 0), vector3_new(0, -0.25, 0),
+                vector3_new(0.25, 0, 0), vector3_new(-0.25, 0, 0),
+                vector3_new(0.8, 0.8, 0), vector3_new(-0.8, 0.8, 0),
+                vector3_new(0.8, -0.8, 0), vector3_new(-0.8, -0.8, 0)
             }
         }
 
@@ -22628,6 +22683,29 @@ local backtrack_data = {}
                 local offset = vector3_new(math["cos"](theta) * range * 0.55, range * 0.5, math["sin"](theta) * range * 0.55)
 
                 candidates[#candidates+1] = {base + offset, offset["Magnitude"], 1}
+            end
+
+            -- Short arcs a few studs over the head. The ray is almost vertical
+            -- and short, so it clears most cover and the hit point stays well
+            -- inside the body.
+            for i = 1, #spoof["close_lifts"] do
+                local high = head["Position"] + vector3_new(0, spoof["close_lifts"][i], 0)
+                local away = (high - base)["Magnitude"]
+
+                if away <= range then
+                    candidates[#candidates+1] = {high, away, 0}
+                end
+            end
+
+            -- Midpoints between the character and the target, lifted, for the
+            -- case where the point straight over the head is outside the range.
+            for i = 1, #spoof["close_lifts"] do
+                local high = base + (aim - base) * 0.5 + vector3_new(0, spoof["close_lifts"][i], 0)
+                local away = (high - base)["Magnitude"]
+
+                if away <= range then
+                    candidates[#candidates+1] = {high, away, 0}
+                end
             end
 
             -- Fallbacks around the character, penalised so a high origin wins
@@ -24312,24 +24390,27 @@ local backtrack_data = {}
         local bait_position = nil
         local last_bait = clock()
 
+        -- Void corners sit further out than the old 1414 so the character is
+        -- well past anything a target can aim at. The comeback table stays a
+        -- little closer to the map so the return trip lands back inside it.
         local offsets = {
-            vector3_new(-1414, 0, -1414),
-            vector3_new(1414, 0, -1414),
-            vector3_new(-1414, 0, 1414),
-            vector3_new(1414, 0, 1414),
-            vector3_new(1414, 1414, 1414),
-            vector3_new(-1414, 1414, 1414),
-            vector3_new(1414, 1414, -1414)
+            vector3_new(-2400, 0, -2400),
+            vector3_new(2400, 0, -2400),
+            vector3_new(-2400, 0, 2400),
+            vector3_new(2400, 0, 2400),
+            vector3_new(2400, 2400, 2400),
+            vector3_new(-2400, 2400, 2400),
+            vector3_new(2400, 2400, -2400)
         }
 
         local comeback_offsets = {
-            vector3_new(-1390, 0, -1390),
-            vector3_new(1390, 0, -1390),
-            vector3_new(-1390, 0, 1390),
-            vector3_new(1390, 0, 1390),
-            vector3_new(1390, 1390, 1390),
-            vector3_new(-1390, 1390, 1390),
-            vector3_new(1390, 1390, -1390)
+            vector3_new(-2375, 0, -2375),
+            vector3_new(2375, 0, -2375),
+            vector3_new(-2375, 0, 2375),
+            vector3_new(2375, 0, 2375),
+            vector3_new(2375, 2375, 2375),
+            vector3_new(-2375, 2375, 2375),
+            vector3_new(2375, 2375, -2375)
         }
 
         local new_cframe = cframe_new()
