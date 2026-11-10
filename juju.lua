@@ -9774,9 +9774,6 @@ do
                     local value = args[2]
                     inventory["Parent"]["CursorImage"]["Value"] = value
                     return
-                elseif packet == "CHECKER_4" or packet == "CalculateShootClient" then
-                    print(packet)
-                    return
                 end
             end
             return old_namecall(self, ...)
