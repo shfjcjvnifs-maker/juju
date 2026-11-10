@@ -13404,7 +13404,10 @@ end
 
         local do_center_panel = LPH_JIT_MAX(function(dt)
             local old = text3["Text"]
-            local new = (flags["ragebot"] and (getgenv()["juju"] or {})["waiting_protection"]) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or (in_void or in_void == nil) and "void" or "unsafe" or local_parts["ForceField"] and "invulnerable"
+            -- Manipulation on and a target locked: every own shot is being
+            -- rewritten onto that target, so say so. It outranks the other
+            -- states because it happens while shooting.
+            local new = (flags["manipulation"] and manipulation_aim_part) and "manipulated" or (flags["ragebot"] and (getgenv()["juju"] or {})["waiting_protection"]) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or (in_void or in_void == nil) and "void" or "unsafe" or local_parts["ForceField"] and "invulnerable"
             if old ~= new then
                 text3["Text"] = new
                 tween(text3, {["Transparency"] = 0.35}, linear, out, 0.09)
