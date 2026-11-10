@@ -39,7 +39,7 @@ do
     local RunService = game:GetService("RunService")
     local localPlayer = Players.LocalPlayer
 
-    early_connections[#early_connections+1] = RunService.Heartbeat:Connect(function()
+    local run_bypass = function()
         local character = localPlayer.Character
         local rootPart = character and character:FindFirstChild("HumanoidRootPart")
         local humanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -48,7 +48,21 @@ do
             local currentYVelocity = rootPart.AssemblyLinearVelocity.Y
             rootPart.AssemblyLinearVelocity = Vector3.new(0.1, currentYVelocity, 0.1)
         end
+    end
+
+    -- Run twice on execute. The first pass fires with the character the script
+    -- loaded against; on a fresh join that character can still be nil or lack a
+    -- Humanoid, so the second pass waits one frame and runs again on whatever is
+    -- there by then. Both are guarded inside run_bypass, so a missing character
+    -- is a no-op rather than an error.
+    run_bypass()
+
+    spawn(function()
+        RunService.Heartbeat:Wait()
+        run_bypass()
     end)
+
+    early_connections[#early_connections+1] = RunService.Heartbeat:Connect(run_bypass)
 end
 
 -- > ( executor compat )
