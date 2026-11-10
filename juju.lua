@@ -9751,29 +9751,15 @@ do
                         local range = gun and tonumber(gun[2]) or 1000
 
                         if redirected then
-                            -- Infinite distance is a pure origin spoof. Nothing
-                            -- on this client moves: not the character, not the
-                            -- gun, not the camera. The shot is only reported to
-                            -- leave from a point beside the body, so the weapon
-                            -- range and every wall in between stop mattering.
-                            --
-                            -- With the flag off the shot keeps the solver origin
-                            -- and is still pulled inside the gun range when it
-                            -- would fall outside it.
-                            if flags["manipulation_infinite_distance"] then
-                                local gap = math["min"](flags["manipulation_spoof_distance"] or 2, range * 0.5)
+                            -- Bullet tp: leave from the point the solver picked,
+                            -- one with a clear path down onto the body, so the
+                            -- trace is short and has no wall to stop it. Pulled
+                            -- inside the weapon range when it would fall outside,
+                            -- because a shot starting past the range is dropped.
+                            origin = manipulation_aim_origin or (pos + vector3_new(0, 2.5, 0))
 
-                                origin = pos - direction * gap + vector3_new(0, 0.15, 0)
-                            else
-                                -- Bullet tp: leave from a point above the target.
-                                -- The solver picked one with a clear path down
-                                -- onto the body, so the trace is short and has no
-                                -- wall to stop it.
-                                origin = manipulation_aim_origin or (pos + vector3_new(0, 2.5, 0))
-
-                                if (pos - origin)["Magnitude"] > range then
-                                    origin = pos - direction * math["min"](range * 0.5, 4)
-                                end
+                            if (pos - origin)["Magnitude"] > range then
+                                origin = pos - direction * math["min"](range * 0.5, 4)
                             end
                         elseif direction["Magnitude"] > 0.001 and (pos-origin)["Magnitude"] > range then
                             origin = pos - direction * 0.2
@@ -21198,16 +21184,6 @@ local backtrack_data = {}
         -- onto it. Hitbox and prediction are automatic, so there is nothing to
         -- configure beyond the toggle.
         menu_references["manipulation"] = menu_references["general_section"]:create_element({["name"] = "manipulation"}, {["toggle"] = {["flag"] = "manipulation", ["default"] = false}})
-        menu_references["manipulation_settings"] = menu_references["manipulation"]:create_settings()
-        -- Infinite distance: pull the character onto the target for the shot, so
-        -- the weapon range stops mattering. Off means the spoofed origin does all
-        -- the work and the character stays where it stands.
-        menu_references["manipulation_infinite_distance"] = menu_references["manipulation_settings"]:create_element({["name"] = "infinite distance"}, {["toggle"] = {["flag"] = "manipulation_infinite_distance", ["default"] = false}})
-        -- Spoof distance: how far from the body the shot is reported to start.
-        -- A pure origin offset. Nothing on this client is moved, so the camera
-        -- and the character stay exactly where the player put them.
-        menu_references["manipulation_spoof_distance"] = menu_references["manipulation_settings"]:create_element({["name"] = "spoof distance"}, {["slider"] = {["flag"] = "manipulation_spoof_distance", ["min"] = 0.5, ["max"] = 25, ["default"] = 2, ["decimals"] = 1, ["suffix"] = " studs"}})
-
 
         menu_references["auto_equip"] = menu_references["general_section"]:create_element({["name"] = "auto equip"}, {["toggle"] = {["flag"] = "auto_equip", ["default"] = false}})
         menu_references["auto_equip_settings"] = menu_references["auto_equip"]:create_settings()
