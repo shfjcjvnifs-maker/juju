@@ -20738,9 +20738,6 @@ local backtrack_data = {}
         -- onto it. Hitbox and prediction are automatic, so there is nothing to
         -- configure beyond the toggle.
         menu_references["manipulation"] = menu_references["general_section"]:create_element({["name"] = "manipulation"}, {["toggle"] = {["flag"] = "manipulation", ["default"] = false}})
-        menu_references["hitbox_expander"] = menu_references["general_section"]:create_element({["name"] = "hitbox expander"}, {["toggle"] = {["flag"] = "hitbox_expander", ["default"] = false}})
-        menu_references["hitbox_expander_settings"] = menu_references["hitbox_expander"]:create_settings()
-        menu_references["hitbox_expander_size"] = menu_references["hitbox_expander_settings"]:create_element({["name"] = "size"}, {["slider"] = {["flag"] = "hitbox_expander_size", ["min"] = 1.5, ["max"] = 10, ["default"] = 4, ["decimals"] = 1, ["suffix"] = "x"}})
         menu_references["auto_equip"] = menu_references["general_section"]:create_element({["name"] = "auto equip"}, {["toggle"] = {["flag"] = "auto_equip", ["default"] = false}})
         menu_references["auto_equip_settings"] = menu_references["auto_equip"]:create_settings()
         menu_references["auto_equip_unequip_when"] = menu_references["auto_equip_settings"]:create_element({["name"] = "unequip when"}, {["dropdown"] = {["flag"] = "auto_equip_unequip_when", ["default"] = {"no target"}, ["options"] = {"no target"}, ["multi"] = true}})
@@ -22471,9 +22468,13 @@ local backtrack_data = {}
         end)
 
         -- Blows the locked target's body parts up on this client only, so any
-        -- raycast this game runs locally has a much wider body to land on.
+        -- raycast this game runs locally has a much wider body to land on. It
+        -- rides on manipulation: on while manipulation holds a target, off
+        -- otherwise, nothing to configure.
+        local EXPAND_SCALE = 4
+
         local do_hitbox_expander = LPH_NO_VIRTUALIZE(function(dt)
-            local target = flags["hitbox_expander"] and ragebot_target
+            local target = flags["manipulation"] and ragebot_target
 
             if not target or target[7] then
                 if active_target then
@@ -22488,7 +22489,6 @@ local backtrack_data = {}
                 active_target = target
             end
 
-            local scale = flags["hitbox_expander_size"] or 4
             local parts = target[4]
             local names = {"Head", "UpperTorso", "LowerTorso", "HumanoidRootPart"}
 
@@ -22503,7 +22503,7 @@ local backtrack_data = {}
                         originals[part] = original
                     end
 
-                    local wanted = original * scale
+                    local wanted = original * EXPAND_SCALE
 
                     if part["Size"] ~= wanted then
                         part["Size"] = wanted
