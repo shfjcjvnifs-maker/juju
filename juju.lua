@@ -8538,6 +8538,11 @@ local manipulation_aim_position = nil
 local manipulation_aim_part = nil
 local manipulation_aim_origin = nil
 
+-- Every origin the solver found clear for the locked limb, best first. The shot
+-- rotates through this instead of always leaving from the one point, so a wall
+-- that appears in front of the best direction costs one shot, not every shot.
+local manipulation_aim_origins = nil
+
 -- Verdict state for the center panel. `manipulation_verdict` is what the last
 -- rewritten shot actually did: nil = no shot sent yet this lock, true = the
 -- server confirmed damage, false = the shot was dropped. The panel shows
@@ -9702,6 +9707,13 @@ do
         signals["on_local_bullet_fired"]:Fire(ray, nil, cframe_new(to), true)
     end)
 
+    -- Multi-direction bullet spoof. The solver hands over every origin with a
+    -- clear path to the locked limb, and the shot takes the next one each time
+    -- instead of the same point every shot. A raycast at fire time skips any
+    -- direction that closed over since it was found.
+    local spoof_direction_turn = 0
+    local spoof_direction_params = RaycastParams["new"]()
+
     local new = {
         ["__namecall"] = newcclosure(LPH_JIT_MAX(function(self, ...)
             setthreadidentity(4)
@@ -9751,12 +9763,55 @@ do
                         local range = gun and tonumber(gun[2]) or 1000
 
                         if redirected then
-                            -- Bullet tp: leave from the point the solver picked,
-                            -- one with a clear path down onto the body, so the
-                            -- trace is short and has no wall to stop it. Pulled
-                            -- inside the weapon range when it would fall outside,
-                            -- because a shot starting past the range is dropped.
+                            -- Bullet tp: leave from a point the solver found with a
+                            -- clear path onto the body, so the trace is short and has
+                            -- no wall to stop it. The best direction is only the
+                            -- first of them: the shot walks the list, one direction
+                            -- further each time, so consecutive shots do not all die
+                            -- on the same piece of cover. Pulled inside the weapon
+                            -- range when it would fall outside, because a shot
+                            -- starting past the range is dropped.
                             origin = manipulation_aim_origin or (pos + vector3_new(0, 2.5, 0))
+
+                            local directions = manipulation_aim_origins
+
+                            if directions and #directions > 1 then
+                                spoof_direction_turn = spoof_direction_turn + 1
+
+                                local body = (ragebot_target and ragebot_target[3]) or nil
+
+                                if body then
+                                    local ours = local_player["Character"] or local_character
+
+                                    spoof_direction_params["FilterType"] = Enum["RaycastFilterType"]["Exclude"]
+                                    spoof_direction_params["RespectCanCollide"] = true
+                                    spoof_direction_params["FilterDescendantsInstances"] = ours and {ours} or {}
+
+                                    local picked = nil
+
+                                    -- Four directions, starting where the last shot
+                                    -- left off. Enough to route around cover that
+                                    -- appeared after the solve, cheap enough to run
+                                    -- on every shot.
+                                    for step = 0, math["min"](#directions, 4) - 1 do
+                                        local index = ((spoof_direction_turn + step - 1) % #directions) + 1
+                                        local candidate = directions[index]
+
+                                        if candidate then
+                                            local hit = workspace:Raycast(candidate, (pos - candidate) * 1.02, spoof_direction_params)
+
+                                            if hit and hit["Instance"]:IsDescendantOf(body) then
+                                                picked = candidate
+                                                break
+                                            end
+                                        end
+                                    end
+
+                                    if picked then
+                                        origin = picked
+                                    end
+                                end
+                            end
 
                             if (pos - origin)["Magnitude"] > range then
                                 origin = pos - direction * math["min"](range * 0.5, 4)
@@ -22993,20 +23048,43 @@ local backtrack_data = {}
             end
         end
 
-        -- A candidate is clear when the ray reaches the body without hitting
-        -- anything other than the target's own character.
-        local spoof_visible = LPH_NO_VIRTUALIZE(function(origin, point, character)
+        -- True when the ray reaches the body and, when a limb is given, the aim
+        -- point sits inside that limb's box. The second half is what rejects the
+        -- "calculated but invalid" answers: a point beside the arm can reach the
+        -- body and still be somewhere the bullet will not touch.
+        local spoof_visible = LPH_NO_VIRTUALIZE(function(origin, point, character, part, shift)
             local delta = point - origin
             local result = workspace:Raycast(origin, delta * 1.02, spoof["params"])
 
-            -- Nothing hit means the point is not on the body, so the shot would
-            -- have nothing to land on. Only a hit that belongs to the target
-            -- counts as clear.
-            if not result then
+            if not result or not result["Instance"]:IsDescendantOf(character) then
                 return false
             end
 
-            return result["Instance"]:IsDescendantOf(character)
+            if not part then
+                return true
+            end
+
+            local ok, local_point = pcall(function()
+                -- The aim point carries the velocity lead, the part does not
+                -- yet, so the lead comes off before the box test.
+                return part["CFrame"]:PointToObjectSpace(point - (shift or vector3_zero))
+            end)
+
+            -- A backend that cannot transform into part space leaves the box
+            -- test out rather than rejecting every candidate.
+            if not ok or not local_point then
+                return true
+            end
+
+            local size = part["Size"]
+
+            -- Small tolerance on the axis the ray enters through, since a point
+            -- sitting exactly on the surface reports just outside it.
+            local slack = 0.15
+
+            return math["abs"](local_point["X"]) <= size["X"] * 0.5 + slack
+                and math["abs"](local_point["Y"]) <= size["Y"] * 0.5 + slack
+                and math["abs"](local_point["Z"]) <= size["Z"] * 0.5 + slack
         end)
 
         local solve_spoof = LPH_NO_VIRTUALIZE(function(target, base, velocity, gun_range)
@@ -23025,24 +23103,34 @@ local backtrack_data = {}
             -- Reuse the last solution for 0.05 s. The body moves, so the aimed
             -- point is re-derived from the cached limb every frame instead of
             -- re-running the whole search.
-            if cache and cache["target"] == target and now - spoof["last"] < 0.1 then
+            if cache and cache["target"] == target and now - spoof["last"] < 0.05 then
                 local cached_part = cache["part"]
 
-                if cached_part and cached_part["Parent"] then
-                    cache["position"] = cached_part["Position"] + lead + cache["probe"]
+                if cached_part and cached_part["Parent"] and cache["origin"] then
+                    local point = cached_part["Position"] + lead + cache["probe"]
 
-                    if cache["origin"] then
+                    -- Re-checked before reuse: the ray decides, not the age of
+                    -- the entry. A cached origin that stopped being clear is the
+                    -- solution that reads as valid and misses.
+                    if spoof_visible(cache["origin"], point, character, cached_part, lead) then
+                        cache["position"] = point
                         manipulation_solved = true
                         manipulation_solved_target = cache["target"]
-                    end
 
-                    return cache
+                        return cache
+                    end
                 end
+
+                -- Stale. Drop it and solve again this frame instead of handing
+                -- back a solution that no longer reaches the body.
+                spoof["cache"] = nil
+                cache = nil
             end
 
-            -- A target that was fully blocked stays blocked for at least 0.1 s;
-            -- re-searching it every frame burns FPS for nothing.
-            if spoof["failed_target"] == target and now - spoof["failed"] < 0.25 then
+            -- A target that was fully blocked stays blocked for at least 0.12 s;
+            -- re-searching it every frame burns FPS for nothing. Kept short: the
+            -- body only has to cross a doorway for the answer to change.
+            if spoof["failed_target"] == target and now - spoof["failed"] < 0.12 then
                 return nil
             end
 
@@ -23239,6 +23327,11 @@ local backtrack_data = {}
             local best = nil
             local best_score = -math["huge"]
 
+            -- Origins that reached a given limb, gathered as the search runs. The
+            -- same limb aimed from a different side is a different shot, and only
+            -- one of them has to be open when the trigger is pulled.
+            local clear_for = {}
+
             for i = 1, #candidates do
                 local candidate = candidates[i]
                 local origin = candidate[1]
@@ -23260,7 +23353,7 @@ local backtrack_data = {}
                         if score > best_score then
                             local point = aim + (part["Position"] - head_position)
 
-                            if spoof_visible(origin, point, character) then
+                            if spoof_visible(origin, point, character, part, lead) then
                                 best_score = score
                                 best = {
                                     ["origin"] = candidate[2] > 0 and origin or nil,
@@ -23269,6 +23362,34 @@ local backtrack_data = {}
                                     ["target"] = target,
                                     ["probe"] = vector3_zero
                                 }
+
+                                -- Kept for the rotation. An origin closer than a
+                                -- stud to one already here is the same direction
+                                -- with a rounding difference, and the list is worth
+                                -- having only if the entries actually differ.
+                                if candidate[2] > 0 then
+                                    local list = clear_for[part]
+
+                                    if not list then
+                                        list = {}
+                                        clear_for[part] = list
+                                    end
+
+                                    if #list < 12 then
+                                        local distinct = true
+
+                                        for k = 1, #list do
+                                            if (list[k] - origin)["Magnitude"] < 1 then
+                                                distinct = false
+                                                break
+                                            end
+                                        end
+
+                                        if distinct then
+                                            list[#list+1] = origin
+                                        end
+                                    end
+                                end
                             end
                         end
                     end
@@ -23309,7 +23430,7 @@ local backtrack_data = {}
                         local world = cframe["RightVector"] * offset["X"] + cframe["UpVector"] * offset["Y"] + cframe["LookVector"] * offset["Z"]
                         local point = position + world
 
-                        if spoof_visible(slot["origin"], point, character) then
+                        if spoof_visible(slot["origin"], point, character, part, lead) then
                             slot["part"] = part
                             slot["position"] = point
                             slot["probe"] = world
@@ -23378,6 +23499,23 @@ local backtrack_data = {}
                 end
             end
 
+            if best and best["origin"] then
+                -- Best first, then every other open direction for that limb. Twelve
+                -- at most, since the shot only ever walks the first few.
+                local list = clear_for[best["part"]]
+                local origin_list = {best["origin"]}
+
+                if list then
+                    for i = 1, #list do
+                        if (list[i] - best["origin"])["Magnitude"] >= 1 then
+                            origin_list[#origin_list+1] = list[i]
+                        end
+                    end
+                end
+
+                best["origins"] = origin_list
+            end
+
             spoof["last"] = now
 
             if best then
@@ -23407,6 +23545,7 @@ local backtrack_data = {}
             if not flags["manipulation"] then
                 manipulation_aim_part = nil
                 manipulation_aim_origin = nil
+                manipulation_aim_origins = nil
 
                 if not flags["ragebot"] then
                     ragebot_aim_position = nil
@@ -23433,6 +23572,7 @@ local backtrack_data = {}
             if not target or target[7] then
                 manipulation_aim_part = nil
                 manipulation_aim_origin = nil
+                manipulation_aim_origins = nil
 
                 -- Drop the aim point we were feeding so nothing keeps locking
                 -- onto a target after it went away. The ragebot owns it
@@ -23460,6 +23600,7 @@ local backtrack_data = {}
                 manipulation_aim_part = solution["part"]
                 manipulation_aim_position = solution["position"]
                 manipulation_aim_origin = solution["origin"]
+                manipulation_aim_origins = solution["origins"]
             else
                 -- Nothing clear: still report the shot as leaving from over the
                 -- body, the way bullet tp did. The torso is preferred over the
@@ -23470,6 +23611,7 @@ local backtrack_data = {}
                 manipulation_aim_part = fallback
                 manipulation_aim_position = fallback["Position"] + velocity * (local_ping/500)
                 manipulation_aim_origin = nil
+                manipulation_aim_origins = nil
 
                 if manipulation_solved_target == target then
                     manipulation_solved = false
