@@ -8343,8 +8343,6 @@ local ragebot_aim_position = nil
 local ragebot_firing_shot = false
 local manipulation_aim_position = nil
 local manipulation_aim_part = nil
-local tracer_shot_position = nil
-local tracer_shot_time = 0
 local ragebot_aim_velocity = nil
 local ragebot_aim_defensive = false
 local local_knocked = false
@@ -9296,6 +9294,44 @@ do
         end
     end))
 
+    -- The game only reports its own bullet rays from one container, so the
+    -- local bullet tracer never saw a manual shot. Feed the same signal from
+    -- every shot this client sends: the tracer draws from the gun to the point
+    -- the shot was sent to.
+    local emit_local_bullet_tracer = LPH_NO_VIRTUALIZE(function(to)
+        if not flags["local_bullet_tracers"] or typeof(to) ~= "Vector3" then
+            return
+        end
+
+        local handle = local_tool and local_tool["Handle"]
+        local from = handle and handle["Position"] or local_server_position and local_server_position["p"]
+
+        if not from then
+            return
+        end
+
+        local ray = create_instance("Part", {
+            ["Anchored"] = true,
+            ["CanCollide"] = false,
+            ["CanQuery"] = false,
+            ["CanTouch"] = false,
+            ["Transparency"] = 1,
+            ["Size"] = vector3_new(0.1, 0.1, 0.1),
+            ["CFrame"] = cframe_new(from),
+            ["Parent"] = ignored
+        })
+
+        -- The beam tracer destroys the part itself, the line tracer keeps
+        -- reading it for the whole lifetime, so clean up after either.
+        delay((flags["local_bullet_tracers_lifetime"] or 0.8) + 0.6, function()
+            if ray["Parent"] then
+                destroy(ray)
+            end
+        end)
+
+        signals["on_local_bullet_fired"]:Fire(ray, nil, cframe_new(to), true)
+    end)
+
     local new = {
         ["__namecall"] = newcclosure(LPH_JIT_MAX(function(self, ...)
             setthreadidentity(4)
@@ -9353,11 +9389,7 @@ do
                             spawn(get_bullet_result, ragebot_target[2], part, local_server_position["p"], aim_position, ragebot_aim_velocity, ragebot_aim_defensive)
                         end
 
-                        -- Stamp where this shot went, the tracer draws the bullet
-                        -- line from it for a moment whether the ragebot fired it
-                        -- or the player did.
-                        tracer_shot_position = pos
-                        tracer_shot_time = clock()
+                        emit_local_bullet_tracer(pos)
 
                         return old_namecall(self, "ShootGun", handle, origin, pos, part, (Magnitude <= 0 or Magnitude ~= Magnitude) and (handle["Position"]-pos)["Unit"] or dir)
                     end
@@ -9365,10 +9397,7 @@ do
                     local part = args[5]
 
                     if part then
-                        -- Plain shot, nothing rewritten: still record where it was
-                        -- sent so the tracer has an end point for it.
-                        tracer_shot_position = args[4]
-                        tracer_shot_time = clock()
+                        emit_local_bullet_tracer(args[4])
 
                         local parent = part["Parent"]
 
@@ -24421,16 +24450,7 @@ local backtrack_data = {}
 
         local do_ragebot_tracer = LPH_JIT_MAX(function(dt, hrp)
             local ragebot_aim_position = ragebot_aim_position ~= vector3_zero and ragebot_aim_position or nil
-
-            -- Shot trace: the ShootGun hook stamps the end point of every shot
-            -- the player sends, so a manual shot draws its line even when the
-            -- ragebot is not the one firing. It lives for a moment after the
-            -- shot instead of only while a target is locked.
-            local shot_position = tracer_shot_position and clock() - tracer_shot_time <= 0.15 and tracer_shot_position or nil
-
-            local trace = shot_position or ragebot_aim_position
-
-            if not trace and did then
+            if not ragebot_aim_position and did then
                 did = false
 
                 tween(tracer, hide_transparency, circular, out, 0.12)
@@ -24439,14 +24459,14 @@ local backtrack_data = {}
                 delay(0.12, function()
                     last_to = nil
                 end)
-            elseif trace and not did then
+            elseif ragebot_aim_position and not did then
                 did = true
 
                 tween(tracer, transparency, circular, out, 0.12)
                 tween(outline, outline_transparency, circular, out, 0.12)
             end
 
-            last_to = shot_position or (tracer_end == "predicted position" and ragebot_aim_position or (ragebot_target and (ragebot_target[4]["UpperTorso"] and ragebot_target[4]["UpperTorso"]["Position"] or vector3_new()))) or last_to
+            last_to = tracer_end == "predicted position" and ragebot_aim_position or (ragebot_target and (ragebot_target[4]["UpperTorso"] and ragebot_target[4]["UpperTorso"]["Position"] or vector3_new())) or last_to
 
             local origin = nil
             if tracer_origin == "gun" and local_gun and local_tool then
