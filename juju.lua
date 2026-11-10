@@ -13738,13 +13738,14 @@ end
             -- the panel showed while the shots were landing nothing.
             local manipulation_ok = flags["manipulation"] and ragebot_target and manipulation_aim_position and manipulation_hit_ok
             local manipulation_aim_ok = flags["manipulation"] and ragebot_target and manipulation_aim_position and manipulation_scan_ok
+            local manipulation_blocked = flags["manipulation"] and ragebot_target and manipulation_aim_position and not manipulation_hit_ok and not manipulation_scan_ok
 
             -- Void first: manipulation cannot land from there, so a solved
             -- origin must not hide the void state. Follow target next: while it
             -- is armed the character is being moved onto the target, which is
             -- the state worth showing, and manipulation is what happens once it
             -- is off.
-            local new = (in_void or in_void == nil) and "void" or flags["follow_target"] and ragebot_target and "following" or manipulation_ok and "manipulated" or manipulation_aim_ok and "aiming" or (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or "unsafe" or local_parts["ForceField"] and "invulnerable"
+            local new = (in_void or in_void == nil) and "void" or flags["follow_target"] and ragebot_target and "following" or manipulation_ok and "manipulated" or manipulation_aim_ok and "aiming" or manipulation_blocked and "blocked" or (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or "unsafe" or local_parts["ForceField"] and "invulnerable"
             if old ~= new then
                 text3["Text"] = new
                 tween(text3, {["Transparency"] = 0.35}, linear, out, 0.09)
@@ -23284,6 +23285,33 @@ local backtrack_data = {}
             spoof["cache"] = nil
             spoof["failed"] = now
             spoof["failed_target"] = target
+
+            -- Diagnostic, throttled. The solve failed, which the panel shows as
+            -- "blocked", and the useful question is why: cover in the way, or the
+            -- muzzle ray not reaching the body at all. One probe ray down the
+            -- middle of the torso names what the muzzle meets instead.
+            if not spoof["diag"] or now - spoof["diag"] > 3 then
+                spoof["diag"] = now
+
+                local torso = parts["UpperTorso"] or head
+                local probe = workspace:Raycast(anchor, ((torso["Position"] + lead) - anchor) * 1.02, params)
+                local label = "nothing"
+
+                if probe then
+                    local hit = probe["Instance"]
+
+                    if hit:IsDescendantOf(character) then
+                        label = hit["Name"] .. " (target)"
+                    elseif hit:IsDescendantOf(local_character) then
+                        label = hit["Name"] .. " (local)"
+                    else
+                        local parent = hit["Parent"]
+                        label = hit["Name"] .. (parent and (" (" .. parent["Name"] .. ")") or "")
+                    end
+                end
+
+                new_notification("manip blocked: muzzle ray hits " .. tostring(label), 2)
+            end
 
             if manipulation_solved_target == target then
                 manipulation_solved = false
