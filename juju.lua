@@ -9301,7 +9301,23 @@ do
     local bullet_trace_part = nil
     local bullet_trace_tick = 0
     local emit_local_bullet_tracer = LPH_NO_VIRTUALIZE(function(to)
-        if not flags["local_bullet_tracers"] or typeof(to) ~= "Vector3" then
+        if not flags["local_bullet_tracers"] then
+            return
+        end
+
+        -- Follow the locked target: a trace ends on the body the shot was meant
+        -- for, so rapid fire spread and manual aim spray does not throw the line
+        -- across the map. Without a target it still ends where the shot went.
+        local target = ragebot_target
+
+        if target and not target[7] then
+            local parts = target[4]
+            local hitbox = parts["Head"] or parts["UpperTorso"] or parts["HumanoidRootPart"]
+
+            to = (hitbox and hitbox["Position"]) or manipulation_aim_position or ragebot_aim_position or to
+        end
+
+        if typeof(to) ~= "Vector3" then
             return
         end
 
