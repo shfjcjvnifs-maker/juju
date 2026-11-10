@@ -13684,7 +13684,7 @@ end
             -- is armed the character is being moved onto the target, which is
             -- the state worth showing, and manipulation is what happens once it
             -- is off.
-            local new = (in_void or in_void == nil) and "void" or flags["follow_target"] and "following" or manipulation_ok and "manipulated" or (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or "unsafe" or local_parts["ForceField"] and "invulnerable"
+            local new = (in_void or in_void == nil) and "void" or flags["follow_target"] and ragebot_target and "following" or manipulation_ok and "manipulated" or (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or "unsafe" or local_parts["ForceField"] and "invulnerable"
             if old ~= new then
                 text3["Text"] = new
                 tween(text3, {["Transparency"] = 0.35}, linear, out, 0.09)
@@ -21112,7 +21112,21 @@ local backtrack_data = {}
 
         create_connection(menu_references["manipulation_infinite_distance"]["on_toggle_change"], function(value)
             menu_references["manipulation_bring_offset"]:set_visible(value)
+            menu_references["manipulation_bring_hint"]:set_visible(value)
+            menu_references["manipulation_offset_hint"]:set_visible(value)
         end)
+
+        -- Inline hints. The menu has no hover tooltip, so each setting carries a
+        -- line of explanation directly under it, the same way config info does.
+        menu_references["manipulation_bring_hint"] = menu_references["manipulation_settings"]:create_element({["name"] = ""}, {["info"] = {}})
+        menu_references["manipulation_bring_hint"]:set_info("Text", "moves the gun only, character stays put")
+        menu_references["manipulation_bring_hint"]:set_info("Color", color3_fromrgb(120, 120, 120))
+        menu_references["manipulation_bring_hint"]:set_visible(false)
+
+        menu_references["manipulation_offset_hint"] = menu_references["manipulation_settings"]:create_element({["name"] = ""}, {["info"] = {}})
+        menu_references["manipulation_offset_hint"]:set_info("Text", "gap between the gun and the target")
+        menu_references["manipulation_offset_hint"]:set_info("Color", color3_fromrgb(120, 120, 120))
+        menu_references["manipulation_offset_hint"]:set_visible(false)
         menu_references["auto_equip"] = menu_references["general_section"]:create_element({["name"] = "auto equip"}, {["toggle"] = {["flag"] = "auto_equip", ["default"] = false}})
         menu_references["auto_equip_settings"] = menu_references["auto_equip"]:create_settings()
         menu_references["auto_equip_unequip_when"] = menu_references["auto_equip_settings"]:create_element({["name"] = "unequip when"}, {["dropdown"] = {["flag"] = "auto_equip_unequip_when", ["default"] = {"no target"}, ["options"] = {"no target"}, ["multi"] = true}})
@@ -22553,14 +22567,21 @@ local backtrack_data = {}
         local speed = 75
         local height = vector3_zero
 
-        -- Shift the character onto the target for one render frame, then put it
-        -- back. The server samples that frame, so the shot sits inside the
-        -- weapon range while the client never appears to have moved: the same
-        -- trick follow target and auto stomp use.
+        -- Bring the gun, not the character. Moving the HRP dragged the camera
+        -- and the body with it, which is what made infinite distance look like a
+        -- teleport. The weapon is what the shot is measured from, so only the
+        -- tool's handle is moved for one render frame and put back: the character
+        -- never leaves where the player is standing.
         manipulation_bring = LPH_JIT_MAX(function(target, offset)
-            local hrp = local_parts["HumanoidRootPart"]
+            local tool = local_tool
 
-            if not hrp or not target or not target[3] then
+            if not tool or not target or not target[3] then
+                return false
+            end
+
+            local handle = tool["Handle"] or tool:FindFirstChild("GunHandle") or tool:FindFirstChildOfClass("BasePart")
+
+            if not handle then
                 return false
             end
 
@@ -22570,17 +22591,24 @@ local backtrack_data = {}
                 return false
             end
 
-            local old_cframe = hrp["CFrame"]
-            local flat = part["Position"] - hrp["Position"]
+            local old_cframe = handle["CFrame"]
+            local flat = part["Position"] - handle["Position"]
             flat = vector3_new(flat["X"], 0, flat["Z"])
             local unit = flat["Magnitude"] > 0.001 and flat["Unit"] or vector3_new(0, 0, 1)
-            local goal = part["Position"] - unit * offset + vector3_new(0, 1.2, 0)
+
+            -- Same offset rule as follow target: sit short of the body, never
+            -- inside it, so the shot still has room to travel.
+            local goal = part["Position"] - unit * offset + vector3_new(0, 0.6, 0)
 
             manipulation_bringing = true
 
-            hrp["CFrame"] = cframe_new(goal)
+            pcall(function()
+                handle["CFrame"] = cframe_new(goal)
+            end)
             render_stepped_wait(render_stepped)
-            hrp["CFrame"] = old_cframe
+            pcall(function()
+                handle["CFrame"] = old_cframe
+            end)
 
             manipulation_bringing = false
 
@@ -23347,6 +23375,8 @@ local backtrack_data = {}
             if bring_visible ~= bring_offset_visible then
                 bring_offset_visible = bring_visible
                 menu_references["manipulation_bring_offset"]:set_visible(bring_visible)
+                menu_references["manipulation_bring_hint"]:set_visible(bring_visible)
+                menu_references["manipulation_offset_hint"]:set_visible(bring_visible)
             end
 
             if not flags["manipulation"] then
