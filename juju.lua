@@ -8549,8 +8549,9 @@ local manipulation_verdict_target = nil
 
 -- The solver result for the currently locked target. Set the moment a spoofed
 -- origin and a hitbox are found, cleared the moment the target changes or the
--- next solve fails, so the panel reports what this target's last solve actually
--- produced rather than whatever the previous one left behind.
+-- next solve fails. Kept for the panel's own bookkeeping and for anything that
+-- needs to know whether the current target has an answer; the panel's
+-- "manipulated" status no longer rests on it, because a solve is not a hit.
 local manipulation_solved = false
 local manipulation_solved_target = nil
 
@@ -13752,20 +13753,17 @@ end
                 local juju_env = getgenv()["juju"]
                 center_panel_waiting_protection = juju_env and juju_env["waiting_protection"] and true or false
             end
-            -- Manipulated the moment the solver succeeds for the locked target:
-            -- a spoofed origin plus a hitbox with a clear path. No shot needed.
-            -- The flag is per target, so a solve for the previous player never
-            -- carries over, and a failed solve clears it again.
-            --
-            -- A confirmed hit still counts as proof even if the live solve is
-            -- between refreshes, so the verdict is checked as well.
+            -- Manipulated means the server took the shot. A solved origin only says
+            -- the solver had an answer, and showing that was the panel claiming a
+            -- hit for shots that never landed, which is exactly the case that reads
+            -- as working while nothing connects. The verdict is what the last
+            -- rewritten shot actually did.
             if manipulation_verdict_target and manipulation_verdict_target ~= (ragebot_target and ragebot_target[2]) then
                 manipulation_verdict = nil
             end
 
-            local manipulation_solve_ok = manipulation_solved and ragebot_target and manipulation_solved_target == ragebot_target
             local manipulation_hit_ok = manipulation_verdict == true and ragebot_target and frame_tick - manipulation_verdict_tick < 1.5
-            local manipulation_ok = flags["manipulation"] and ragebot_target and manipulation_aim_origin and (manipulation_solve_ok or manipulation_hit_ok)
+            local manipulation_ok = flags["manipulation"] and ragebot_target and manipulation_aim_origin and manipulation_hit_ok
 
             -- Void first: manipulation cannot land from there, so a solved
             -- origin must not hide the void state. Follow target next: while it
@@ -23420,62 +23418,17 @@ local backtrack_data = {}
                 end
             end
 
-            if best and best["origin"] then
-                -- The locked limb can be blocked on the centre while its edges
-                -- are open, so widen across that limb first.
-                if not expand_onto(best, best["part"]) then
-                    -- Blocked all around. Widen to the other hitboxes, heaviest
-                    -- first, and take the first one with a clear surface.
-                    local attempts = 0
-
-                    for i = 1, #spoof["weights"] do
-                        local part = parts[spoof["weights"][i][1]]
-
-                        if part and part ~= best["part"] then
-                            attempts = attempts + 1
-
-                            if expand_onto(best, part) then
-                                break
-                            end
-
-                            if attempts >= spoof["expander_attempts"] then
-                                break
-                            end
-                        end
-                    end
-                end
-            end
-
-            if not best then
-                -- Every limb centre was blocked from every origin. The expander
-                -- still gets a chance from straight above the character, walking
-                -- the box surfaces instead of the centres.
-                local slot = {
-                    ["origin"] = base + vector3_new(0, range, 0),
-                    ["position"] = base,
-                    ["part"] = nil,
-                    ["target"] = target,
-                    ["probe"] = vector3_zero
-                }
-                local attempts = 0
-
-                for i = 1, #spoof["weights"] do
-                    local part = parts[spoof["weights"][i][1]]
-
-                    if part then
-                        attempts = attempts + 1
-
-                        if expand_onto(slot, part) then
-                            best = slot
-                            break
-                        end
-
-                        if attempts >= spoof["expander_attempts"] then
-                            break
-                        end
-                    end
-                end
-            end
+            -- No expander on the spoofed path. Walking the aim point out to the
+            -- limb's box surface is what produced the answers that read as solved
+            -- and missed: the point drifted off the limb the shot was reported
+            -- against, so the server had nothing to land it on. The origin search
+            -- already aims at the limb's predicted centre, which is on the body,
+            -- and a limb whose centre is blocked from every origin stays unsolved
+            -- instead of being approximated. A limb with any open surface is
+            -- already covered by the head/limb candidate families above.
+            --
+            -- The expander still runs with manipulation off, where nothing is
+            -- spoofed and moving the aim point is the only job there is.
 
             spoof["last"] = now
 
