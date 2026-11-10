@@ -9532,6 +9532,14 @@ do
                             -- inside every weapon range, while the gun on this
                             -- client never leaves the hand.
                             origin = manipulation_aim_origin or (pos + vector3_new(0, 2.5, 0))
+
+                            -- A shot has to start inside the weapon range or the
+                            -- server drops it. Long shots keep the solver origin
+                            -- only while it is close enough, otherwise the trace
+                            -- starts short of the body.
+                            if (pos - origin)["Magnitude"] > range then
+                                origin = pos - direction * math["min"](range * 0.5, 4)
+                            end
                         elseif direction["Magnitude"] > 0.001 and (pos-origin)["Magnitude"] > range then
                             origin = pos - direction * 0.2
                         end
@@ -13502,8 +13510,21 @@ end
             end
         end)
 
+        -- getgenv() plus a table walk every frame is pure overhead: the value
+        -- only changes when the ragebot arms, so it is sampled at 10 Hz.
+        local center_panel_waiting_protection = false
+        local center_panel_waiting_tick = 0
+
         local do_center_panel = LPH_JIT_MAX(function(dt)
             local old = text3["Text"]
+
+            local frame_tick = clock()
+
+            if frame_tick - center_panel_waiting_tick > 0.1 then
+                center_panel_waiting_tick = frame_tick
+                local juju_env = getgenv()["juju"]
+                center_panel_waiting_protection = juju_env and juju_env["waiting_protection"] and true or false
+            end
             -- Manipulated as soon as the solver found a spoofed origin and a
             -- hitbox on the locked target, no shot needed.
             local manipulating = flags["manipulation"] and manipulation_aim_origin and manipulation_aim_part
@@ -13513,7 +13534,7 @@ end
             -- is armed the character is being moved onto the target, which is
             -- the state worth showing, and manipulation is what happens once it
             -- is off.
-            local new = (in_void or in_void == nil) and "void" or flags["follow_target"] and "following" or manipulating and "manipulated" or (flags["ragebot"] and (getgenv()["juju"] or {})["waiting_protection"]) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or "unsafe" or local_parts["ForceField"] and "invulnerable"
+            local new = (in_void or in_void == nil) and "void" or flags["follow_target"] and "following" or manipulating and "manipulated" or (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or "unsafe" or local_parts["ForceField"] and "invulnerable"
             if old ~= new then
                 text3["Text"] = new
                 tween(text3, {["Transparency"] = 0.35}, linear, out, 0.09)
@@ -13803,15 +13824,19 @@ end
                 local idx_base = (i - 1) * 2 + 1
                 local idx_outline = idx_base + 1
     
-                local sx = px + gap * cos(angle)
-                local sy = py + gap * sin(angle)
-                local ex = px + (gap + len) * cos(angle)
-                local ey = py + (gap + len) * sin(angle)
+                -- One sine and one cosine per arm instead of eight per arm.
+                local c = cos(angle)
+                local s = sin(angle)
+
+                local sx = px + gap * c
+                local sy = py + gap * s
+                local ex = px + (gap + len) * c
+                local ey = py + (gap + len) * s
     
-                local osx = px + (gap - 1) * cos(angle)
-                local osy = py + (gap - 1) * sin(angle)
-                local oex = px + (gap + len + 1) * cos(angle)
-                local oey = py + (gap + len + 1) * sin(angle)
+                local osx = px + (gap - 1) * c
+                local osy = py + (gap - 1) * s
+                local oex = px + (gap + len + 1) * c
+                local oey = py + (gap + len + 1) * s
     
                 lines[idx_base]["From"] = vector2_new(sx, sy)
                 lines[idx_base]["To"] = vector2_new(ex, ey)
@@ -17468,7 +17493,25 @@ end
             local position = upper_torso["Position"]
             local screen_pos, on_screen = world_to_viewport_point(camera, position + offset)
 
-            if on_screen then
+            -- Offscreen players skip the second projection, the size math and
+            -- the whole drawing write block. Only the hide pass runs.
+            if not on_screen then
+                if data[6] then
+                    for _, drawing in data[5] do
+                        drawing["Visible"] = false
+                    end
+                    data[6] = false
+
+                    local offscreen_highlight = data[8]
+
+                    if offscreen_highlight and offscreen_highlight["Enabled"] then
+                        offscreen_highlight["Enabled"] = false
+                    end
+                end
+                continue
+            end
+
+            do
                 local drawings = data[5]
 
                 if not data[6] then
@@ -17617,18 +17660,6 @@ end
                     if data[13] then
                         drawings[9]["Position"] = position + vector2_new((x_size-24)/2, y_size + (do_tool_text and small_size or 0) + 2)
                     end
-                end
-            elseif data[6] then
-                local drawings = data[5]
-                for _, drawing in drawings do
-                    drawing["Visible"] = false
-                end
-                data[6] = false
-
-                local offscreen_highlight = data[8]
-
-                if offscreen_highlight and offscreen_highlight["Enabled"] then
-                    offscreen_highlight["Enabled"] = false
                 end
             end
         end
@@ -22623,6 +22654,10 @@ local backtrack_data = {}
         -- between that point and the body rules it out.
         local spoof = {
             ["range"] = 15,
+            -- Fallback weapon range when the equipped gun reports none. Every
+            -- candidate origin is also checked against the real gun range, so a
+            -- spoof that would land outside it is rejected instead of fired.
+            ["gun_range"] = 1000,
             ["cache"] = nil,
             ["last"] = 0,
             ["failed"] = 0,
@@ -22709,7 +22744,7 @@ local backtrack_data = {}
             return result["Instance"]:IsDescendantOf(character)
         end)
 
-        local solve_spoof = LPH_NO_VIRTUALIZE(function(target, base, velocity)
+        local solve_spoof = LPH_NO_VIRTUALIZE(function(target, base, velocity, gun_range)
             local character = target[3]
             local parts = target[4]
             local head = parts["Head"] or parts["UpperTorso"] or parts["HumanoidRootPart"]
@@ -22741,6 +22776,13 @@ local backtrack_data = {}
             end
 
             local range = spoof["range"]
+
+            local gun_budget = tonumber(gun_range) or spoof["gun_range"]
+
+            if gun_budget <= 0 then
+                gun_budget = spoof["gun_range"]
+            end
+
             local params = spoof["params"]
             local filter = {local_character}
 
@@ -22813,8 +22855,28 @@ local backtrack_data = {}
                     local point = aim + offset
                     local away = (point - base)["Magnitude"]
 
-                    if away <= range then
-                        candidates[#candidates+1] = {point, away, 1}
+                    -- Measured against the gun range, not the 15 stud search
+                    -- radius: a tight ring on the body is the one origin family
+                    -- that still works when the character is far away.
+                    if away <= gun_budget then
+                        candidates[#candidates+1] = {point, math["min"](away, range), 1}
+                    end
+                end
+            end
+
+            -- Long shot: the character is further from the target than the gun
+            -- reaches. Origins on the character cannot land, so the shot is
+            -- reported from a point just short of the target instead, always
+            -- inside the weapon range and with a short clear trace.
+            local span = (aim - base)["Magnitude"]
+
+            if span > range then
+                for i = 1, #spoof["lifts"] do
+                    local pull = aim - flat_unit * (gun_budget * 0.3) + vector3_new(0, range * 0.5 * spoof["lifts"][i], 0)
+                    local away = (pull - base)["Magnitude"]
+
+                    if away <= gun_budget and (pull - aim)["Magnitude"] <= gun_budget then
+                        candidates[#candidates+1] = {pull, math["min"](away, range), 2}
                     end
                 end
             end
@@ -22938,7 +23000,10 @@ local backtrack_data = {}
                 local size = part["Size"]
                 local half = vector3_new(size["X"] * 0.5, size["Y"] * 0.5, size["Z"] * 0.5)
                 local reach = (slot["position"] - slot["origin"])["Magnitude"]
-                local margin = spoof["expander_margin"] + (reach / range) * spoof["expander_growth"]
+                -- Ping widens the margin on its own: the further the server
+                -- sees the body from where the client drew it, the further out
+                -- the aim point has to sit to still count as a hit.
+                local margin = (spoof["expander_margin"] + (reach / range) * spoof["expander_growth"]) * (1 + math["min"](local_ping / 400, 1))
                 local cframe = part["CFrame"]
                 local position = part["Position"] + lead
 
@@ -23084,7 +23149,7 @@ local backtrack_data = {}
             -- Prediction: the hit registers where the target was when the shot
             -- left, so lead by the measured velocity over the round trip.
             local velocity = target_velocity or hitbox["AssemblyLinearVelocity"]
-            local solution = solve_spoof(target, local_server_position["p"], velocity)
+            local solution = solve_spoof(target, local_server_position["p"], velocity, local_gun)
 
             if solution then
                 manipulation_aim_part = solution["part"]
