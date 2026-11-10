@@ -22966,20 +22966,27 @@ local backtrack_data = {}
             end
         end
 
-        -- A candidate is clear when the ray reaches the body without hitting
-        -- anything other than the target's own character.
-        local spoof_visible = LPH_NO_VIRTUALIZE(function(origin, point, character)
+        -- The hit the server computes for this shot. The point a ray is aimed at
+        -- is not the point it meets: a ray sent at a torso stops on the arm in
+        -- front of it, and a shot that names the torso is a shot the server
+        -- resolves against the arm instead. So the ray's own result is what gets
+        -- reported - its instance and its position - which is the same pair the
+        -- game's own shot sends. A hit that lands on anything but the target's
+        -- character means the shot never reached the body.
+        local spoof_hit = LPH_NO_VIRTUALIZE(function(origin, point, character)
             local delta = point - origin
-            local result = workspace:Raycast(origin, delta * 1.02, spoof["params"])
 
-            -- Nothing hit means the point is not on the body, so the shot would
-            -- have nothing to land on. Only a hit that belongs to the target
-            -- counts as clear.
-            if not result then
-                return false
+            if delta["Magnitude"] <= 0.001 then
+                return nil
             end
 
-            return result["Instance"]:IsDescendantOf(character)
+            local result = workspace:Raycast(origin, delta * 1.02, spoof["params"])
+
+            if result and result["Instance"]:IsDescendantOf(character) then
+                return result
+            end
+
+            return nil
         end)
 
         local solve_spoof = LPH_NO_VIRTUALIZE(function(target, base, velocity, gun_range, expand_only)
@@ -23045,12 +23052,12 @@ local backtrack_data = {}
                         local direction = directions[i]
                         local offset = vector3_new(direction["X"] * half["X"] * scale, direction["Y"] * half["Y"] * scale, direction["Z"] * half["Z"] * scale)
                         local world = cframe["RightVector"] * offset["X"] + cframe["UpVector"] * offset["Y"] + cframe["LookVector"] * offset["Z"]
-                        local point = position + world
+                        local hit = spoof_hit(slot["origin"], position + world, character)
 
-                        if spoof_visible(slot["origin"], point, character) then
-                            slot["part"] = part
-                            slot["position"] = point
-                            slot["probe"] = world
+                        if hit then
+                            slot["part"] = hit["Instance"]
+                            slot["position"] = hit["Position"]
+                            slot["probe"] = hit["Position"] - (hit["Instance"]["Position"] + lead)
                             return true
                         end
                     end
@@ -23178,15 +23185,15 @@ local backtrack_data = {}
                 local part = parts[entry[1]]
 
                 if part then
-                    local point = aim + (part["Position"] - head_position)
+                    local hit = spoof_hit(anchor, aim + (part["Position"] - head_position), character)
 
-                    if spoof_visible(anchor, point, character) then
+                    if hit then
                         best = {
                             ["origin"] = nil,
-                            ["position"] = point,
-                            ["part"] = part,
+                            ["position"] = hit["Position"],
+                            ["part"] = hit["Instance"],
                             ["target"] = target,
-                            ["probe"] = vector3_zero
+                            ["probe"] = hit["Position"] - (hit["Instance"]["Position"] + lead)
                         }
 
                         break
