@@ -23198,19 +23198,24 @@ local backtrack_data = {}
                 local part = parts[entry[1]]
 
                 if part then
-                    local hit = spoof_hit(anchor, aim + (part["Position"] - head_position), character)
+                    local point = aim + (part["Position"] - head_position)
+                    local hit = spoof_hit(anchor, point, character)
 
-                    if hit then
-                        best = {
-                            ["origin"] = nil,
-                            ["position"] = hit["Position"],
-                            ["part"] = hit["Instance"],
-                            ["target"] = target,
-                            ["probe"] = hit["Position"] - (hit["Instance"]["Position"] + lead)
-                        }
+                    -- The ray refines the answer when it reaches the body, but it
+                    -- does not gate the shot. The ragebot reports the limb it aims
+                    -- at whether or not a client ray would reach it, and the server
+                    -- resolves the shot from the reported origin and point.
+                    -- Requiring a clear line here is what stopped every shot while
+                    -- the target stood behind cover.
+                    best = {
+                        ["origin"] = nil,
+                        ["position"] = hit and hit["Position"] or point,
+                        ["part"] = hit and hit["Instance"] or part,
+                        ["target"] = target,
+                        ["probe"] = hit and (hit["Position"] - (hit["Instance"]["Position"] + lead)) or vector3_zero
+                    }
 
-                        break
-                    end
+                    break
                 end
             end
 
