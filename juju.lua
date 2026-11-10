@@ -9729,9 +9729,13 @@ do
                         -- nothing to gain by reporting it from somewhere else.
                         local origin = local_server_position["p"] + vector3_new(0.004, 3.0208, -0.048)
 
-                        -- Point the direction at the body, the same way the
-                        -- ragebot sends its own shots.
-                        local dir = (origin-pos)["Unit"]
+                        -- Direction of travel, muzzle to body. It points from the
+                        -- origin towards the aim point, the same way the game's own
+                        -- shot and the ragebot send it. Reversed, the server traces
+                        -- from the muzzle back through the shooter and away from the
+                        -- target, which lands nothing while still looking like a
+                        -- normal shot on screen.
+                        local dir = (pos-origin)["Unit"]
                         local Magnitude = dir["Magnitude"]
                         local part = silent_part or (is_ragebot_shot and args[5]) or (ragebot_target and (ragebot_target[4][resolve_ragebot_hitbox_part(ragebot_target[4])] or ragebot_target[4]["UpperTorso"])) or args[5]
 
