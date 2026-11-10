@@ -9306,6 +9306,13 @@ do
             return
         end
 
+        -- Auto fire "dont render": the auto fire block skips the beam, so the
+        -- local bullet tracer has to skip these shots as well or the line still
+        -- shows while the beam is off.
+        if flags["auto_fire_dont_render"] and ragebot_firing_shot then
+            return
+        end
+
         -- Follow the locked target: a trace ends on the body the shot was meant
         -- for, so rapid fire spread and manual aim spray does not throw the line
         -- across the map. Without a target it still ends where the shot went.
