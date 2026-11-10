@@ -2184,7 +2184,7 @@ local menu = {
         keybind_border["Size"] = udim2_new(0, size, 0, 12)
         keybind_border["Position"] = udim2_new(1, -size, 0, 0)
         keybind_inside["Size"] = udim2_new(0, size-2, 0, 10)
-        keybind_text["Position"] = udim2_new(0, (size-2)/2, 0, -2)
+        keybind_text["Position"] = udim2_new(0, (size-2)/2, 0, 5)
 
         local escape = Enum["KeyCode"]["Escape"]
         local tilde = Enum["KeyCode"]["Tilde"]
@@ -5760,7 +5760,7 @@ local menu = {
         keybind_border["Size"] = udim2_new(0, size, 0, 12)
         keybind_border["Position"] = udim2_new(1, -size, 0, 0)
         keybind_inside["Size"] = udim2_new(0, size-2, 0, 10)
-        keybind_text["Position"] = udim2_new(0, (size-2)/2, 0, -2)
+        keybind_text["Position"] = udim2_new(0, (size-2)/2, 0, 5)
 
         local flag = self["keybind_flag"]
 
@@ -21139,21 +21139,8 @@ local backtrack_data = {}
 
         create_connection(menu_references["manipulation_infinite_distance"]["on_toggle_change"], function(value)
             menu_references["manipulation_bring_offset"]:set_visible(value)
-            menu_references["manipulation_bring_hint"]:set_visible(value)
-            menu_references["manipulation_offset_hint"]:set_visible(value)
         end)
 
-        -- Inline hints. The menu has no hover tooltip, so each setting carries a
-        -- line of explanation directly under it, the same way config info does.
-        menu_references["manipulation_bring_hint"] = menu_references["manipulation_settings"]:create_element({["name"] = ""}, {["info"] = {}})
-        menu_references["manipulation_bring_hint"]:set_info("Text", "moves the gun only, character stays put")
-        menu_references["manipulation_bring_hint"]:set_info("Color", color3_fromrgb(120, 120, 120))
-        menu_references["manipulation_bring_hint"]:set_visible(false)
-
-        menu_references["manipulation_offset_hint"] = menu_references["manipulation_settings"]:create_element({["name"] = ""}, {["info"] = {}})
-        menu_references["manipulation_offset_hint"]:set_info("Text", "gap between the gun and the target")
-        menu_references["manipulation_offset_hint"]:set_info("Color", color3_fromrgb(120, 120, 120))
-        menu_references["manipulation_offset_hint"]:set_visible(false)
         menu_references["auto_equip"] = menu_references["general_section"]:create_element({["name"] = "auto equip"}, {["toggle"] = {["flag"] = "auto_equip", ["default"] = false}})
         menu_references["auto_equip_settings"] = menu_references["auto_equip"]:create_settings()
         menu_references["auto_equip_unequip_when"] = menu_references["auto_equip_settings"]:create_element({["name"] = "unequip when"}, {["dropdown"] = {["flag"] = "auto_equip_unequip_when", ["default"] = {"no target"}, ["options"] = {"no target"}, ["multi"] = true}})
@@ -23402,8 +23389,6 @@ local backtrack_data = {}
             if bring_visible ~= bring_offset_visible then
                 bring_offset_visible = bring_visible
                 menu_references["manipulation_bring_offset"]:set_visible(bring_visible)
-                menu_references["manipulation_bring_hint"]:set_visible(bring_visible)
-                menu_references["manipulation_offset_hint"]:set_visible(bring_visible)
             end
 
             if not flags["manipulation"] then
