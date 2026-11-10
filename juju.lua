@@ -9721,10 +9721,16 @@ do
                     -- The manipulation feeder picks the hitbox and predicts its
                     -- position, so the aim point and the part argument always
                     -- describe the same limb.
-                    if flags["manipulation"] and ragebot_target and not ragebot_target[7] then
+                    -- The expander feeds the aim point with manipulation off too, so
+                    -- the ragebot gets it on its own. Only the spoofed origin stays
+                    -- tied to the manipulation flag, and without that flag the
+                    -- expanded point is used for ragebot shots alone: a manual shot
+                    -- belongs to silent aim, which picks its own target and must not
+                    -- have it rewritten onto the locked one.
+                    if ragebot_target and not ragebot_target[7] and (flags["manipulation"] or (is_ragebot_shot and manipulation_aim_position)) then
                         silent_part = manipulation_aim_part
                         aim_position = manipulation_aim_position
-                        redirected = aim_position ~= nil
+                        redirected = flags["manipulation"] and aim_position ~= nil
                     end
 
                     if not aim_position then
@@ -23022,7 +23028,7 @@ local backtrack_data = {}
             return result["Instance"]:IsDescendantOf(character)
         end)
 
-        local solve_spoof = LPH_NO_VIRTUALIZE(function(target, base, velocity, gun_range)
+        local solve_spoof = LPH_NO_VIRTUALIZE(function(target, base, velocity, gun_range, expand_only)
             local character = target[3]
             local parts = target[4]
             local head = parts["Head"] or parts["UpperTorso"] or parts["HumanoidRootPart"]
@@ -23032,8 +23038,128 @@ local backtrack_data = {}
             end
 
             local now = clock()
-            local cache = spoof["cache"]
+
+            -- A cached answer belongs to the mode that produced it, so an
+            -- expander-only pass never picks up a spoofed origin and the other way
+            -- around.
+            local cache = expand_only and nil or spoof["cache"]
             local lead = (velocity or head["AssemblyLinearVelocity"]) * (local_ping/500)
+
+            -- Hitbox expander calculator. The centre ray of a limb clips the
+            -- shooter or a ledge while the rest of the limb is open, so the aim
+            -- walks out to the limb's own box surface: the push is scaled by that
+            -- limb's size along its own axes, so the point stays on the body at
+            -- every rotation.
+            local directions = spoof["expander_directions"]
+
+            local expand_onto = function(slot, part)
+                local size = part["Size"]
+                local half = vector3_new(size["X"] * 0.5, size["Y"] * 0.5, size["Z"] * 0.5)
+                local cframe = part["CFrame"]
+                local position = part["Position"] + lead
+
+                -- A limb can be larger than the aim tolerance, so the point is
+                -- walked over the limb's own box instead of its centre. Every
+                -- ring is a fraction of the half-extent and none exceeds it, so
+                -- each point sits inside the part and the ray lands on the body
+                -- rather than past it.
+                for ring = 1, #spoof["expander_rings"] do
+                    local scale = spoof["expander_rings"][ring]
+
+                    for i = 1, #directions do
+                        local direction = directions[i]
+                        local offset = vector3_new(direction["X"] * half["X"] * scale, direction["Y"] * half["Y"] * scale, direction["Z"] * half["Z"] * scale)
+                        local world = cframe["RightVector"] * offset["X"] + cframe["UpVector"] * offset["Y"] + cframe["LookVector"] * offset["Z"]
+                        local point = position + world
+
+                        if spoof_visible(slot["origin"], point, character) then
+                            slot["part"] = part
+                            slot["position"] = point
+                            slot["probe"] = world
+                            return true
+                        end
+                    end
+                end
+
+                return false
+            end
+
+            -- Expander-only pass. The ragebot has a target but manipulation is
+            -- off, so there is no spoofed origin to find and the shot leaves from
+            -- where the character stands. All this does is walk the aim point out
+            -- to the box surface of the limb the ragebot picked and hand that back
+            -- with no origin, which is what makes a centre line that clips a ledge
+            -- still land on the body.
+            if expand_only then
+                local cached = spoof["expand_cache"]
+
+                if cached and cached["target"] == target and now - cached["time"] < 0.1 then
+                    local part = cached["part"]
+
+                    if part and part["Parent"] then
+                        return {
+                            ["origin"] = nil,
+                            ["position"] = part["Position"] + lead + cached["probe"],
+                            ["part"] = part,
+                            ["target"] = target,
+                            ["probe"] = cached["probe"]
+                        }
+                    end
+                end
+
+                local slot = {
+                    ["origin"] = base,
+                    ["position"] = base,
+                    ["part"] = nil,
+                    ["target"] = target,
+                    ["probe"] = vector3_zero
+                }
+
+                -- The limb the ragebot is aiming at first, then the rest by
+                -- weight, so the aim point stays on the limb the ragebot chose
+                -- whenever that limb has any open surface at all.
+                local preferred = parts[resolve_ragebot_hitbox_part(parts)] or head
+
+                if not (preferred and expand_onto(slot, preferred)) then
+                    local attempts = 0
+
+                    for i = 1, #spoof["weights"] do
+                        local part = parts[spoof["weights"][i][1]]
+
+                        if part and part ~= preferred then
+                            attempts = attempts + 1
+
+                            if expand_onto(slot, part) then
+                                break
+                            end
+
+                            if attempts >= spoof["expander_attempts"] then
+                                break
+                            end
+                        end
+                    end
+                end
+
+                spoof["last"] = now
+
+                if not slot["part"] then
+                    spoof["failed"] = now
+                    spoof["failed_target"] = target
+                    return nil
+                end
+
+                slot["time"] = now
+                spoof["expand_cache"] = slot
+
+                return {
+                    ["origin"] = nil,
+                    ["position"] = slot["position"],
+                    ["part"] = slot["part"],
+                    ["target"] = target,
+                    ["probe"] = slot["probe"]
+                }
+            end
+
 
             -- Reuse the last solution for 0.05 s. The body moves, so the aimed
             -- point is re-derived from the cached limb every frame instead of
@@ -23294,46 +23420,6 @@ local backtrack_data = {}
                 end
             end
 
-            -- Hitbox expander calculator. The centre ray of a limb clips the
-            -- shooter or a ledge while the rest of the limb is open, so the aim
-            -- walks out to the limb's own box surface: the push is scaled by that
-            -- limb's size along its own axes, so the point stays on the body at
-            -- every rotation, and the margin grows with the shot distance, where
-            -- the aim error is largest.
-            local directions = spoof["expander_directions"]
-
-            local expand_onto = function(slot, part)
-                local size = part["Size"]
-                local half = vector3_new(size["X"] * 0.5, size["Y"] * 0.5, size["Z"] * 0.5)
-                local cframe = part["CFrame"]
-                local position = part["Position"] + lead
-
-                -- A limb can be larger than the aim tolerance, so the point is
-                -- walked over the limb's own box instead of its centre. Every
-                -- ring is a fraction of the half-extent and none exceeds it, so
-                -- each point sits inside the part and the ray lands on the body
-                -- rather than past it.
-                for ring = 1, #spoof["expander_rings"] do
-                    local scale = spoof["expander_rings"][ring]
-
-                    for i = 1, #directions do
-                        local direction = directions[i]
-                        local offset = vector3_new(direction["X"] * half["X"] * scale, direction["Y"] * half["Y"] * scale, direction["Z"] * half["Z"] * scale)
-                        local world = cframe["RightVector"] * offset["X"] + cframe["UpVector"] * offset["Y"] + cframe["LookVector"] * offset["Z"]
-                        local point = position + world
-
-                        if spoof_visible(slot["origin"], point, character) then
-                            slot["part"] = part
-                            slot["position"] = point
-                            slot["probe"] = world
-                            return true
-                        end
-                    end
-                end
-
-                return false
-            end
-
             if best and best["origin"] then
                 -- The locked limb can be blocked on the centre while its edges
                 -- are open, so widen across that limb first.
@@ -23417,7 +23503,14 @@ local backtrack_data = {}
         end)
 
         local do_manipulation = LPH_NO_VIRTUALIZE(function(dt)
-            if not flags["manipulation"] then
+            -- The hitbox expander is worth running on the ragebot's own locked
+            -- target with manipulation off: it only moves the aim point across the
+            -- selected limb's box, no spoofed origin involved. Without the ragebot
+            -- there is nothing to expand for, so the flag alone decides.
+            local expand_only = not flags["manipulation"]
+            local ragebot_locked = expand_only and flags["ragebot"] and ragebot_target and not ragebot_target[7]
+
+            if expand_only and not ragebot_locked then
                 manipulation_aim_part = nil
                 manipulation_aim_origin = nil
 
@@ -23467,12 +23560,21 @@ local backtrack_data = {}
             -- Prediction: the hit registers where the target was when the shot
             -- left, so lead by the measured velocity over the round trip.
             local velocity = target_velocity or hitbox["AssemblyLinearVelocity"]
-            local solution = solve_spoof(target, local_server_position["p"], velocity, local_gun)
+            local solution = solve_spoof(target, local_server_position["p"], velocity, local_gun, expand_only)
 
             if solution then
                 manipulation_aim_part = solution["part"]
                 manipulation_aim_position = solution["position"]
-                manipulation_aim_origin = solution["origin"]
+
+                -- No origin outside the manipulation flag: the shot stays on the
+                -- character and only the expanded aim point is used.
+                manipulation_aim_origin = expand_only and nil or solution["origin"]
+            elseif expand_only then
+                -- Nothing to expand onto this frame. Leave the ragebot's own aim
+                -- point alone rather than replacing it with a led centre.
+                manipulation_aim_part = nil
+                manipulation_aim_position = nil
+                manipulation_aim_origin = nil
             else
                 -- Nothing clear: still report the shot as leaving from over the
                 -- body, the way bullet tp did. The torso is preferred over the
