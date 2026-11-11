@@ -23079,18 +23079,23 @@ local backtrack_data = {}
     -- With a ragebot target set, the bait runs a two-phase cycle. For "void
     -- time" the character sits far out across the map, a long way from anything
     -- it can be shot from, which is what the server and the chasing target see.
-    -- For "bait time" the character surfaces back at its real position and the
-    -- ragebot fires at the target while it is still chasing the point it was
-    -- last seen at. The cycle then repeats.
+    -- For "bait time" the character is set down on a bait point and held there
+    -- without moving for the whole phase, so whatever is chasing it walks onto a
+    -- point that stays put instead of one that slides away, and the ragebot
+    -- fires at the chaser from there. The cycle then repeats.
     --
-    -- The bait anchor is ninety million studs out: far enough that the target
-    -- cannot reach it, near enough that the client still replicates a position
-    -- rather than being clamped away entirely. It cannot be tested here, so the
-    -- offset may need lowering if the server rejects it.
+    -- Both points are ninety million studs out: far enough that the target
+    -- cannot reach them, near enough that the client still replicates a position
+    -- rather than being clamped away entirely. None of it can be tested here, so
+    -- the offset may need lowering if the server rejects it.
     do
         local rad = math["rad"]
         local cframe_angles = CFrame["Angles"]
         local cycle_start = clock()
+        -- Where the character really is, and the point the bait phase sets it
+        -- down on. Both survive the cycle; neither is re-rolled while it runs.
+        local bait_home = nil
+        local bait_position = nil
 
         local do_bait = LPH_JIT_MAX(function(dt, hrp)
             if not hrp or ragebot_force_position then
@@ -23103,10 +23108,20 @@ local backtrack_data = {}
             -- target, no cycle: there is nothing to bait and nothing to shoot
             -- when the surface phase comes round.
             if not ragebot_target then
+                if baited and bait_home then
+                    hrp["CFrame"] = bait_home
+                end
+
                 baiting = false
                 baited = false
                 cycle_start = clock()
+                bait_home = nil
+                bait_position = nil
                 return
+            end
+
+            if not bait_home then
+                bait_home = hrp["CFrame"]
             end
 
             local void_time = flags["bait_void_time"] or 0.5
@@ -23121,14 +23136,13 @@ local backtrack_data = {}
                 baited = false
                 in_void = true
 
-                local old_cframe = hrp["CFrame"]
                 local old_velocity = hrp["Velocity"]
                 local old_camera = camera["CFrame"]
 
                 hrp["Velocity"] = vector3_zero
                 hrp["CFrame"] = cframe_new(vector3_new(math_random(-90000000, 90000000), math_random(-90000000, 90000000), math_random(-90000000, 90000000)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
                 render_stepped_wait(render_stepped)
-                hrp["CFrame"] = old_cframe
+                hrp["CFrame"] = bait_home
                 hrp["Velocity"] = old_velocity
 
                 -- Put the view and both position mirrors back in the same
@@ -23140,14 +23154,25 @@ local backtrack_data = {}
                 -- cycle left to run on its own leaves nothing that can be set as
                 -- a target.
                 camera["CFrame"] = old_camera
-                local_client_position = old_cframe
-                local_server_position = old_cframe
+                local_client_position = bait_home
+                local_server_position = bait_home
             else
-                -- Baited: surfaced at the real position, in_void cleared so the
-                -- ragebot fires at the chasing target.
+                -- Baited: the character is set down on the bait point and pinned
+                -- there for the phase, not surfaced back at its own position.
+                -- Movement input, gravity and knockback are all overwritten by
+                -- the hold, so the point the target is chasing does not move and
+                -- in_void is cleared, which lets the ragebot fire at the chaser
+                -- from it.
                 baiting = false
                 baited = true
                 in_void = false
+
+                if not bait_position then
+                    bait_position = cframe_new(vector3_new(math_random(-90000000, 90000000), math_random(-90000000, 90000000), math_random(-90000000, 90000000)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
+                end
+
+                hrp["Velocity"] = vector3_zero
+                hrp["CFrame"] = bait_position
             end
         end)
 
@@ -23159,9 +23184,19 @@ local backtrack_data = {}
                 end
             end
 
+            if baited and bait_home then
+                local hrp = local_parts["HumanoidRootPart"]
+
+                if hrp then
+                    hrp["CFrame"] = bait_home
+                end
+            end
+
             baiting = false
             baited = false
             cycle_start = clock()
+            bait_home = nil
+            bait_position = nil
 
             if value then
                 anti_aim[#anti_aim+1] = do_bait
@@ -23209,7 +23244,7 @@ local backtrack_data = {}
                 return
             end
 
-            if not flags["rapid_fire"] or baiting or local_reloading or not local_character or menu["is_menu_open"]() then
+            if not flags["rapid_fire"] or baiting or baited or local_reloading or not local_character or menu["is_menu_open"]() then
                 return
             end
 
