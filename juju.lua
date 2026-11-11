@@ -11562,13 +11562,30 @@ do
     -- >> ( redeem codes )
 
     create_connection(menu_references["utility_section"]:create_element({["name"] = "redeem codes"}, {["button"] = {}})["on_clicked"], function()
-        local html = game:HttpGet("https://gamerant.com/roblox-da-hood-codes/")
-        local html = html:sub(html:find("All Active Da Hood Codes"), html:find("All Expired Da Hood Codes") - 1)
+        -- Codes written into the script are redeemed first, whether or not the
+        -- page below still lists them. The page only adds to them.
+        local codes = {"TURKEY!"}
 
-        local codes = {}
-        for code in html:gmatch("<strong>(.-)</strong>") do
-            if not code:find("%(") then
-                codes[#codes+1] = code:gsub("%s+$", "")
+        local ok, html = pcall(function()
+            return game:HttpGet("https://gamerant.com/roblox-da-hood-codes/")
+        end)
+
+        if ok then
+            local from = html:find("All Active Da Hood Codes")
+            local to = html:find("All Expired Da Hood Codes")
+
+            if from and to then
+                html = html:sub(from, to - 1)
+
+                for code in html:gmatch("<strong>(.-)</strong>") do
+                    if not code:find("%(") then
+                        local code = code:gsub("%s+$", "")
+
+                        if not table.find(codes, code) then
+                            codes[#codes+1] = code
+                        end
+                    end
+                end
             end
         end
 
