@@ -23102,18 +23102,19 @@ local backtrack_data = {}
 
     -- >> ( bait )
 
-    -- With a ragebot target set, the bait runs a two-phase cycle. For "void
-    -- time" it works from a void point, a long way from anything it can be shot
-    -- from; for "bait time" it works from a bait point. Both points are given to
-    -- the server the same way - out to the point, wait the frame, back - so the
-    -- server holds the point while the client stays where it really is. That is
-    -- the desync the void module uses, and the point is what the target is left
-    -- chasing: a position nothing is standing on.
+    -- With a ragebot target set, the bait runs a two-phase cycle and works from a
+    -- point rolled around the target, the same way follow target rolls its own.
+    -- That point is in the map and a few studs off the target, so the target
+    -- chasing it and strafing on it is in view, and the ragebot firing from it
+    -- is firing at something it can reach.
     --
-    -- Both points are ninety million studs out: far enough that the target
-    -- cannot reach them, near enough that the client still replicates a position
-    -- rather than being clamped away entirely. None of it can be tested here, so
-    -- the offset may need lowering if the server rejects it.
+    -- For "void time" the character is given the void point and counted as in the
+    -- void. For "bait time" it is given the bait point and counted out of it, so
+    -- the ragebot fires at the chaser for that phase. Both points are handed over
+    -- the way follow target and void hide hand theirs over: out to the point,
+    -- wait the frame, back to where the character really is. The position is on
+    -- the wire for that frame and the server keeps it, while the client goes
+    -- straight back.
     do
         local rad = math["rad"]
         local cframe_angles = CFrame["Angles"]
@@ -23125,18 +23126,26 @@ local backtrack_data = {}
         local void_point = nil
         local phase = nil
 
+        -- Rolled off the target's aim position, at the follow target distance, so
+        -- the point is always somewhere on the map next to the target.
         local function roll_point()
-            return cframe_new(vector3_new(math_random(-90000000, 90000000), math_random(-90000000, 90000000), math_random(-90000000, 90000000)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
+            local radius = flags["follow_target_distance"] or 15
+
+            return cframe_new(ragebot_aim_position + vector3_new(math_random(-radius, radius), math_random(-radius, radius), math_random(-radius, radius)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
         end
 
-        -- Desync, written the way the void module writes it: put the character on
-        -- the point, wait the frame, put it back where it was. The position goes
-        -- out on the wire for that frame and the server keeps it, while the client
-        -- goes straight back - so the character is never left out there, gravity
-        -- and knockback never get a frame to carry it off the point or out of the
-        -- map, and the target is chasing a position that is not the one the
-        -- character is on.
-        local function desync(hrp, point)
+        -- One frame on the point, the rest of the frame where the character
+        -- really is: the position goes out on the wire for the frame that is
+        -- waited on and the server keeps it, so the target is given a point to
+        -- chase and strafe on that the character is not standing on.
+        --
+        -- The camera cannot be left to follow the character back, or it stays on
+        -- the map where the character is and the target is never in the view.
+        -- Place it on the point by hand and carry the offset it already has from
+        -- the character, so it is the same over the shoulder view from the point.
+        -- Only the position is written: the rotation is the player's, so looking
+        -- around still works.
+        local function spoof(hrp, point)
             local old_cframe = hrp["CFrame"]
             local old_velocity = hrp["Velocity"]
             local old_camera = camera["CFrame"]
@@ -23147,17 +23156,12 @@ local backtrack_data = {}
             hrp["CFrame"] = old_cframe
             hrp["Velocity"] = old_velocity
 
-            -- Camera spoof: the frame that was just waited on is the one the
-            -- camera module follows the character on, so the view is already out
-            -- at the point and would render the green void. Put its position back
-            -- where the frame started and keep whatever rotation the player has
-            -- on it now, so looking around still works.
             local moved = camera["CFrame"]
 
-            camera["CFrame"] = cframe_new(old_camera["p"]) * (moved - moved["p"])
+            camera["CFrame"] = cframe_new(point["p"] + (old_camera["p"] - old_cframe["p"])) * (moved - moved["p"])
         end
 
-        -- Every way out of the cycle comes through here. The desync leaves the
+        -- Every way out of the cycle comes through here. The spoof leaves the
         -- character where it found it, so there is nothing to put back; this only
         -- drops the cycle so the next one starts clean.
         local function stop()
@@ -23183,6 +23187,14 @@ local backtrack_data = {}
                 return
             end
 
+            -- The points are rolled around the target's aim position, so there
+            -- is nothing to roll until the ragebot has one for this frame.
+            if not ragebot_aim_position then
+                baiting = false
+                baited = false
+                return
+            end
+
             local void_time = flags["bait_void_time"] or 0.5
             local bait_time = flags["bait_time"] or 1
             local cycle = void_time + bait_time
@@ -23203,7 +23215,7 @@ local backtrack_data = {}
                     end
                 end
 
-                desync(hrp, void_point)
+                spoof(hrp, void_point)
                 local_server_position = void_point
             else
                 -- Baited: the bait point is the position the target is given to
@@ -23221,7 +23233,7 @@ local backtrack_data = {}
                     end
                 end
 
-                desync(hrp, bait_position)
+                spoof(hrp, bait_position)
                 local_server_position = bait_position
             end
         end)
@@ -23238,6 +23250,13 @@ local backtrack_data = {}
 
             if value then
                 anti_aim[#anti_aim+1] = do_bait
+            else
+                -- Same hand back the other two use: the camera was being written
+                -- every frame, so let the camera module have its pose back.
+                local camera_cframe = camera["CFrame"]
+
+                render_stepped_wait(render_stepped)
+                camera["CFrame"] = camera_cframe
             end
         end)
     end
