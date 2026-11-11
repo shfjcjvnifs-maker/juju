@@ -13696,14 +13696,15 @@ end
             -- forcefield comes first, because it explains why the ragebot is
             -- holding fire. Then the bait's own two phases: "baiting" out in the
             -- void, "baited" surfaced and firing. Then the states that move the
-            -- character, then the void, where no shot can land, then
-            -- "manipulated": shown only while a gun is held and the solved shot
-            -- goes through a wall - the origin was moved and the character itself
-            -- has no line to the hit point. A solved shot with nothing in the
-            -- way, a target the solver could not reach, and a shot with no gun to
-            -- fire it all show nothing. Reloading, buying and an active
+            -- character, following and stomping, with reloading alongside them -
+            -- a reload holds the shot the same way. Then the void, where no shot
+            -- can land, then "manipulated": shown only while a gun is held and
+            -- the solved shot goes through a wall - the origin was moved and the
+            -- character itself has no line to the hit point. A solved shot with
+            -- nothing in the way, a target the solver could not reach, and a shot
+            -- with no gun to fire it all show nothing. Buying and an active
             -- forcefield follow, "unsafe" last.
-            local new = (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or baiting and "baiting" or baited and "baited" or flags["follow_target"] and ragebot_target and "following" or local_following and "following" or stomping and "stomping" or (in_void or in_void == nil) and "void" or flags["ragebot_manipulation"] and ragebot_manipulation and ragebot_manipulation["through_wall"] and local_gun and "manipulated" or local_reloading and "reloading" or purchasing and "purchasing" or local_parts["ForceField"] and "invulnerable" or "unsafe"
+            local new = (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or baiting and "baiting" or baited and "baited" or flags["follow_target"] and ragebot_target and "following" or local_following and "following" or stomping and "stomping" or local_reloading and "reloading" or (in_void or in_void == nil) and "void" or flags["ragebot_manipulation"] and ragebot_manipulation and ragebot_manipulation["through_wall"] and local_gun and "manipulated" or purchasing and "purchasing" or local_parts["ForceField"] and "invulnerable" or "unsafe"
             if old ~= new then
                 text3["Text"] = new
                 tween(text3, {["Transparency"] = 0.35}, linear, out, 0.09)
@@ -21178,7 +21179,7 @@ local backtrack_data = {}
         menu_references["ragebot_field_of_view_active_outline"] = menu_references["ragebot_field_of_view_show_fov_settings"]:create_element({["name"] = "active outline"}, {["colorpicker"] = {["color_flag"] = "ragebot_field_of_view_active_outline", ["default_color"] = color3_fromrgb(15, 15, 15), ["default_transparency"] = 0.8, ["transparency_flag"] = "ragebot_field_of_view_active_outline_transparency"}})
         menu_references["ragebot_tracer"] = menu_references["visualization_section"]:create_element({["name"] = "tracer"}, {["toggle"] = {["flag"] = "ragebot_tracer"}})
         menu_references["ragebot_tracer_settings"] = menu_references["ragebot_tracer"]:create_settings()
-        menu_references["ragebot_tracer_thickness"] = menu_references["ragebot_tracer_settings"]:create_element({["name"] = "thickness"}, {["slider"] = {["flag"] = "ragebot_tracer_thickness", ["min"] = 2, ["max"] = 8, ["default"] = 2, ["suffix"] = "px"}})
+        menu_references["ragebot_tracer_thickness"] = menu_references["ragebot_tracer_settings"]:create_element({["name"] = "thickness"}, {["slider"] = {["flag"] = "ragebot_tracer_thickness", ["min"] = 0.5, ["max"] = 5, ["default"] = 2, ["decimals"] = 1, ["suffix"] = "px"}})
         menu_references["ragebot_tracer_color"] = menu_references["ragebot_tracer_settings"]:create_element({["name"] = "color"}, {["colorpicker"] = {["color_flag"] = "ragebot_tracer_color", ["default_color"] = color3_fromrgb(200, 30, 175), ["default_transparency"] = 0.1, ["transparency_flag"] = "ragebot_tracer_transparency"}})
         menu_references["ragebot_tracer_outline_color"] = menu_references["ragebot_tracer_settings"]:create_element({["name"] = "outline"}, {["colorpicker"] = {["color_flag"] = "ragebot_tracer_outline_color", ["default_color"] = color3_fromrgb(15, 15, 15), ["default_transparency"] = 0.05, ["transparency_flag"] = "ragebot_tracer_outline_transparency"}})
         menu_references["ragebot_tracer_origin"] = menu_references["ragebot_tracer_settings"]:create_element({["name"] = "origin"}, {["dropdown"] = {["flag"] = "ragebot_tracer_origin", ["options"] = {"character", "mouse", "gun"}, ["default"] = {"gun"}, ["requires_one"] = true}})
@@ -21197,18 +21198,6 @@ local backtrack_data = {}
         menu_references["velocity_desync_health"] = menu_references["velocity_desync_settings"]:create_element({["name"] = "health"}, {["slider"] = {["flag"] = "velocity_desync_health", ["min"] = 10, ["max"] = 100, ["default"] = 0, ["suffix"] = "%"}})
         menu_references["velocity_desync_health"]:set_visible(false)
         menu_references["velocity_desync_type"] = menu_references["velocity_desync_settings"]:create_element({["name"] = "type"}, {["dropdown"] = {["flag"] = "velocity_desync_type", ["options"] = {"limit", "high y", "high", "zero", "low"}, ["default"] = {"high"}, ["multi"] = false, ["requires_one"] = true}})
-        menu_references["fake_position"] = menu_references["anti_section"]:create_element({["name"] = "fake position"}, {["toggle"] = {["flag"] = "fake_position"}})
-        menu_references["fake_position_settings"] = menu_references["fake_position"]:create_settings()
-        menu_references["fake_position_indicator"] = menu_references["fake_position_settings"]:create_element({["name"] = "position indicator"}, {["toggle"] = {["flag"] = "fake_position_indicator"}})
-        menu_references["smooth_fake_position_indicator"] = menu_references["fake_position_settings"]:create_element({["name"] = "smooth"}, {["toggle"] = {["flag"] = "smooth_fake_position_indicator"}})
-        menu_references["fake_position_indicator_icon_color"] = menu_references["fake_position_settings"]:create_element({["name"] = "icon color"}, {["colorpicker"] = {["color_flag"] = "fake_position_indicator_icon_color", ["default_color"] = color3_fromrgb(181, 255, 246), ["default_transparency"] = 0.55, ["transparency_flag"] = "fake_position_indicator_icon_transparency"}})
-        menu_references["fake_position_indicator_glow_color"] = menu_references["fake_position_settings"]:create_element({["name"] = "glow color"}, {["colorpicker"] = {["color_flag"] = "fake_position_indicator_glow_color", ["default_color"] = color3_fromrgb(0, 0, 0), ["default_transparency"] = 0.92, ["transparency_flag"] = "fake_position_indicator_glow_transparency"}})
-        menu_references["fake_position_indicator_background_color"] = menu_references["fake_position_settings"]:create_element({["name"] = "background color"}, {["colorpicker"] = {["color_flag"] = "fake_position_indicator_background_color", ["default_color"] = color3_fromrgb(0, 0, 0), ["default_transparency"] = 0.85, ["transparency_flag"] = "fake_position_indicator_background_transparency"}})
-        menu_references["fake_position_notifications"] = menu_references["fake_position_settings"]:create_element({["name"] = "notifications"}, {["toggle"] = {["flag"] = "fake_position_notifications"}})
-        menu_references["fake_position_safe_mode"] = menu_references["fake_position_settings"]:create_element({["name"] = "safe mode"}, {["toggle"] = {["flag"] = "fake_position_safe_mode"}})
-        menu_references["refresh_every"] = menu_references["fake_position_settings"]:create_element({["name"] = "refresh every"}, {["slider"] = {["flag"] = "refresh_every", ["min"] = 5, ["max"] = 240, ["default"] = 240, ["suffix"] = "s", ["max_text"] = "never"}})
-        menu_references["freeze_time"] = menu_references["fake_position_settings"]:create_element({["name"] = "freeze time"}, {["slider"] = {["flag"] = "fake_position_freeze_time", ["min"] = 0.05, ["max"] = 0.5, ["default"] = 0.2, ["decimals"] = 2, ["suffix"] = "s"}})
-        menu_references["sleep_rate"] = menu_references["fake_position_settings"]:create_element({["name"] = "sleep rate"}, {["slider"] = {["flag"] = "sleep_rate", ["min"] = 1, ["max"] = 100, ["default"] = 1, ["suffix"] = "%"}})
         menu_references["void_hide"] = menu_references["anti_section"]:create_element({["name"] = "void hide"}, {["toggle"] = {["flag"] = "void_hide"}})
         menu_references["void_hide_settings"] = menu_references["void_hide"]:create_settings()
         menu_references["void_hide_type"] = menu_references["void_hide_settings"]:create_element({["name"] = "type"}, {["dropdown"] = {["options"] = game["PlaceId"] == 7213786345 and {"vc server"} or {"random"}, ["flag"] = "void_hide_type", ["requires_one"] = true, ["default"] = game["PlaceId"] == 7213786345 and {"vc server"} or {"random"}}})
@@ -23110,7 +23099,10 @@ local backtrack_data = {}
                 return
             end
 
-            if not flags["ragebot"] or not ragebot_target then
+            -- The bait runs off the selected target and nothing else. No
+            -- target, no cycle: there is nothing to bait and nothing to shoot
+            -- when the surface phase comes round.
+            if not ragebot_target then
                 baiting = false
                 baited = false
                 cycle_start = clock()
@@ -23473,367 +23465,6 @@ local backtrack_data = {}
                 anti_aim[#anti_aim+1] = do_network_desync
             end
         end)
-    end
-
-    -- >> ( fake position )
-
-    do
-        local refresh_connection = nil
-        local refresh_connection2 = nil
-        local refresh_connection3 = nil
-        local do_notify = false 
-
-        local do_sleep = true
-        local sethiddenproperty = sethiddenproperty
-        local cooldown = nil
-
-        local cframe_angles = CFrame["Angles"]
-        local rad = math["rad"]
-
-        local last_refresh = clock()
-        local sleep_tick = clock()
-        local sleep_rate = 0.0375
-        local sitting = false
-        local local_fake_position = nil
-
-        local do_refresh = function()
-            last_refresh = clock()
-            if do_notify then
-                new_notification(
-                    "refreshing fake position",
-                    2
-                )
-            end
-
-            wait(0.05)
-            setfpscap(6)
-            setfflag("S2PhysicsSenderRate", "1")
-            wait(flags["fake_position_freeze_time"])
-            setfflag("S2PhysicsSenderRate", "240")
-            setfpscap(1000)
-            wait(0.5)
-            local_fake_position = local_server_position["p"]
-        end
-
-        local do_fake_position = LPH_JIT_MAX(function(dt, hrp)
-            setfflag("S2PhysicsSenderRate", tostring(round(local_fps, 1)))
-            if sitting then
-                local_fake_position = nil
-                return
-            end
-            if dt > 0.45 then
-                local_fake_position = nil
-                do_refresh()
-                return
-            end
-            local tick = clock()
-            if hrp and tick-sleep_tick > dt*sleep_rate then
-                do_sleep = not do_sleep
-                sleep_tick = tick
-                sethiddenproperty(hrp, "NetworkIsSleeping", do_sleep)
-            end
-            local remainder = tick - last_refresh
-            if flags["fake_position_safe_mode"] and remainder < 1.5 then
-                local old = hrp["CFrame"]
-                hrp["CFrame"] = cframe_new(vector3_new(math_random(-2147483647, 2147483647), math_random(-400, 2147483647), math_random(-2147483647, 2147483647)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
-                render_stepped_wait(render_stepped)
-                hrp["CFrame"] = old
-            end
-            if cooldown and remainder > cooldown then
-                if remainder > cooldown+0.15 then
-                    last_refresh = clock()
-                    setfpscap(1000)
-                    return
-                end
-                setfpscap(8)
-                return
-            end
-        end)
-
-        local stop_sitting = LPH_JIT_MAX(function(character)
-            local humanoid = local_parts["Humanoid"]
-            sitting = humanoid["Sit"]
-
-            if refresh_connection3 then
-                refresh_connection3["Disconnect"](refresh_connection3)
-                refresh_connection3 = nil
-            end
-
-            refresh_connection3 = create_connection(humanoid["GetPropertyChangedSignal"](humanoid, "Sit"), function()
-                sitting = humanoid["Sit"]
-
-                if do_notify then
-                    if sitting then
-                        local_fake_position = local_client_position["p"]
-                        new_notification(
-                            "fake position disabled (you are sitting)",
-                            2
-                        )
-                    else
-                        do_refresh()
-                    end
-                end
-            end)
-        end)
-
-        local old = tostring(getfflag("S2PhysicsSenderRate"))
-        
-        create_connection(menu_references["fake_position"]["on_toggle_change"], function(value)
-            local_fake_position = nil
-
-            for i = 1, #anti_aim do
-                if anti_aim[i] == do_fake_position then
-                    remove(anti_aim, i)
-                    break
-                end
-            end
-
-            if refresh_connection then
-                refresh_connection:Disconnect()
-                refresh_connection = nil
-            end
-
-            if refresh_connection2 then
-                refresh_connection2:Disconnect()
-                refresh_connection2 = nil
-            end
-
-            if refresh_connection3 then
-                refresh_connection3:Disconnect()
-                refresh_connection3 = nil
-            end
-
-            if value then
-                menu_references["network_desync"]:set_visible(false)
-                menu_references["sender_rate_value"]:set_visible(false)
-
-                if flags["network_desync"] then
-                    menu_references["network_desync"]:set_toggle(false)
-                end
-
-                if flags["sender_rate_value"] then
-                    menu_references["sender_rate_value"]:set_toggle(false)
-                end
-
-                anti_aim[#anti_aim+1] = do_fake_position
-
-                refresh_connection = create_connection(signals["on_local_character_added"], do_refresh)
-                refresh_connection2 = create_connection(signals["on_local_character_added"], stop_sitting)
-
-                if local_character then
-                    stop_sitting(local_character)
-                end
-                
-                last_refresh = clock()
-                do_refresh()
-            else
-                setfflag("S2PhysicsSenderRate", old)
-
-                menu_references["network_desync"]:set_visible(true)
-                menu_references["sender_rate_value"]:set_visible(true)
-            end
-        end)
-
-        create_connection(menu_references["refresh_every"]["on_slider_change"], function(value)
-            cooldown = value ~= 240 and value or nil
-        end)
-
-        create_connection(menu_references["sleep_rate"]["on_slider_change"], function(value)
-            sleep_rate = value == 100 and 0 or (101-value)/100
-        end)
-
-        menu_references["sleep_rate"]:set_slider(30)
-            
-        create_connection(menu_references["fake_position_notifications"]["on_toggle_change"], function(value)
-            do_notify = value
-        end)
-
-        -- >> ( fake position indicator )
-
-        local visible = false
-        local circle = nil
-        local image = nil
-        local glow = nil
-        local shadow_transparency = {["Transparency"] = 0.09}
-        local circle_transparency = {["Transparency"] = 0.8}
-        local image_transparency = {["Transparency"] = 0.8}
-        local offset = vector3_new(0, 0.5, 0)
-        local data = base64_decode("iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAVUExURf///1FRUXh4eHl5eXp6elJSUgAAAFkqzC8AAAAHdFJOU////////wAaSwNGAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAGHRFWHRTb2Z0d2FyZQBQYWludC5ORVQgNS4xLjQS36aDAAAAtmVYSWZJSSoACAAAAAUAGgEFAAEAAABKAAAAGwEFAAEAAABSAAAAKAEDAAEAAAACAAAAMQECABAAAABaAAAAaYcEAAEAAABqAAAAAAAAAAx3AQDoAwAADHcBAOgDAABQYWludC5ORVQgNS4xLjQAAwAAkAcABAAAADAyMzABoAMAAQAAAAEAAAAFoAQAAQAAAJQAAAAAAAAAAgABAAIABAAAAFI5OAACAAcABAAAADAxMDAAAAAA0NlgAbHwM8wAAACjSURBVDhP1ZFLDsQwCENJ87n/kQvBGDKqNMuqb5EaYyWIyvrD5wJCYBip0QMwMwC/EA18QLt6h4yOn07ruxood2Enapkui+MBFNJCHQmhll7toAR4gZKJmEe5SmAUTfKFU1M+B2YZMh+eVDpYmSck9mHoVT9rUbJvmzW37nZ0Mx1NIkBrV5DejwDdxPsM8BmAH1sCR4TtI7AndFAbR+CJ9wNr3d6DDmOS3Q1aAAAAAElFTkSuQmCC")
-        local last_pos = nil
-        local do_smooth_fake_position_indicator = nil
-    
-        local do_fake_position_indicator = LPH_JIT_MAX(function(dt)
-            if local_fake_position and local_client_position ~= local_fake_position then                
-                local pos, on_screen = world_to_viewport_point(camera, local_fake_position)
-    
-                if do_smooth_fake_position_indicator then
-                    if not last_pos then
-                        last_pos = pos
-                    end
-                    pos = last_pos + (pos - last_pos) * dt*4^2
-                end
-    
-                last_pos = pos
-                if not on_screen and visible then
-                    tween(glow, hide_transparency, circular, out, 0)
-                    tween(image, hide_transparency, circular, out, 0)
-                    tween(circle, hide_transparency, circular, out, 0)
-                    visible = false
-                    return
-                elseif not visible and on_screen then
-                    spawn(function()
-                        tween(glow, shadow_transparency, circular, out, 0.07)
-                        tween(image, image_transparency, circular, out, 0.07)
-                        tween(circle, circle_transparency, circular, out, 0.07)
-                    end)
-                    visible = true
-                elseif not visible and not on_screen then
-                    visible = false
-                    return
-                end
-    
-                local pos2, _ = world_to_viewport_point(camera, local_fake_position + offset)
-    
-                local size = clamp((pos["Y"]-pos2["Y"])*10, 35, 45)
-    
-                local pos = vector2_new(pos["X"], pos["Y"])
-                circle["Size"] = vector2_new(size, size)
-                circle["Position"] = pos - vector2_new(size/2, size/2)
-    
-                local image_size = vector2_new(size*0.6, size*0.6)
-                image["Position"] = pos - image_size/2
-                image["Size"] = image_size
-    
-                local glow_size = vector2_new(size*1.1, size*1.1)
-                glow["Position"] = pos - glow_size/2
-                glow["Size"] = glow_size
-                glow["Rounding"] = size/2
-            elseif visible then
-                visible = false
-                tween(glow, hide_transparency, circular, out, 0.09)
-                tween(image, hide_transparency, circular, out, 0.09)
-                tween(circle, hide_transparency, circular, out, 0.09)
-            end
-        end)
-    
-        local create_drawing = identifyexecutor() == "Wave" and create_fake_drawing or create_real_drawing
-    
-        create_connection(menu_references["smooth_fake_position_indicator"]["on_toggle_change"], function(value)
-            last_pos = nil
-            do_smooth_fake_position_indicator = value
-        end)
-    
-        create_connection(menu_references["fake_position_indicator"]["on_toggle_change"], function(value)
-            menu_references["smooth_fake_position_indicator"]:set_visible(value)
-            menu_references["fake_position_indicator_background_color"]:set_visible(value)
-            menu_references["fake_position_indicator_icon_color"]:set_visible(value)
-            menu_references["fake_position_indicator_glow_color"]:set_visible(value)
-
-            last_pos = nil
-            for i = 1, #heartbeat do
-                if heartbeat[i] == do_fake_position_indicator then
-                    remove(heartbeat, i)
-                    break
-                end
-            end
-    
-            visible = false
-    
-            if circle then
-                circle:Destroy()
-                circle = nil
-            end
-    
-            if image then
-                image:Destroy()
-                image = nil
-            end
-    
-            if glow then
-                glow:Destroy()
-                glow = nil
-            end
-        
-            if value then
-                circle = create_drawing("Image", {
-                    ["Color"] = flags["fake_position_indicator_background_color"],
-                    ["Transparency"] = 0,
-                    ["ZIndex"] = 2,
-                    ["Visible"] = true,
-                    ["Data"] = pixel_image_data,
-                    ["Rounding"] = 30,
-                    ["Position"] = vector2_new(0, 0),
-                    ["Size"] = vector2_new(65, 65),
-                })
-    
-                image = create_drawing("Image", {
-                    ["Color"] = flags["fake_position_indicator_icon_color"],
-                    ["Transparency"] = 0,
-                    ["ZIndex"] = 3,
-                    ["Visible"] = true,
-                    ["Data"] = data,
-                    ["Position"] = vector2_new(0, 0),
-                    ["Size"] = vector2_new(29, 29),
-                })
-    
-                glow = create_drawing("Image", {
-                    ["Color"] = flags["fake_position_indicator_glow_color"],
-                    ["Transparency"] = 0,
-                    ["ZIndex"] = 1,
-                    ["Visible"] = true,
-                    ["Data"] = shadow_image_data,
-                    ["Rounding"] = 36,
-                    ["Position"] = vector2_new(0, 0),
-                    ["Size"] = vector2_new(73, 73)
-                })
-    
-                heartbeat[#heartbeat+1] = do_fake_position_indicator
-            end
-        end)
-    
-        create_connection(menu_references["fake_position_indicator_glow_color"]["on_color_change"], function(value)
-            if glow then
-                glow["Color"] = value
-            end
-        end)
-    
-        create_connection(menu_references["fake_position_indicator_glow_color"]["on_transparency_change"], function(value)
-            if glow and visible then
-                glow["Transparency"] = -value+1
-                shadow_transparency["Transparency"] = {["Transparency"] = -value+1}
-            end
-        end)
-    
-        create_connection(menu_references["fake_position_indicator_icon_color"]["on_color_change"], function(value)
-            if image then
-                image["Color"] = value
-            end
-        end)
-    
-        create_connection(menu_references["fake_position_indicator_icon_color"]["on_transparency_change"], function(value)
-            if image and visible then
-                image["Transparency"] = -value+1
-                image_transparency["Transparency"] = {["Transparency"] = -value+1}
-            end
-        end)
-    
-        create_connection(menu_references["fake_position_indicator_background_color"]["on_color_change"], function(value)
-            if circle then
-                circle["Color"] = value
-            end
-        end)
-    
-        create_connection(menu_references["fake_position_indicator_background_color"]["on_transparency_change"], function(value)
-            if circle and visible then
-                circle["Transparency"] = -value+1
-                circle_transparency["Transparency"] = {["Transparency"] = -value+1}
-            end
-        end)
-
-        menu_references["smooth_fake_position_indicator"]:set_visible(false)
-        menu_references["fake_position_indicator_background_color"]:set_visible(false)
-        menu_references["fake_position_indicator_icon_color"]:set_visible(false)
-        menu_references["fake_position_indicator_glow_color"]:set_visible(false)
     end
 
     -- >> ( anti stomp)
@@ -25316,7 +24947,7 @@ local backtrack_data = {}
 
             if value then
                 outline = create_real_drawing("Line", {
-                    ["Thickness"] = flags["ragebot_tracer_thickness"]+4,
+                    ["Thickness"] = flags["ragebot_tracer_thickness"]+2,
                     ["Color"] = flags["ragebot_tracer_outline_color"],
                     ["Visible"] = true,
                     ["Transparency"] = 0
@@ -28642,7 +28273,7 @@ arm_auto_walk()
 local auto_walk_last_arm = clock()
 
 early_connections[#early_connections+1] = RunService.Heartbeat:Connect(function()
-    if clock() - auto_walk_last_arm >= 5 then
+    if clock() - auto_walk_last_arm >= 0.5 then
         auto_walk_last_arm = clock()
         arm_auto_walk()
     end
