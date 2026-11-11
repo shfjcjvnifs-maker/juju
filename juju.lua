@@ -28323,12 +28323,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local localPlayer = Players.LocalPlayer
 
--- The walk is one Heartbeat connection that writes a small horizontal velocity
--- whenever the character is standing still. It is connected once, on load, and
--- kept in early_connections so unload can stop it.
-local auto_walk_connection = nil
-
-local function auto_walk_step()
+RunService.Heartbeat:Connect(function()
     local character = localPlayer.Character
     local rootPart = character and character:FindFirstChild("HumanoidRootPart")
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -28337,10 +28332,7 @@ local function auto_walk_step()
         local currentYVelocity = rootPart.AssemblyLinearVelocity.Y
         rootPart.AssemblyLinearVelocity = Vector3.new(0.1, currentYVelocity, 0.1)
     end
-end
-
-auto_walk_connection = RunService.Heartbeat:Connect(auto_walk_step)
-early_connections[#early_connections+1] = auto_walk_connection
+end)
 
 end, function(err)
     local ok, trace = pcall(debug.traceback, "", 2)
