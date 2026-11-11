@@ -8505,25 +8505,6 @@ local ragebot_target = nil
 local custom_ragebot_aim_position = nil
 local ragebot_aim_position = nil
 local ragebot_firing_shot = false
-local manipulation_aim_position = nil
-local manipulation_aim_part = nil
--- Verdict state for the center panel. `manipulation_verdict` is what the last
--- rewritten shot actually did: nil = no shot sent yet this lock, true = the
--- server confirmed damage, false = the shot was dropped. The panel shows
--- "manipulated" only on a confirmed hit and "unsafe" otherwise, so a solved
--- origin alone can no longer claim the feature is working.
-local manipulation_verdict = nil
-local manipulation_verdict_tick = 0
-local manipulation_verdict_target = nil
-
--- The solver result for the currently locked target. Set the moment a spoofed
--- origin and a hitbox are found, cleared the moment the target changes or the
--- next solve fails. Kept for everything that needs to know whether the current
--- target has an answer, the panel's status included; the tick is what the panel
--- reads to tell a live scan from an answer left behind by a target that is gone.
-local manipulation_solved = false
-local manipulation_solved_target = nil
-local manipulation_solved_tick = 0
 
 -- Infinite distance needs no state of its own: the flag decides whether the
 -- origin is spoofed beside the body or taken from the solver.
@@ -9468,7 +9449,7 @@ do
 
     -- >> ( event setup )
 
-    get_bullet_result = LPH_JIT_MAX(function(player, part, old_server_position, aim_position, target_velocity, did_defensive, judges_manipulation)
+    get_bullet_result = LPH_JIT_MAX(function(player, part, old_server_position, aim_position, target_velocity, did_defensive)
         setthreadidentity(8)
 
         local data = player_data[player]
@@ -9490,32 +9471,14 @@ do
             local message = old_server_position and part and aim_position and " (pred miss: "..tostring(round((aim_position-part["Position"])["Magnitude"], 1))..") (velocity: "..tostring(round((target_velocity or vector3_zero)["Magnitude"], 1))..(did_defensive and ") (defensive: true)" or ") (defensive: false)")
 
             if shot_count == old_count then
-                if judges_manipulation then
-                    manipulation_verdict = false
-                    manipulation_verdict_tick = clock()
-                    manipulation_verdict_target = player
-                end
-
                 return signals["on_local_bullet_failed"]:Fire(player, part, not local_parts["Head"] and "death" or "unknown"..(message or ""), shot_count)
             end
 
             local new_health = data[9]
 
             if new_health < old_health then
-                if judges_manipulation then
-                    manipulation_verdict = true
-                    manipulation_verdict_tick = clock()
-                    manipulation_verdict_target = player
-                end
-
                 return signals["on_local_bullet_confirmed"]:Fire(player, part, tostring(floor(new_health-old_health)), shot_count, message)
             else
-                if judges_manipulation then
-                    manipulation_verdict = false
-                    manipulation_verdict_tick = clock()
-                    manipulation_verdict_target = player
-                end
-
                 return signals["on_local_bullet_failed"]:Fire(player, part, "unknown"..(message or ""), shot_count)
             end
         end
@@ -9610,7 +9573,7 @@ do
             local parts = target[4]
             local hitbox = parts["Head"] or parts["UpperTorso"] or parts["HumanoidRootPart"]
 
-            to = (hitbox and hitbox["Position"]) or manipulation_aim_position or ragebot_aim_position or to
+            to = (hitbox and hitbox["Position"]) or ragebot_aim_position or to
         end
 
         if typeof(to) ~= "Vector3" then
@@ -9684,7 +9647,6 @@ do
                 
                 if packet == "ShootGun" then
                     local aim_position = nil
-                    local silent_part = nil
                     local is_ragebot_shot = ragebot_firing_shot
                     local shoot_arg_count = select("#", ...)
 
@@ -9703,30 +9665,9 @@ do
                         spawn(new_notification, "shootgun sends "..tostring(shoot_arg_count).." args: "..table["concat"](kinds, ", "), 6)
                     end
 
-                    -- Locked target: every shot is rewritten onto the ragebot
-                    -- target, auto fired or manual, so the crosshair does not
-                    -- have to be on the target and no distance has to be closed.
-                    -- The manipulation feeder picks the hitbox and predicts its
-                    -- position, so the aim point and the part argument always
-                    -- describe the same limb.
-                    -- The expander feeds the aim point with manipulation off too, so
-                    -- the ragebot gets it on its own. Only the spoofed origin stays
-                    -- tied to the manipulation flag, and without that flag the
-                    -- expanded point is used for ragebot shots alone: a manual shot
-                    -- belongs to silent aim, which picks its own target and must not
-                    -- have it rewritten onto the locked one.
-                    if ragebot_target and not ragebot_target[7] and (flags["manipulation"] or (is_ragebot_shot and manipulation_aim_position)) then
-                        silent_part = manipulation_aim_part
-                        aim_position = manipulation_aim_position
-
-                        -- Only the aim point and the limb come from the solve. The
-                        -- shot itself is served the way the ragebot serves its own,
-                        -- from the character, which is the shot the server accepts.
-                    end
-
-                    if not aim_position then
-                        aim_position = ragebot_aim_position
-                    end
+                    -- Aim point. The ragebot is the only thing in the hub that
+                    -- computes one.
+                    aim_position = ragebot_aim_position
 
                     if aim_position then
                         local handle = args[2]
@@ -9756,10 +9697,10 @@ do
                         -- which a shot from this muzzle cannot have made.
                         local dir = (origin-pos)["Unit"]
                         local Magnitude = dir["Magnitude"]
-                        local part = silent_part or (is_ragebot_shot and args[5]) or (ragebot_target and (ragebot_target[4][resolve_ragebot_hitbox_part(ragebot_target[4])] or ragebot_target[4]["UpperTorso"])) or args[5]
+                        local part = (is_ragebot_shot and args[5]) or (ragebot_target and (ragebot_target[4][resolve_ragebot_hitbox_part(ragebot_target[4])] or ragebot_target[4]["UpperTorso"])) or args[5]
 
                         if part and ragebot_target then
-                            spawn(get_bullet_result, ragebot_target[2], part, local_server_position["p"], aim_position, ragebot_aim_velocity, ragebot_aim_defensive, flags["manipulation"])
+                            spawn(get_bullet_result, ragebot_target[2], part, local_server_position["p"], aim_position, ragebot_aim_velocity, ragebot_aim_defensive)
                         end
 
                         emit_local_bullet_tracer(pos)
@@ -13745,38 +13686,11 @@ end
                 local juju_env = getgenv()["juju"]
                 center_panel_waiting_protection = juju_env and juju_env["waiting_protection"] and true or false
             end
-            -- Aiming means the scan has an answer for the locked target and is
-            -- still producing it. Manipulated is the next state, and it is only
-            -- shown after a rewritten shot was followed by damage. The solver
-            -- re-runs every frame and stamps the result, so aiming clears by itself
-            -- when the scan stops finding one; manipulated expires on its own once
-            -- the confirmed hit is older than the verdict window.
-            if manipulation_verdict_target and manipulation_verdict_target ~= (ragebot_target and ragebot_target[2]) then
-                manipulation_verdict = nil
-            end
-
-            local manipulation_scan_ok = manipulation_solved
-                and ragebot_target
-                and manipulation_solved_target == ragebot_target
-                and frame_tick - manipulation_solved_tick < 0.5
-
-            local manipulation_hit_ok = manipulation_verdict == true and ragebot_target and manipulation_verdict_target == ragebot_target[2] and frame_tick - manipulation_verdict_tick < 1.5
-
-            -- "manipulated" is a claim that the shot works, so it waits for the
-            -- evidence: the verdict is only set true when a rewritten shot was
-            -- followed by the target's health dropping. A solved scan is not that
-            -- evidence. It used to print "manipulated" for it, which is the state
-            -- the panel showed while the shots were landing nothing.
-            local manipulation_ok = flags["manipulation"] and ragebot_target and manipulation_aim_position and manipulation_hit_ok
-            local manipulation_aim_ok = flags["manipulation"] and ragebot_target and manipulation_aim_position and manipulation_scan_ok
-            local manipulation_blocked = flags["manipulation"] and ragebot_target and manipulation_aim_position and not manipulation_hit_ok and not manipulation_scan_ok
-
-            -- Void first: manipulation cannot land from there, so a solved
-            -- origin must not hide the void state. Follow target next: while it
-            -- is armed the character is being moved onto the target, which is
-            -- the state worth showing, and manipulation is what happens once it
-            -- is off.
-            local new = (in_void or in_void == nil) and "void" or flags["follow_target"] and ragebot_target and "following" or manipulation_ok and "manipulated" or manipulation_aim_ok and "aiming" or manipulation_blocked and "blocked" or (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or "unsafe" or local_parts["ForceField"] and "invulnerable"
+            -- Void first: a shot cannot land from there, so it must not be
+            -- hidden by anything else. Follow target next: while it is armed the
+            -- character is being moved onto the target, which is the state worth
+            -- showing.
+            local new = (in_void or in_void == nil) and "void" or flags["follow_target"] and ragebot_target and "following" or (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or "unsafe" or local_parts["ForceField"] and "invulnerable"
             if old ~= new then
                 text3["Text"] = new
                 tween(text3, {["Transparency"] = 0.35}, linear, out, 0.09)
@@ -21190,11 +21104,6 @@ local backtrack_data = {}
         menu_references["auto_fire_always_fire"] = menu_references["auto_fire_settings"]:create_element({["name"] = "always fire"}, {["toggle"] = {["flag"] = "auto_fire_always_fire", ["default"] = true}})
         menu_references["auto_fire_dont_render"] = menu_references["auto_fire_settings"]:create_element({["name"] = "dont render"}, {["toggle"] = {["flag"] = "auto_fire_dont_render", ["default"] = false}})
 
-        -- Manipulation reads the locked ragebot target and rewrites the shot
-        -- onto it. Hitbox and prediction are automatic, so there is nothing to
-        -- configure beyond the toggle.
-        menu_references["manipulation"] = menu_references["general_section"]:create_element({["name"] = "manipulation"}, {["toggle"] = {["flag"] = "manipulation", ["default"] = false}})
-
         menu_references["auto_equip"] = menu_references["general_section"]:create_element({["name"] = "auto equip"}, {["toggle"] = {["flag"] = "auto_equip", ["default"] = false}})
         menu_references["auto_equip_settings"] = menu_references["auto_equip"]:create_settings()
         menu_references["auto_equip_unequip_when"] = menu_references["auto_equip_settings"]:create_element({["name"] = "unequip when"}, {["dropdown"] = {["flag"] = "auto_equip_unequip_when", ["default"] = {"no target"}, ["options"] = {"no target"}, ["multi"] = true}})
@@ -21918,12 +21827,6 @@ local backtrack_data = {}
         ragebot_aim_defensive = false
         target_velocity = vector3_zero
         ragebot_target = target
-
-        -- A new target has not been solved yet. Clearing here is what makes the
-        -- next "manipulated" mean this player, not the one before.
-        manipulation_solved = false
-        manipulation_solved_target = nil
-        manipulation_verdict = nil
 
         target_last_position = nil
         target_changed_signal:Fire(target)
@@ -22925,531 +22828,6 @@ local backtrack_data = {}
         if flags["rapid_fire"] then
             start()
         end
-    end
-
-    -- >> ( manipulation )
-
-    do
-        local target_tick = 0
-
-        -- Manipulation aim. The shot is served from the character's own muzzle,
-        -- the same origin every shot that lands in this hub uses, and only the
-        -- point it is reported against moves: onto the best hitbox of the locked
-        -- target, or out along that limb's box when the centre is covered. Every
-        -- point is raycast from the muzzle first, so a limb behind cover is never
-        -- named.
-        local spoof = {
-            -- Fallback weapon range when the equipped gun reports none. The
-            -- reported point is also checked against the real gun range, so an
-            -- aim that would land outside it is rejected instead of fired.
-            ["gun_range"] = 1000,
-            ["cache"] = nil,
-            ["last"] = 0,
-            ["failed"] = 0,
-            ["failed_target"] = nil,
-            ["params"] = RaycastParams["new"](),
-            ["weights"] = {
-                {"Head", 4},
-                {"UpperTorso", 3},
-                {"LowerTorso", 2.4},
-                {"HumanoidRootPart", 2.2},
-                {"LeftUpperArm", 1.8},
-                {"RightUpperArm", 1.8},
-                {"LeftUpperLeg", 1.4},
-                {"RightUpperLeg", 1.4},
-                {"LeftLowerArm", 1.2},
-                {"RightLowerArm", 1.2},
-                {"LeftLowerLeg", 1},
-                {"RightLowerLeg", 1},
-                {"Torso", 2},
-                {"LeftHand", 0.9},
-                {"RightHand", 0.9},
-                {"LeftFoot", 0.9},
-                {"RightFoot", 0.9}
-            },
-            -- Spoofed hitbox expander, calculated instead of listed. The push
-            -- out of the limb comes from that limb's own box, so a torso spreads
-            -- wider than a forearm, and the margin grows with the shot distance,
-            -- where the aim error is largest. The second ring doubles the push
-            -- for a limb that is only open further out.
-            ["expander_rings"] = {0.45, 0.7, 0.92},
-            ["expander_attempts"] = 8
-        }
-
-        -- Box surface directions, smallest push first: six faces, then twelve
-        -- edges, then eight corners.
-        local expander_buckets = {}
-
-        for x = -1, 1 do
-            for y = -1, 1 do
-                for z = -1, 1 do
-                    if x ~= 0 or y ~= 0 or z ~= 0 then
-                        local zeros = (x == 0 and 1 or 0) + (y == 0 and 1 or 0) + (z == 0 and 1 or 0)
-                        local bucket = expander_buckets[zeros + 1]
-
-                        if not bucket then
-                            bucket = {}
-                            expander_buckets[zeros + 1] = bucket
-                        end
-
-                        bucket[#bucket+1] = vector3_new(x, y, z)
-                    end
-                end
-            end
-        end
-
-        spoof["expander_directions"] = {}
-
-        for bucket = 3, 1, -1 do
-            local list = expander_buckets[bucket]
-
-            if list then
-                for i = 1, #list do
-                    spoof["expander_directions"][#spoof["expander_directions"]+1] = list[i]
-                end
-            end
-        end
-
-        -- The hit the server computes for this shot. The point a ray is aimed at
-        -- is not the point it meets: a ray sent at a torso stops on the arm in
-        -- front of it, and a shot that names the torso is a shot the server
-        -- resolves against the arm instead. So the ray's own result is what gets
-        -- reported - its instance and its position - which is the same pair the
-        -- game's own shot sends. A hit that lands on anything but the target's
-        -- character means the shot never reached the body.
-        local spoof_hit = LPH_NO_VIRTUALIZE(function(origin, point, character)
-            local delta = point - origin
-
-            if delta["Magnitude"] <= 0.001 then
-                return nil
-            end
-
-            local result = workspace:Raycast(origin, delta * 1.02, spoof["params"])
-
-            if result and result["Instance"]:IsDescendantOf(character) then
-                return result
-            end
-
-            return nil
-        end)
-
-        local solve_spoof = LPH_NO_VIRTUALIZE(function(target, base, velocity, gun_range, expand_only)
-            local character = target[3]
-            local parts = target[4]
-            local head = parts["Head"] or parts["UpperTorso"] or parts["HumanoidRootPart"]
-
-            if not character or not head then
-                return nil
-            end
-
-            local now = clock()
-
-            -- A cached answer belongs to the mode that produced it, so an
-            -- expander-only pass never picks up a spoofed origin and the other way
-            -- around.
-            local cache = expand_only and nil or spoof["cache"]
-            local lead = (velocity or head["AssemblyLinearVelocity"]) * (local_ping/500)
-
-            -- Muzzle. Every shot in this hub that lands is served from here: the
-            -- character's root plus the head offset the game itself reports. An
-            -- origin planted further out - above the character, over the target,
-            -- out at the body - is a shot the server has no reason to accept, and
-            -- it is dropped with nothing shown on screen. That is how the panel
-            -- could sit on "manipulated" over shots that never counted.
-            local anchor = base + vector3_new(0.004, 3.0208, -0.048)
-
-            -- Both searches below raycast from the muzzle, so the filter has to be
-            -- ready before either of them runs.
-            local params = spoof["params"]
-            local filter = {local_character}
-
-            if ignored then
-                filter[#filter+1] = ignored
-            end
-
-            params["FilterType"] = Enum["RaycastFilterType"]["Exclude"]
-            params["RespectCanCollide"] = true
-            params["FilterDescendantsInstances"] = filter
-
-            -- Hitbox expander calculator. The centre ray of a limb clips the
-            -- shooter or a ledge while the rest of the limb is open, so the aim
-            -- walks out to the limb's own box surface: the push is scaled by that
-            -- limb's size along its own axes, so the point stays on the body at
-            -- every rotation.
-            local directions = spoof["expander_directions"]
-
-            local expand_onto = function(slot, part)
-                local size = part["Size"]
-                local half = vector3_new(size["X"] * 0.5, size["Y"] * 0.5, size["Z"] * 0.5)
-                local cframe = part["CFrame"]
-                local position = part["Position"] + lead
-
-                -- A limb can be larger than the aim tolerance, so the point is
-                -- walked over the limb's own box instead of its centre. Every
-                -- ring is a fraction of the half-extent and none exceeds it, so
-                -- each point sits inside the part and the ray lands on the body
-                -- rather than past it.
-                for ring = 1, #spoof["expander_rings"] do
-                    local scale = spoof["expander_rings"][ring]
-
-                    for i = 1, #directions do
-                        local direction = directions[i]
-                        local offset = vector3_new(direction["X"] * half["X"] * scale, direction["Y"] * half["Y"] * scale, direction["Z"] * half["Z"] * scale)
-                        local world = cframe["RightVector"] * offset["X"] + cframe["UpVector"] * offset["Y"] + cframe["LookVector"] * offset["Z"]
-                        local hit = spoof_hit(slot["origin"], position + world, character)
-
-                        if hit then
-                            slot["part"] = hit["Instance"]
-                            slot["position"] = hit["Position"]
-                            slot["probe"] = hit["Position"] - (hit["Instance"]["Position"] + lead)
-                            return true
-                        end
-                    end
-                end
-
-                return false
-            end
-
-            -- Expander-only pass. The ragebot has a target but manipulation is
-            -- off, so there is no spoofed origin to find and the shot leaves from
-            -- where the character stands. All this does is walk the aim point out
-            -- to the box surface of the limb the ragebot picked and hand that back
-            -- with no origin, which is what makes a centre line that clips a ledge
-            -- still land on the body.
-            if expand_only then
-                local cached = spoof["expand_cache"]
-
-                if cached and cached["target"] == target and now - cached["time"] < 0.1 then
-                    local part = cached["part"]
-
-                    if part and part["Parent"] then
-                        return {
-                            ["origin"] = nil,
-                            ["position"] = part["Position"] + lead + cached["probe"],
-                            ["part"] = part,
-                            ["target"] = target,
-                            ["probe"] = cached["probe"]
-                        }
-                    end
-                end
-
-                local slot = {
-                    ["origin"] = anchor,
-                    ["position"] = anchor,
-                    ["part"] = nil,
-                    ["target"] = target,
-                    ["probe"] = vector3_zero
-                }
-
-                -- The limb the ragebot is aiming at first, then the rest by
-                -- weight, so the aim point stays on the limb the ragebot chose
-                -- whenever that limb has any open surface at all.
-                local preferred = parts[resolve_ragebot_hitbox_part(parts)] or head
-
-                if not (preferred and expand_onto(slot, preferred)) then
-                    local attempts = 0
-
-                    for i = 1, #spoof["weights"] do
-                        local part = parts[spoof["weights"][i][1]]
-
-                        if part and part ~= preferred then
-                            attempts = attempts + 1
-
-                            if expand_onto(slot, part) then
-                                break
-                            end
-
-                            if attempts >= spoof["expander_attempts"] then
-                                break
-                            end
-                        end
-                    end
-                end
-
-                spoof["last"] = now
-
-                if not slot["part"] then
-                    spoof["failed"] = now
-                    spoof["failed_target"] = target
-                    return nil
-                end
-
-                slot["time"] = now
-                spoof["expand_cache"] = slot
-
-                return {
-                    ["origin"] = nil,
-                    ["position"] = slot["position"],
-                    ["part"] = slot["part"],
-                    ["target"] = target,
-                    ["probe"] = slot["probe"]
-                }
-            end
-
-
-            -- Reuse the last solution for 0.05 s. The body moves, so the aimed
-            -- point is re-derived from the cached limb every frame instead of
-            -- re-running the whole search.
-            if cache and cache["target"] == target and now - spoof["last"] < 0.1 then
-                local cached_part = cache["part"]
-
-                if cached_part and cached_part["Parent"] then
-                    cache["position"] = cached_part["Position"] + lead + cache["probe"]
-
-                    manipulation_solved = true
-                    manipulation_solved_target = cache["target"]
-                    manipulation_solved_tick = now
-
-                    return cache
-                end
-            end
-
-            -- A target that was fully blocked stays blocked for at least 0.1 s;
-            -- re-searching it every frame burns FPS for nothing.
-            if spoof["failed_target"] == target and now - spoof["failed"] < 0.25 then
-                return nil
-            end
-
-            local gun_budget = tonumber(gun_range) or spoof["gun_range"]
-
-            if gun_budget <= 0 then
-                gun_budget = spoof["gun_range"]
-            end
-
-            local aim = head["Position"] + lead
-            local head_position = head["Position"]
-            local best = nil
-
-            -- Silent aim: the highest weighted limb whose centre the muzzle can
-            -- actually reach. Nothing about the shot moves except the point it is
-            -- reported against, so the server sees the shot the game would have
-            -- sent from the character's own muzzle, and it counts.
-            for j = 1, #spoof["weights"] do
-                local entry = spoof["weights"][j]
-                local part = parts[entry[1]]
-
-                if part then
-                    local point = aim + (part["Position"] - head_position)
-                    local hit = spoof_hit(anchor, point, character)
-
-                    -- The ray refines the answer when it reaches the body, but it
-                    -- does not gate the shot. The ragebot reports the limb it aims
-                    -- at whether or not a client ray would reach it, and the server
-                    -- resolves the shot from the reported origin and point.
-                    -- Requiring a clear line here is what stopped every shot while
-                    -- the target stood behind cover.
-                    best = {
-                        ["origin"] = nil,
-                        ["position"] = hit and hit["Position"] or point,
-                        ["part"] = hit and hit["Instance"] or part,
-                        ["target"] = target,
-                        ["probe"] = hit and (hit["Position"] - (hit["Instance"]["Position"] + lead)) or vector3_zero
-                    }
-
-                    break
-                end
-            end
-
-            -- Hitbox expander, auto-calculated. The centre of a limb is one point
-            -- in space: a ledge, the character's own body or the limb's own
-            -- rotation in front of it empties the search above while most of that
-            -- limb is still open. The point is walked out across the chosen
-            -- limb's own box, scaled by that limb's size, and accepted only when
-            -- the muzzle reaches it, so the reported hit lands on the body and
-            -- inside the limb the shot is named against. The limb the ragebot
-            -- picked is tried before the weighted rest.
-            if not best then
-                local preferred = parts[resolve_ragebot_hitbox_part(parts)] or parts["UpperTorso"] or head
-                local slot = {
-                    ["origin"] = anchor,
-                    ["position"] = anchor,
-                    ["part"] = nil,
-                    ["target"] = target,
-                    ["probe"] = vector3_zero
-                }
-
-                local found = (preferred and expand_onto(slot, preferred)) or false
-
-                if not found then
-                    local attempts = 0
-
-                    for k = 1, #spoof["weights"] do
-                        local part = parts[spoof["weights"][k][1]]
-
-                        if part and part ~= preferred then
-                            attempts = attempts + 1
-
-                            if expand_onto(slot, part) then
-                                found = true
-                                break
-                            end
-
-                            if attempts >= spoof["expander_attempts"] then
-                                break
-                            end
-                        end
-                    end
-                end
-
-                -- The reported point still has to sit inside the weapon range, or
-                -- the server drops the shot the same way it drops any shot fired
-                -- past its own range.
-                if found and (slot["position"] - anchor)["Magnitude"] <= gun_budget then
-                    best = {
-                        ["origin"] = nil,
-                        ["position"] = slot["position"],
-                        ["part"] = slot["part"],
-                        ["target"] = target,
-                        ["probe"] = slot["probe"]
-                    }
-                end
-            end
-
-
-            spoof["last"] = now
-
-            if best then
-                spoof["cache"] = best
-
-                manipulation_solved = true
-                manipulation_solved_target = target
-                manipulation_solved_tick = now
-
-                return best
-            end
-
-            spoof["cache"] = nil
-            spoof["failed"] = now
-            spoof["failed_target"] = target
-
-            -- Diagnostic, throttled. The solve failed, which the panel shows as
-            -- "blocked", and the useful question is why: cover in the way, or the
-            -- muzzle ray not reaching the body at all. One probe ray down the
-            -- middle of the torso names what the muzzle meets instead.
-            if not spoof["diag"] or now - spoof["diag"] > 3 then
-                spoof["diag"] = now
-
-                local torso = parts["UpperTorso"] or head
-                local probe = workspace:Raycast(anchor, ((torso["Position"] + lead) - anchor) * 1.02, params)
-                local label = "nothing"
-
-                if probe then
-                    local hit = probe["Instance"]
-
-                    if hit:IsDescendantOf(character) then
-                        label = hit["Name"] .. " (target)"
-                    elseif hit:IsDescendantOf(local_character) then
-                        label = hit["Name"] .. " (local)"
-                    else
-                        local parent = hit["Parent"]
-                        label = hit["Name"] .. (parent and (" (" .. parent["Name"] .. ")") or "")
-                    end
-                end
-
-                new_notification("manip blocked: muzzle ray hits " .. tostring(label), 2)
-            end
-
-            if manipulation_solved_target == target then
-                manipulation_solved = false
-                manipulation_solved_target = nil
-            end
-
-            return nil
-        end)
-
-        local do_manipulation = LPH_NO_VIRTUALIZE(function(dt)
-            -- The hitbox expander is worth running on the ragebot's own locked
-            -- target with manipulation off: it only moves the aim point across the
-            -- selected limb's box, no spoofed origin involved. Without the ragebot
-            -- there is nothing to expand for, so the flag alone decides.
-            local expand_only = not flags["manipulation"]
-            local ragebot_locked = expand_only and flags["ragebot"] and ragebot_target and not ragebot_target[7]
-
-            if expand_only and not ragebot_locked then
-                manipulation_aim_part = nil
-                if not flags["ragebot"] then
-                    ragebot_aim_position = nil
-                end
-
-                return
-            end
-
-            local target = ragebot_target
-
-            if (not target or target[7]) and not flags["ragebot"] then
-                -- Manipulation on its own: lock whoever is closest to the
-                -- crosshair, the same selection the ragebot uses.
-                local tick = clock()
-
-                if tick - target_tick > 0.1 then
-                    target_tick = tick
-                    get_ragebot_target()
-                end
-
-                target = ragebot_target
-            end
-
-            if not target or target[7] then
-                manipulation_aim_part = nil
-
-                -- Drop the aim point we were feeding so nothing keeps locking
-                -- onto a target after it went away. The ragebot owns it
-                -- otherwise and recomputes every frame.
-                if not flags["ragebot"] then
-                    ragebot_aim_position = nil
-                end
-
-                return
-            end
-
-            local parts = target[4]
-            local hitbox = parts["Head"] or parts["UpperTorso"] or parts["HumanoidRootPart"]
-
-            if not hitbox then
-                return
-            end
-
-            -- Prediction: the hit registers where the target was when the shot
-            -- left, so lead by the measured velocity over the round trip.
-            local velocity = target_velocity or hitbox["AssemblyLinearVelocity"]
-            local solution = solve_spoof(target, local_server_position["p"], velocity, local_gun, expand_only)
-
-            if solution then
-                manipulation_aim_part = solution["part"]
-                manipulation_aim_position = solution["position"]
-            elseif expand_only then
-                -- Nothing to expand onto this frame. Leave the ragebot's own aim
-                -- point alone rather than replacing it with a led centre.
-                manipulation_aim_part = nil
-                manipulation_aim_position = nil
-            else
-                -- Nothing clear: still report the shot as leaving from over the
-                -- body, the way bullet tp did. The torso is preferred over the
-                -- head here because it is the widest solid target on the body,
-                -- so an unsolved shot still has something to land on.
-                local fallback = parts["UpperTorso"] or parts["HumanoidRootPart"] or hitbox
-
-                manipulation_aim_part = fallback
-                manipulation_aim_position = fallback["Position"] + velocity * (local_ping/500)
-
-                if manipulation_solved_target == target then
-                    manipulation_solved = false
-                    manipulation_solved_target = nil
-                end
-            end
-
-            -- The ragebot owns the aim point when it computed one this frame.
-            -- Outside that the manipulation aim feeds it, which is what the
-            -- mouse Hit hook (silent aim) and the tracer both read.
-            if not flags["ragebot"] or not ragebot_aim_position then
-                ragebot_aim_position = manipulation_aim_position
-            end
-        end)
-
-        -- Always on the heartbeat and gated by the flag inside: a config load
-        -- sets the flag without firing the toggle callback, so a start() bound
-        -- to the toggle alone left the feature dead.
-        heartbeat[#heartbeat+1] = do_manipulation
     end
 
     -- >> ( sender rate value )
@@ -28747,24 +28125,21 @@ end
 
 -- > ( auto walk )
 
--- Started here rather than at the top of the chunk, five seconds after the menu
--- is up: the load is not left competing with a per-frame writer, and the walk
--- only begins once there is a script to walk under.
+-- Runs from the first frame rather than five seconds in: the walk is a velocity
+-- write per beat and has nothing to wait for.
 local walk_players = game:GetService("Players")
 local walk_run_service = game:GetService("RunService")
 local walk_local_player = walk_players.LocalPlayer
 
-task.delay(5, function()
-    early_connections[#early_connections+1] = walk_run_service.Heartbeat:Connect(function()
-        local character = walk_local_player.Character
-        local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+early_connections[#early_connections+1] = walk_run_service.Heartbeat:Connect(function()
+    local character = walk_local_player.Character
+    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 
-        if humanoid and humanoid.MoveDirection.Magnitude == 0 and rootPart then
-            local currentYVelocity = rootPart.AssemblyLinearVelocity.Y
-            rootPart.AssemblyLinearVelocity = Vector3.new(0.1, currentYVelocity, 0.1)
-        end
-    end)
+    if humanoid and humanoid.MoveDirection.Magnitude == 0 and rootPart then
+        local currentYVelocity = rootPart.AssemblyLinearVelocity.Y
+        rootPart.AssemblyLinearVelocity = Vector3.new(0.1, currentYVelocity, 0.1)
+    end
 end)
 
 end, function(err)
