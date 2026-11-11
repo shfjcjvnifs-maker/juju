@@ -23123,12 +23123,25 @@ local backtrack_data = {}
 
                 local old_cframe = hrp["CFrame"]
                 local old_velocity = hrp["Velocity"]
+                local old_camera = camera["CFrame"]
 
                 hrp["Velocity"] = vector3_zero
                 hrp["CFrame"] = cframe_new(vector3_new(math_random(-90000000, 90000000), math_random(-90000000, 90000000), math_random(-90000000, 90000000)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
                 render_stepped_wait(render_stepped)
                 hrp["CFrame"] = old_cframe
                 hrp["Velocity"] = old_velocity
+
+                -- Put the view and both position mirrors back in the same
+                -- window the character came back in. The heartbeat reads the
+                -- server position straight after the anti-aim pass, while the
+                -- character is still out at the anchor, and the camera follows it
+                -- there: target selection picks players out of the camera
+                -- viewport and measures them from the client position, so a
+                -- cycle left to run on its own leaves nothing that can be set as
+                -- a target.
+                camera["CFrame"] = old_camera
+                local_client_position = old_cframe
+                local_server_position = old_cframe
             else
                 -- Baited: surfaced at the real position, in_void cleared so the
                 -- ragebot fires at the chasing target.
@@ -23196,7 +23209,7 @@ local backtrack_data = {}
                 return
             end
 
-            if not flags["rapid_fire"] or local_reloading or not local_character or menu["is_menu_open"]() then
+            if not flags["rapid_fire"] or baiting or local_reloading or not local_character or menu["is_menu_open"]() then
                 return
             end
 
