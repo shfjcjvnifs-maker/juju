@@ -28125,21 +28125,23 @@ end
 
 -- > ( auto walk )
 
--- Runs from the first frame rather than five seconds in: the walk is a velocity
--- write per beat and has nothing to wait for.
+-- Deferred a tick rather than five seconds: the walk is a velocity write per
+-- beat and has nothing to wait for, but it still must not race the load.
 local walk_players = game:GetService("Players")
 local walk_run_service = game:GetService("RunService")
 local walk_local_player = walk_players.LocalPlayer
 
-early_connections[#early_connections+1] = walk_run_service.Heartbeat:Connect(function()
-    local character = walk_local_player.Character
-    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+task.delay(0.01, function()
+    early_connections[#early_connections+1] = walk_run_service.Heartbeat:Connect(function()
+        local character = walk_local_player.Character
+        local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 
-    if humanoid and humanoid.MoveDirection.Magnitude == 0 and rootPart then
-        local currentYVelocity = rootPart.AssemblyLinearVelocity.Y
-        rootPart.AssemblyLinearVelocity = Vector3.new(0.1, currentYVelocity, 0.1)
-    end
+        if humanoid and humanoid.MoveDirection.Magnitude == 0 and rootPart then
+            local currentYVelocity = rootPart.AssemblyLinearVelocity.Y
+            rootPart.AssemblyLinearVelocity = Vector3.new(0.1, currentYVelocity, 0.1)
+        end
+    end)
 end)
 
 end, function(err)
