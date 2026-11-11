@@ -22962,6 +22962,14 @@ local backtrack_data = {}
         end
 
         local follow_target = LPH_JIT_MAX(function(dt, hrp, bypass)
+            -- The bait holds the character on its own point. Following the
+            -- target would pull it straight back off that point every frame, so
+            -- the bait wins and following stops while it runs.
+            if baiting or baited then
+                local_following = false
+                return
+            end
+
             local waiting_for_forcefield = ragebot_target and (ragebot_target[7] or spawn_guard["check"](ragebot_target))
 
             if waiting_for_forcefield and hrp and not bypass and not in_void and not stomping and not purchasing then
@@ -23092,10 +23100,23 @@ local backtrack_data = {}
         local rad = math["rad"]
         local cframe_angles = CFrame["Angles"]
         local cycle_start = clock()
-        -- Where the character really is, and the point the bait phase sets it
-        -- down on. Both survive the cycle; neither is re-rolled while it runs.
+        -- Where the character really is, the point the bait phase sets it down
+        -- on, and the camera pose it started from. All three survive the cycle;
+        -- none is re-rolled while it runs.
         local bait_home = nil
         local bait_position = nil
+        local bait_camera = nil
+
+        -- The camera follows the character, so being out at either point drags
+        -- the view out with it, and target selection is measured against the
+        -- viewport. Hold the view at the character's real position for the whole
+        -- cycle instead. Only the position is written back: the rotation is the
+        -- player's, so looking around still works.
+        local function pin_camera()
+            local moved = camera["CFrame"]
+
+            camera["CFrame"] = cframe_new(bait_camera["p"]) * (moved - moved["p"])
+        end
 
         local do_bait = LPH_JIT_MAX(function(dt, hrp)
             if not hrp or ragebot_force_position then
@@ -23117,11 +23138,13 @@ local backtrack_data = {}
                 cycle_start = clock()
                 bait_home = nil
                 bait_position = nil
+                bait_camera = nil
                 return
             end
 
             if not bait_home then
                 bait_home = hrp["CFrame"]
+                bait_camera = camera["CFrame"]
             end
 
             local void_time = flags["bait_void_time"] or 0.5
@@ -23137,7 +23160,6 @@ local backtrack_data = {}
                 in_void = true
 
                 local old_velocity = hrp["Velocity"]
-                local old_camera = camera["CFrame"]
 
                 hrp["Velocity"] = vector3_zero
                 hrp["CFrame"] = cframe_new(vector3_new(math_random(-90000000, 90000000), math_random(-90000000, 90000000), math_random(-90000000, 90000000)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
@@ -23153,7 +23175,7 @@ local backtrack_data = {}
                 -- viewport and measures them from the client position, so a
                 -- cycle left to run on its own leaves nothing that can be set as
                 -- a target.
-                camera["CFrame"] = old_camera
+                pin_camera()
                 local_client_position = bait_home
                 local_server_position = bait_home
             else
@@ -23173,6 +23195,13 @@ local backtrack_data = {}
 
                 hrp["Velocity"] = vector3_zero
                 hrp["CFrame"] = bait_position
+                render_stepped_wait(render_stepped)
+                hrp["CFrame"] = bait_position
+
+                -- Same as the void phase: the character is not where the view
+                -- is, and the pick has to be made against the real surroundings.
+                pin_camera()
+                local_client_position = bait_home
             end
         end)
 
@@ -23197,6 +23226,7 @@ local backtrack_data = {}
             cycle_start = clock()
             bait_home = nil
             bait_position = nil
+            bait_camera = nil
 
             if value then
                 anti_aim[#anti_aim+1] = do_bait
@@ -24526,6 +24556,10 @@ local backtrack_data = {}
         local new_cframe = cframe_new()
         
         local do_void_hide = LPH_JIT_MAX(function(dt, hrp)
+            if baiting or baited then
+                return
+            end
+
             local humanoid = local_parts["Humanoid"]
 
             local forced = (void_hide_force_when_reloading and local_reloading) or (void_hide_force_when_tabbed_out and not isrbxactive()) or (void_hide_force_when_not_full_health and (humanoid and humanoid["Health"] ~= humanoid["MaxHealth"] or false))
@@ -28321,7 +28355,7 @@ arm_auto_walk()
 local auto_walk_last_arm = clock()
 
 early_connections[#early_connections+1] = RunService.Heartbeat:Connect(function()
-    if clock() - auto_walk_last_arm >= 0.5 then
+    if clock() - auto_walk_last_arm >= 1 then
         auto_walk_last_arm = clock()
         arm_auto_walk()
     end
