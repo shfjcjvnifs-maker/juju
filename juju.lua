@@ -13690,11 +13690,13 @@ end
             -- The first state that matches is the one shown. Waiting for a
             -- forcefield comes first, because it explains why the ragebot is
             -- holding fire and nothing else is worth showing. Then the states that
-            -- move the character, then the void, where no shot can land, then the
-            -- manipulation: it is shown only while a solved shot exists, so a
-            -- target the solver could not reach never claims to be manipulated.
+            -- move the character, then the void, where no shot can land, then
+            -- "manipulated": it is shown only while the solved shot goes through
+            -- a wall, meaning the origin was moved and the character itself has
+            -- no line to the hit point. A solved shot with nothing in the way,
+            -- and a target the solver could not reach, both show nothing.
             -- Reloading, buying and an active forcefield follow, "unsafe" last.
-            local new = (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or flags["follow_target"] and ragebot_target and "following" or local_following and "following" or stomping and "stomping" or (in_void or in_void == nil) and "void" or flags["ragebot_manipulation"] and ragebot_manipulation and "manipulation" or local_reloading and "reloading" or purchasing and "purchasing" or local_parts["ForceField"] and "invulnerable" or "unsafe"
+            local new = (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or flags["follow_target"] and ragebot_target and "following" or local_following and "following" or stomping and "stomping" or (in_void or in_void == nil) and "void" or flags["ragebot_manipulation"] and ragebot_manipulation and ragebot_manipulation["through_wall"] and "manipulated" or local_reloading and "reloading" or purchasing and "purchasing" or local_parts["ForceField"] and "invulnerable" or "unsafe"
             if old ~= new then
                 text3["Text"] = new
                 tween(text3, {["Transparency"] = 0.35}, linear, out, 0.09)
@@ -21592,6 +21594,14 @@ local backtrack_data = {}
         manipulation["last"] = now
 
         if best then
+            -- "through_wall" marks the shot the character could not have made
+            -- from where it stands: the origin was moved, and neither the
+            -- character's own position nor its muzzle can see the point the
+            -- shot is reported to hit. A moved origin with a clear line of its
+            -- own is still a spoofed shot, but nothing was in the way.
+            local point = best["position"]
+
+            best["through_wall"] = best["origin"] ~= nil and not manipulation["visible"](base, point, character) and not manipulation["visible"](base + vector3_new(0.004, 3.0208, -0.048), point, character)
             manipulation["cache"] = best
 
             return best
@@ -22062,6 +22072,8 @@ local backtrack_data = {}
         end
 
         ragebot_aim_position = nil
+        -- The solve belongs to the target it was made for.
+        ragebot_manipulation = nil
         ragebot_aim_velocity = nil
         ragebot_aim_defensive = false
         target_velocity = vector3_zero
@@ -22418,6 +22430,11 @@ local backtrack_data = {}
                 ragebot_aim_position = nil
                 ragebot_manipulation = nil
             end
+        else
+            -- No target, or no character to shoot from. Nothing is solved this
+            -- frame, so the last solve must not outlive the shot it described:
+            -- the center panel reads it.
+            ragebot_manipulation = nil
         end
 
         is_defensive = did_defensive
