@@ -23115,6 +23115,11 @@ local backtrack_data = {}
     -- wait the frame, back to where the character really is. The position is on
     -- the wire for that frame and the server keeps it, while the client goes
     -- straight back.
+    --
+    -- The point is rolled level with the target or above it, never under the
+    -- ground the target is standing on, and any health the character is missing
+    -- is put back every frame: the server is the one standing at the point for
+    -- that frame, so a void hit there cannot end the bait with a dead character.
     do
         local rad = math["rad"]
         local cframe_angles = CFrame["Angles"]
@@ -23127,11 +23132,13 @@ local backtrack_data = {}
         local phase = nil
 
         -- Rolled off the target's aim position, at the follow target distance, so
-        -- the point is always somewhere on the map next to the target.
+        -- the point is always somewhere on the map next to the target. The height
+        -- offset is taken upwards only, so the point lands level with the target
+        -- or above it and never under the ground the target is standing on.
         local function roll_point()
             local radius = flags["follow_target_distance"] or 15
 
-            return cframe_new(ragebot_aim_position + vector3_new(math_random(-radius, radius), math_random(-radius, radius), math_random(-radius, radius)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
+            return cframe_new(ragebot_aim_position + vector3_new(math_random(-radius, radius), math_random(0, radius), math_random(-radius, radius)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
         end
 
         -- One frame on the point, the rest of the frame where the character
@@ -23185,6 +23192,17 @@ local backtrack_data = {}
                 baiting = false
                 baited = false
                 return
+            end
+
+            -- Anti void: the server holds the character out at the point for a
+            -- frame every frame, so the void's damage lands there while the
+            -- client shows the character safe at home. Put any health the
+            -- character is missing back, so a void hit cannot end the cycle
+            -- with a dead character.
+            local humanoid = local_parts["Humanoid"]
+
+            if humanoid and humanoid["Health"] < humanoid["MaxHealth"] then
+                humanoid["Health"] = humanoid["MaxHealth"]
             end
 
             local void_time = flags["bait_void_time"] or 0.5
