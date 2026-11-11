@@ -21110,17 +21110,11 @@ local backtrack_data = {}
         menu_references["auto_fire_always_fire"] = menu_references["auto_fire_settings"]:create_element({["name"] = "always fire"}, {["toggle"] = {["flag"] = "auto_fire_always_fire", ["default"] = true}})
         menu_references["auto_fire_dont_render"] = menu_references["auto_fire_settings"]:create_element({["name"] = "dont render"}, {["toggle"] = {["flag"] = "auto_fire_dont_render", ["default"] = false}})
 
-        -- The manipulation describes the shot auto fire sends, so it is its own
-        -- entry in the general list, directly under auto fire and above auto
-        -- equip and the spam resolver. "auto calculating" on the hitbox re-scores
-        -- every limb against the aim point instead of using the fixed weights,
-        -- and on the origin it derives the arc height from the distance instead
-        -- of the fixed lifts.
+        -- The manipulation describes the shot auto fire sends. It is fully
+        -- automatic: the hitbox is the best visible limb and the origin is
+        -- moved only as far as it must to clear a wall, so there is nothing
+        -- left to configure.
         menu_references["ragebot_manipulation"] = menu_references["general_section"]:create_element({["name"] = "manipulation"}, {["toggle"] = {["flag"] = "ragebot_manipulation", ["default"] = false}})
-        menu_references["ragebot_manipulation_settings"] = menu_references["ragebot_manipulation"]:create_settings()
-        menu_references["ragebot_manipulation_range"] = menu_references["ragebot_manipulation_settings"]:create_element({["name"] = "range"}, {["slider"] = {["flag"] = "ragebot_manipulation_range", ["min"] = 1, ["max"] = 100, ["suffix"] = " studs", ["default"] = 100}})
-        menu_references["ragebot_manipulation_hitbox"] = menu_references["ragebot_manipulation_settings"]:create_element({["name"] = "hitbox"}, {["dropdown"] = {["flag"] = "ragebot_manipulation_hitbox", ["options"] = {"auto", "selected", "auto calculating"}, ["default"] = {"auto"}}})
-        menu_references["ragebot_manipulation_origin"] = menu_references["ragebot_manipulation_settings"]:create_element({["name"] = "origin"}, {["dropdown"] = {["flag"] = "ragebot_manipulation_origin", ["options"] = {"above", "auto", "auto calculating"}, ["default"] = {"above"}}})
 
         menu_references["auto_equip"] = menu_references["general_section"]:create_element({["name"] = "auto equip"}, {["toggle"] = {["flag"] = "auto_equip", ["default"] = false}})
         menu_references["auto_equip_settings"] = menu_references["auto_equip"]:create_settings()
@@ -21387,26 +21381,18 @@ local backtrack_data = {}
     -- > ( manipulation: spoofed bullet origin + auto hitbox )
 
     -- The shot the server is told about does not have to be the shot the
-    -- character can make. This picks an origin it could not have fired from -
-    -- up in the air and in front of the character - and the limb the shot is
-    -- reported to have hit, then hands both to whoever is about to fire. The
-    -- character and the gun stay where they are.
+    -- character can make. This picks the limb the shot is reported to have hit
+    -- and, only when a wall hides every limb from the character's own muzzle,
+    -- an origin it could not have fired from - up in the air and in front of
+    -- the character. Both are handed to whoever is about to fire. The character
+    -- and the gun stay where they are.
     local manipulation = {
         ["cache"] = nil,
         ["last"] = 0,
         ["failed"] = 0,
         ["failed_target"] = nil,
         ["params"] = RaycastParams["new"](),
-        ["hitboxes"] = {
-            {"Head", 4},
-            {"UpperTorso", 3},
-            {"LowerTorso", 2.4},
-            {"HumanoidRootPart", 2.2},
-            {"LeftUpperLeg", 1.2},
-            {"RightUpperLeg", 1.2}
-        },
-        -- The wider list "auto calculating" scores against the live aim point, so
-        -- it can reach the arms and the lower legs the fixed list leaves out.
+        -- Every limb the shot may be reported on, heaviest first.
         ["calculated_hitboxes"] = {
             {"Head", 4},
             {"UpperTorso", 3},
@@ -21424,8 +21410,7 @@ local backtrack_data = {}
             {"RightLowerLeg", 1}
         },
         ["radii"] = {0.25, 0.5, 0.75, 1},
-        ["arc_radii"] = {0.5, 0.75, 0.25, 1},
-        ["lifts"] = {1, 0.7, 0.4}
+        ["arc_radii"] = {0.5, 0.75, 0.25, 1}
     }
 
     -- A candidate counts as visible when the ray reaches the point without
@@ -21443,11 +21428,10 @@ local backtrack_data = {}
     end)
 
     manipulation["solve"] = LPH_NO_VIRTUALIZE(function(target, hitbox, aim_position, base)
-        local range = flags["ragebot_manipulation_range"]
         local character = target[3]
         local parts = target[4]
 
-        if not range or not character or not hitbox then
+        if not character or not hitbox then
             return nil
         end
 
@@ -21481,77 +21465,55 @@ local backtrack_data = {}
 
         local direction = aim_position - base
         local distance = direction["Magnitude"]
-        local unit = distance > 0.001 and direction["Unit"] or vector3_new(0, 0, 1)
-        local origin_mode = flags["ragebot_manipulation_origin"][1]
-        local hitbox_mode = flags["ragebot_manipulation_hitbox"][1]
-        local calculating = origin_mode == "auto calculating"
-        local arc = origin_mode ~= "auto"
-        local fallback_penalty = arc and 3 or 0
+
+        -- Everything is automatic. The hitbox is the best visible limb by weight,
+        -- and the origin moves as little as it must. The character's own muzzle
+        -- is the first candidate and carries no penalty, so a target in the open
+        -- is shot from where the character stands and the server accepts it. The
+        -- lifted arc carries a penalty and only wins when a wall hides every limb
+        -- from the muzzle. There is no range cap: the arc is scaled to the
+        -- distance to the target.
+        local reach = distance > 0.001 and distance or 1
+        local flat = vector3_new(direction["X"], 0, direction["Z"])
+        local flat_distance = flat["Magnitude"]
+        local flat_unit = flat_distance > 0.001 and flat["Unit"] or vector3_new(0, 0, 1)
         local candidates = {}
 
-        -- The arc: up and toward the target, capped at the configured range. The
-        -- fixed lifts give the same shape at any distance; "auto calculating"
-        -- derives both the reach and the height from the distance to the target,
-        -- so a far shot gets a taller, flatter arc.
-        if arc then
-            local flat = vector3_new(direction["X"], 0, direction["Z"])
-            local flat_distance = flat["Magnitude"]
-            local flat_unit = flat_distance > 0.001 and flat["Unit"] or vector3_new(0, 0, 1)
-            local lifts = calculating and {distance * 0.8, distance * 0.5, distance * 0.25} or manipulation["lifts"]
+        -- The muzzle: the real shot. A nil origin means "fire from the character".
+        candidates[#candidates + 1] = {nil, 0, 0}
 
-            for _, lift in lifts do
-                for _, factor in manipulation["arc_radii"] do
-                    local reach = calculating and flat_distance * factor or range * factor * 0.8
-                    local height = calculating and lift or range * lift
-                    local offset = flat_unit * reach + vector3_new(0, height, 0)
-                    local length = offset["Magnitude"]
-
-                    if length > range then
-                        offset = offset * (range / length)
-                    end
-
-                    candidates[#candidates + 1] = {base + offset, offset["Magnitude"], 0}
-                end
+        -- The arc: up and toward the target, scaled to the distance.
+        for _, lift in {0.8, 0.5, 0.25} do
+            for _, factor in manipulation["arc_radii"] do
+                local offset = flat_unit * (flat_distance * factor) + vector3_new(0, reach * lift, 0)
+                candidates[#candidates + 1] = {base + offset, offset["Magnitude"], 3}
             end
         end
 
-        -- The fallbacks: the character's own position, a point toward the
-        -- target, straight up, and a ring around the character. They carry the
-        -- penalty, so an arc point always outranks them.
-        candidates[#candidates + 1] = {base, 0, fallback_penalty}
-
+        -- The ring: a last resort around the character when the arc is blocked too.
         for _, factor in manipulation["radii"] do
-            local radius = range * factor
+            local radius = reach * factor
 
-            if radius < distance then
-                candidates[#candidates + 1] = {base + unit * radius, radius, fallback_penalty}
-            end
-
-            candidates[#candidates + 1] = {base + vector3_new(0, radius, 0), radius, fallback_penalty}
+            candidates[#candidates + 1] = {base + vector3_new(0, radius, 0), radius, 3}
 
             for step = 0, 7 do
                 local theta = step * (pi / 4)
-                candidates[#candidates + 1] = {base + vector3_new(math["cos"](theta) * radius, 0, math["sin"](theta) * radius), radius, fallback_penalty}
+                candidates[#candidates + 1] = {base + vector3_new(math["cos"](theta) * radius, 0, math["sin"](theta) * radius), radius, 3}
             end
         end
 
-        local selected_only = hitbox_mode == "selected"
-        local re_scoring = hitbox_mode == "auto calculating"
         local list = {}
 
-        if selected_only then
-            list[1] = {hitbox, 4}
-        else
-            for _, entry in manipulation[re_scoring and "calculated_hitboxes" or "hitboxes"] do
-                local part = parts[entry[1]]
+        for _, entry in manipulation["calculated_hitboxes"] do
+            local part = parts[entry[1]]
 
-                if part then
-                    list[#list + 1] = {part, entry[2]}
-                end
+            if part then
+                list[#list + 1] = {part, entry[2]}
             end
         end
 
         local hitbox_position = hitbox["Position"]
+        local muzzle = base + vector3_new(0.004, 3.0208, -0.048)
         local best = nil
         local best_score = -9e9
         local best_weight = 0
@@ -21559,23 +21521,24 @@ local backtrack_data = {}
         for _, candidate in candidates do
             local origin = candidate[1]
             local radius = candidate[2]
+            local penalty = candidate[3]
 
             for _, entry in list do
                 local part = entry[1]
 
-                -- "auto" scores the origin by how far it had to move; "auto
-                -- calculating" scores the limb by how far it is from the aim, so
-                -- the limb the shot is already going past wins.
-                local score = entry[2] - ((re_scoring and (part["Position"] - aim_position)["Magnitude"] or radius) / range) * 1.5 - candidate[3]
+                -- Heaviest limb, smallest move. The muzzle (penalty 0) outranks
+                -- the arc (penalty 3) for the same limb, so the arc only wins when
+                -- the muzzle cannot see the limb at all.
+                local score = entry[2] - (radius / reach) * 0.5 - penalty
 
                 if score > best_score then
                     local point = aim_position + (part["Position"] - hitbox_position)
 
-                    if manipulation["visible"](origin, point, character) then
+                    if manipulation["visible"](origin or muzzle, point, character) then
                         best_score = score
                         best_weight = entry[2]
                         best = {
-                            ["origin"] = radius > 0 and origin or nil,
+                            ["origin"] = origin,
                             ["position"] = point,
                             ["part"] = part,
                             ["target"] = target,
@@ -21585,8 +21548,8 @@ local backtrack_data = {}
                 end
             end
 
-            -- The head is the best hitbox there is, so nothing later can beat it.
-            if best and best_weight >= 4 then
+            -- A head shot from the muzzle is as good as it gets: stop looking.
+            if best and best_weight >= 4 and penalty == 0 then
                 break
             end
         end
@@ -28399,23 +28362,19 @@ end
 
 -- > ( auto walk )
 
--- Deferred a second rather than five: the walk is a velocity write per beat and
--- has nothing to wait for, but it still must not race the load.
-local walk_players = game:GetService("Players")
-local walk_run_service = game:GetService("RunService")
-local walk_local_player = walk_players.LocalPlayer
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local localPlayer = Players.LocalPlayer
 
-task.delay(1, function()
-    early_connections[#early_connections+1] = walk_run_service.Heartbeat:Connect(function()
-        local character = walk_local_player.Character
-        local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+RunService.Heartbeat:Connect(function()
+    local character = localPlayer.Character
+    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 
-        if humanoid and humanoid.MoveDirection.Magnitude == 0 and rootPart then
-            local currentYVelocity = rootPart.AssemblyLinearVelocity.Y
-            rootPart.AssemblyLinearVelocity = Vector3.new(0.1, currentYVelocity, 0.1)
-        end
-    end)
+    if humanoid and humanoid.MoveDirection.Magnitude == 0 and rootPart then
+        local currentYVelocity = rootPart.AssemblyLinearVelocity.Y
+        rootPart.AssemblyLinearVelocity = Vector3.new(0.1, currentYVelocity, 0.1)
+    end
 end)
 
 end, function(err)
