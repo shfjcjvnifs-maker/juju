@@ -8517,6 +8517,11 @@ local local_knocked = false
 local ragebot_force_position = nil
 local in_void = false
 local stomping = false
+-- The bait: after a target is set, go to the void for a moment, then surface far
+-- out and wait for the target to chase. "baiting" is the wait in the void;
+-- "baited" is the window surfaced and visible, when the shot is taken.
+local baiting = false
+local baited = false
 
 -- Ragebot hitbox selection. The dropdown names either one part or a group
 -- whose part is rolled per target and held for a short window, so the aim and
@@ -13689,14 +13694,16 @@ end
             end
             -- The first state that matches is the one shown. Waiting for a
             -- forcefield comes first, because it explains why the ragebot is
-            -- holding fire and nothing else is worth showing. Then the states that
-            -- move the character, then the void, where no shot can land, then
-            -- "manipulated": it is shown only while the solved shot goes through
-            -- a wall, meaning the origin was moved and the character itself has
-            -- no line to the hit point. A solved shot with nothing in the way,
-            -- and a target the solver could not reach, both show nothing.
-            -- Reloading, buying and an active forcefield follow, "unsafe" last.
-            local new = (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or flags["follow_target"] and ragebot_target and "following" or local_following and "following" or stomping and "stomping" or (in_void or in_void == nil) and "void" or flags["ragebot_manipulation"] and ragebot_manipulation and ragebot_manipulation["through_wall"] and "manipulated" or local_reloading and "reloading" or purchasing and "purchasing" or local_parts["ForceField"] and "invulnerable" or "unsafe"
+            -- holding fire. Then the bait's own two phases: "baiting" out in the
+            -- void, "baited" surfaced and firing. Then the states that move the
+            -- character, then the void, where no shot can land, then
+            -- "manipulated": shown only while a gun is held and the solved shot
+            -- goes through a wall - the origin was moved and the character itself
+            -- has no line to the hit point. A solved shot with nothing in the
+            -- way, a target the solver could not reach, and a shot with no gun to
+            -- fire it all show nothing. Reloading, buying and an active
+            -- forcefield follow, "unsafe" last.
+            local new = (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or baiting and "baiting" or baited and "baited" or flags["follow_target"] and ragebot_target and "following" or local_following and "following" or stomping and "stomping" or (in_void or in_void == nil) and "void" or flags["ragebot_manipulation"] and ragebot_manipulation and ragebot_manipulation["through_wall"] and local_gun and "manipulated" or local_reloading and "reloading" or purchasing and "purchasing" or local_parts["ForceField"] and "invulnerable" or "unsafe"
             if old ~= new then
                 text3["Text"] = new
                 tween(text3, {["Transparency"] = 0.35}, linear, out, 0.09)
@@ -21134,11 +21141,6 @@ local backtrack_data = {}
         menu_references["shot_delay"] = menu_references["general_section"]:create_element({["name"] = "shot delay"}, {["slider"] = {["flag"] = "shot_delay", ["min"] = 0, ["max"] = 1000, ["suffix"] = "ms", ["default"] = 0, ["min_text"] = "none"}})
         menu_references["ragebot_field_of_view"] = menu_references["general_section"]:create_element({["name"] = "field of view"}, {["slider"] = {["flag"] = "ragebot_field_of_view", ["min"] = 5, ["max"] = 180, ["suffix"] = "°", ["default"] = 180, ["max_text"] = "full"}})
         menu_references["fire_cooldown"] = menu_references["general_section"]:create_element({["name"] = "fire cooldown"}, {["slider"] = {["flag"] = "fire_cooldown", ["min"] = 0, ["max"] = 300, ["suffix"] = "ms", ["default"] = 5, ["min_text"] = "none"}})
-        -- How far away the ragebot will still pull the trigger. 0 hands the
-        -- decision to the equipped gun's own range, 2500 means no limit. Past the
-        -- limit the shot is dropped by the server anyway, so firing only marks the
-        -- shooter and wastes the clip.
-        menu_references["ragebot_max_distance"] = menu_references["general_section"]:create_element({["name"] = "max distance"}, {["slider"] = {["flag"] = "ragebot_max_distance", ["min"] = 0, ["max"] = 2500, ["default"] = 0, ["suffix"] = " studs", ["min_text"] = "gun range", ["max_text"] = "infinite"}})
         menu_references["target_selection"] = menu_references["general_section"]:create_element({["name"] = "target selection"}, {})
         menu_references["target_selection_settings"] = menu_references["target_selection"]:create_settings()
         menu_references["target_selection_notification"] = menu_references["target_selection_settings"]:create_element({["name"] = "notification"}, {["toggle"] = {["flag"] = "target_selection_notification", ["default"] = false}})
@@ -21154,7 +21156,7 @@ local backtrack_data = {}
         menu_references["target_players"] = menu_references["target_selection_settings"]:create_element({["name"] = "target players"}, {["dropdown"] = {["flag"] = "target_players", ["options"] = {}, ["default"] = {}, ["multi"] = true, ["requires_one"] = false}})
         menu_references["target_selection_prioritize_by"] = menu_references["target_selection_settings"]:create_element({["name"] = "prioritize by"}, {["dropdown"] = {["flag"] = "prioritize_by", ["options"] = {"closest to character", "closest to mouse", "highest wanted", "lowest health", "random"}, ["default"] = {"closest to mouse"}}})
         menu_references["target_selection_ignore_if"] = menu_references["target_selection_settings"]:create_element({["name"] = "ignore if"}, {["dropdown"] = {["flag"] = "ignore_if", ["options"] = {"invulnerable", "knocked", "in void"}, ["default"] = {"invulnerable"}, ["multi"] = true}})
-        menu_references["target_selection_target_distance"] = menu_references["target_selection_settings"]:create_element({["name"] = "target distance"}, {["slider"] = {["flag"] = "target_selection_target_distance", ["default"] = 250, ["max_text"] = "max", ["min"] = 5, ["max"] = 250, ["suffix"] = " studs"}})
+        menu_references["target_selection_target_distance"] = menu_references["target_selection_settings"]:create_element({["name"] = "target distance"}, {["slider"] = {["flag"] = "target_selection_target_distance", ["default"] = 2500, ["max_text"] = "max", ["min"] = 5, ["max"] = 2500, ["suffix"] = " studs"}})
     menu_references["visualization_section"] = menu["groups"]["main"]:create_section("ragebot", "visualization", 1, 0.3, 0.7)
         --menu_references["information_panel"] = menu_references["visualization_section"]:create_element({["name"] = "information panel"}, {["toggle"] = {["flag"] = "information_panel"}})
         --menu_references["information_panel_settings"] = menu_references["information_panel"]:create_settings()
@@ -21209,7 +21211,7 @@ local backtrack_data = {}
         menu_references["sleep_rate"] = menu_references["fake_position_settings"]:create_element({["name"] = "sleep rate"}, {["slider"] = {["flag"] = "sleep_rate", ["min"] = 1, ["max"] = 100, ["default"] = 1, ["suffix"] = "%"}})
         menu_references["void_hide"] = menu_references["anti_section"]:create_element({["name"] = "void hide"}, {["toggle"] = {["flag"] = "void_hide"}})
         menu_references["void_hide_settings"] = menu_references["void_hide"]:create_settings()
-        menu_references["void_hide_type"] = menu_references["void_hide_settings"]:create_element({["name"] = "type"}, {["dropdown"] = {["options"] = game["PlaceId"] == 7213786345 and {"vc server"} or {"random", "bait"}, ["flag"] = "void_hide_type", ["requires_one"] = true, ["default"] = game["PlaceId"] == 7213786345 and {"vc server"} or {"random"}}})
+        menu_references["void_hide_type"] = menu_references["void_hide_settings"]:create_element({["name"] = "type"}, {["dropdown"] = {["options"] = game["PlaceId"] == 7213786345 and {"vc server"} or {"random"}, ["flag"] = "void_hide_type", ["requires_one"] = true, ["default"] = game["PlaceId"] == 7213786345 and {"vc server"} or {"random"}}})
         menu_references["void_hide_bait_distance"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait distance"}, {["slider"] = {["min"] = 200, ["max"] = 2500, ["decimals"] = 0, ["default"] = 250, ["flag"] = "void_hide_bait_distance", ["suffix"] = " studs"}})
         menu_references["void_hide_bait_cooldown"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait cooldown"}, {["slider"] = {["min"] = 0.01, ["max"] = 1.5, ["decimals"] = 2, ["default"] = 0.5, ["flag"] = "void_hide_bait_cooldown", ["suffix"] = "s"}})
         menu_references["void_hide_bait_time"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait time"}, {["slider"] = {["min"] = 0.01, ["max"] = 0.3, ["decimals"] = 2, ["default"] = 0.03, ["flag"] = "void_hide_bait_time", ["suffix"] = "s"}})
@@ -21222,6 +21224,10 @@ local backtrack_data = {}
         menu_references["void_hide_teleport_time"] = menu_references["void_hide_settings"]:create_element({["name"] = "teleport time"}, {["slider"] = {["min"] = 0.01, ["max"] = 2, ["decimals"] = 3, ["default"] = 0.1, ["flag"] = "void_hide_teleport_time", ["suffix"] = "s"}})
         menu_references["void_hide_stop_if_forced"]:set_visible(false)
     menu_references["utility_section"] = menu["groups"]["main"]:create_section("ragebot", "utility", 2, 0.7, 0.3)
+        menu_references["bait"] = menu_references["utility_section"]:create_element({["name"] = "bait"}, {["toggle"] = {["flag"] = "bait", ["default"] = false}})
+        menu_references["bait_settings"] = menu_references["bait"]:create_settings()
+        menu_references["bait_void_time"] = menu_references["bait_settings"]:create_element({["name"] = "void time"}, {["slider"] = {["flag"] = "bait_void_time", ["min"] = 0.1, ["max"] = 5, ["default"] = 0.5, ["decimals"] = 2, ["suffix"] = "s"}})
+        menu_references["bait_time"] = menu_references["bait_settings"]:create_element({["name"] = "bait time"}, {["slider"] = {["flag"] = "bait_time", ["min"] = 0.1, ["max"] = 5, ["default"] = 1, ["decimals"] = 2, ["suffix"] = "s"}})
         menu_references["safe_purchasing"] = menu_references["utility_section"]:create_element({["name"] = "safe purchasing"}, {["toggle"] = {["flag"] = "safe_purchasing"}})
         menu_references["safe_purchasing_settings"] = menu_references["safe_purchasing"]:create_settings()
         menu_references["safe_purchasing_avoid_statuses"] = menu_references["safe_purchasing_settings"]:create_element({["name"] = "avoid statuses"}, {["dropdown"] = {["flag"] = "safe_purchasing_avoid_statuses", ["options"] = {"friendly", "target", "neutral", "enemy"}, ["default"] = {"target", "enemy"}, ["multi"] = true, ["requires_one"] = true}})
@@ -22469,15 +22475,10 @@ local backtrack_data = {}
                 ragebot_aim_velocity = target_velocity
                 ragebot_aim_defensive = did_defensive
 
-                -- Max shoot distance. Read straight off the flag every frame, since
-                -- a loaded config writes the flag without firing the slider
-                -- callback. 0 means the equipped gun's own range decides, 2500
-                -- means the target's distance never holds the trigger.
-                local ragebot_max_distance = flags["ragebot_max_distance"] or 0
-                local shoot_distance = ragebot_max_distance == 2500 and math["huge"] or (ragebot_max_distance == 0 and (local_gun or 250) or ragebot_max_distance)
-                local in_shoot_distance = (local_server_position - ragebot_aim_position)["Magnitude"] <= shoot_distance
-
-                if in_shoot_distance and local_gun and (((not local_reloading or auto_fire_always_fire) and not target[18] and not target[7] and not spawn_guard["check"](target) and not grabbing_constraint) and (flags["auto_fire"] and (auto_fire_always_fire or (((local_server_position-ragebot_aim_position)["Magnitude"] > 0) or flags["follow_target"] or did_defensive)) and old_time-last_fire > fire_cooldown)) then
+                -- No distance gate. The trigger is pulled at any range; the shot
+                -- is what reaches or does not, and the manipulation can move the
+                -- origin onto the target from anywhere.
+                if local_gun and not baiting and (((not local_reloading or auto_fire_always_fire) and not target[18] and not target[7] and not spawn_guard["check"](target) and not grabbing_constraint) and (flags["auto_fire"] and (auto_fire_always_fire or (((local_server_position-ragebot_aim_position)["Magnitude"] > 0) or flags["follow_target"] or did_defensive)) and old_time-last_fire > fire_cooldown)) then
                     local delay = flags["shot_delay"]
                     if delay > 0 then
                         wait(delay/1000)
@@ -22764,7 +22765,7 @@ local backtrack_data = {}
     end)
 
     create_connection(menu_references["target_selection_target_distance"]["on_slider_change"], function(value)
-        target_distance = value == 250 and true or value
+        target_distance = value == 2500 and true or value
     end)
 
     create_connection(menu_references["target_selection_automatic"]["on_toggle_change"], function(value)
@@ -23080,6 +23081,85 @@ local backtrack_data = {}
                 elseif value == "no gun equipped" then
                     follow_target_stop_if_no_gun_equipped = true
                 end
+            end
+        end)
+    end
+
+    -- >> ( bait )
+
+    -- With a ragebot target set, the bait runs a two-phase cycle. For "void
+    -- time" the character sits far out across the map, a long way from anything
+    -- it can be shot from, which is what the server and the chasing target see.
+    -- For "bait time" the character surfaces back at its real position and the
+    -- ragebot fires at the target while it is still chasing the point it was
+    -- last seen at. The cycle then repeats.
+    --
+    -- The bait anchor is ninety million studs out: far enough that the target
+    -- cannot reach it, near enough that the client still replicates a position
+    -- rather than being clamped away entirely. It cannot be tested here, so the
+    -- offset may need lowering if the server rejects it.
+    do
+        local rad = math["rad"]
+        local cframe_angles = CFrame["Angles"]
+        local cycle_start = clock()
+
+        local do_bait = LPH_JIT_MAX(function(dt, hrp)
+            if not hrp or ragebot_force_position then
+                baiting = false
+                baited = false
+                return
+            end
+
+            if not flags["ragebot"] or not ragebot_target then
+                baiting = false
+                baited = false
+                cycle_start = clock()
+                return
+            end
+
+            local void_time = flags["bait_void_time"] or 0.5
+            local bait_time = flags["bait_time"] or 1
+            local cycle = void_time + bait_time
+            local elapsed = (clock() - cycle_start) % cycle
+
+            if elapsed < void_time then
+                -- Baiting: out at the anchor, held in the void so no shot is
+                -- taken while the position is garbage.
+                baiting = true
+                baited = false
+                in_void = true
+
+                local old_cframe = hrp["CFrame"]
+                local old_velocity = hrp["Velocity"]
+
+                hrp["Velocity"] = vector3_zero
+                hrp["CFrame"] = cframe_new(vector3_new(math_random(-90000000, 90000000), math_random(-90000000, 90000000), math_random(-90000000, 90000000)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
+                render_stepped_wait(render_stepped)
+                hrp["CFrame"] = old_cframe
+                hrp["Velocity"] = old_velocity
+            else
+                -- Baited: surfaced at the real position, in_void cleared so the
+                -- ragebot fires at the chasing target.
+                baiting = false
+                baited = true
+                in_void = false
+            end
+        end)
+
+        create_connection(menu_references["bait"]["on_toggle_change"], function(value)
+            for i = 1, #anti_aim do
+                if anti_aim[i] == do_bait then
+                    remove(anti_aim, i)
+                    break
+                end
+            end
+
+            baiting = false
+            baited = false
+            cycle_start = clock()
+
+            if value then
+                anti_aim[#anti_aim+1] = do_bait
             end
         end)
     end
@@ -28530,7 +28610,14 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local localPlayer = Players.LocalPlayer
 
-RunService.Heartbeat:Connect(function()
+-- The walk is one Heartbeat connection that writes a small horizontal velocity
+-- whenever the character is standing still. A 5 second loop re-arms it: if the
+-- connection is ever dropped - a respawn, an executor hiccup - the next tick
+-- reconnects it. The connection is kept in early_connections so unload can stop
+-- it, and the live one is remembered so the re-arm never stacks a second.
+local auto_walk_connection = nil
+
+local function auto_walk_step()
     local character = localPlayer.Character
     local rootPart = character and character:FindFirstChild("HumanoidRootPart")
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -28538,6 +28625,26 @@ RunService.Heartbeat:Connect(function()
     if humanoid and humanoid.MoveDirection.Magnitude == 0 and rootPart then
         local currentYVelocity = rootPart.AssemblyLinearVelocity.Y
         rootPart.AssemblyLinearVelocity = Vector3.new(0.1, currentYVelocity, 0.1)
+    end
+end
+
+local function arm_auto_walk()
+    if auto_walk_connection and auto_walk_connection.Connected then
+        return
+    end
+
+    auto_walk_connection = RunService.Heartbeat:Connect(auto_walk_step)
+    early_connections[#early_connections+1] = auto_walk_connection
+end
+
+arm_auto_walk()
+
+local auto_walk_last_arm = clock()
+
+early_connections[#early_connections+1] = RunService.Heartbeat:Connect(function()
+    if clock() - auto_walk_last_arm >= 5 then
+        auto_walk_last_arm = clock()
+        arm_auto_walk()
     end
 end)
 
