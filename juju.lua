@@ -21318,7 +21318,7 @@ local backtrack_data = {}
         menu_references["bm_adaptive"] = menu_references["bm_section"]:create_element({["name"] = "adaptive offset"}, {["toggle"] = {["flag"] = "bm_adaptive", ["default"] = true}})
         menu_references["bm_notify"] = menu_references["bm_section"]:create_element({["name"] = "notify"}, {["toggle"] = {["flag"] = "bm_notify", ["default"] = false}})
 
-        menu_references["bm_debug_draw"] = menu_references["bm_debug_section"]:create_element({["name"] = "debug draw"}, {["toggle"] = {["flag"] = "bm_debug_draw", ["default"] = false}, ["colorpicker"] = {["color_flag"] = "bm_debug_color", ["default_color"] = color3_fromrgb(255, 64, 64)}})
+        menu_references["bm_debug_draw"] = menu_references["bm_debug_section"]:create_element({["name"] = "debug draw"}, {["toggle"] = {["flag"] = "bm_debug_draw", ["default"] = false}, ["colorpicker"] = {["color_flag"] = "bm_debug_color", ["transparency_flag"] = "bm_debug_color_transparency", ["default_color"] = color3_fromrgb(255, 64, 64), ["default_transparency"] = 0}})
 
         menu_references["hitbox_expander"] = menu_references["hbx_section"]:create_element({["name"] = "hitbox expander"}, {["toggle"] = {["flag"] = "hitbox_expander", ["default"] = false}})
         menu_references["hitbox_expander_parts"] = menu_references["hbx_section"]:create_element({["name"] = "parts"}, {["dropdown"] = {["flag"] = "hitbox_expander_parts", ["options"] = {"HumanoidRootPart", "Head", "UpperTorso"}, ["default"] = {"HumanoidRootPart"}, ["multi"] = true, ["requires_one"] = true}})
