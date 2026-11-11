@@ -9673,6 +9673,8 @@ do
         signals["on_local_bullet_fired"]:Fire(ray, nil, cframe_new(to), true)
     end)
 
+    local shoot_shape_reported = false
+
     local new = {
         ["__namecall"] = newcclosure(LPH_JIT_MAX(function(self, ...)
             setthreadidentity(4)
@@ -9684,6 +9686,22 @@ do
                     local aim_position = nil
                     local silent_part = nil
                     local is_ragebot_shot = ragebot_firing_shot
+                    local shoot_arg_count = select("#", ...)
+
+                    -- Reported once: the shape of a shot that is not the six
+                    -- arguments this hub was written against. That is the game
+                    -- telling what it sends now.
+                    if shoot_arg_count ~= 6 and not shoot_shape_reported then
+                        shoot_shape_reported = true
+
+                        local kinds = {}
+
+                        for i = 1, shoot_arg_count do
+                            kinds[i] = typeof(args[i])
+                        end
+
+                        spawn(new_notification, "shootgun sends "..tostring(shoot_arg_count).." args: "..table["concat"](kinds, ", "), 6)
+                    end
 
                     -- Locked target: every shot is rewritten onto the ragebot
                     -- target, auto fired or manual, so the crosshair does not
@@ -9729,13 +9747,14 @@ do
                         -- nothing to gain by reporting it from somewhere else.
                         local origin = local_server_position["p"] + vector3_new(0.004, 3.0208, -0.048)
 
-                        -- Direction of travel, muzzle to body. It points from the
-                        -- origin towards the aim point, the same way the game's own
-                        -- shot and the ragebot send it. Reversed, the server traces
-                        -- from the muzzle back through the shooter and away from the
-                        -- target, which lands nothing while still looking like a
-                        -- normal shot on screen.
-                        local dir = (pos-origin)["Unit"]
+                        -- Sixth argument is the surface normal of the hit, not the
+                        -- direction of travel: the game sends the raycast result's
+                        -- Normal there. A normal on the side of the body the shot
+                        -- arrives at faces back towards the shooter, so it is the
+                        -- vector from the hit point to the muzzle. Pointed the
+                        -- other way it describes a hit on the far side of the limb,
+                        -- which a shot from this muzzle cannot have made.
+                        local dir = (origin-pos)["Unit"]
                         local Magnitude = dir["Magnitude"]
                         local part = silent_part or (is_ragebot_shot and args[5]) or (ragebot_target and (ragebot_target[4][resolve_ragebot_hitbox_part(ragebot_target[4])] or ragebot_target[4]["UpperTorso"])) or args[5]
 
@@ -9745,7 +9764,17 @@ do
 
                         emit_local_bullet_tracer(pos)
 
-                        return old_namecall(self, "ShootGun", handle, origin, pos, part, (Magnitude <= 0 or Magnitude ~= Magnitude) and (handle["Position"]-pos)["Unit"] or dir)
+                        -- Rewrite in place and send everything that came in. The
+                        -- call used to be rebuilt with six arguments, which drops
+                        -- anything the game sends after the normal; a shot short
+                        -- of arguments the server expects is one it does not pay
+                        -- out. Only the four fields the rewrite owns are replaced.
+                        args[3] = origin
+                        args[4] = pos
+                        args[5] = part
+                        args[6] = (Magnitude <= 0 or Magnitude ~= Magnitude) and (handle["Position"]-pos)["Unit"] or dir
+
+                        return old_namecall(self, unpack(args, 1, shoot_arg_count < 6 and 6 or shoot_arg_count))
                     end
 
                     local part = args[5]
@@ -9773,6 +9802,11 @@ do
                 elseif packet == "UpdateCursorImage" and flags["unlock_custom_crosshair"] then
                     local value = args[2]
                     inventory["Parent"]["CursorImage"]["Value"] = value
+                    return
+                elseif packet == "CHECKER_4" or packet == "CalculateShootClient" then
+                    -- The game's own client-side checks report through these two.
+                    -- They are swallowed here and never reach the server.
+                    print(packet)
                     return
                 end
             end
