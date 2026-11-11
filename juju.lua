@@ -23139,26 +23139,18 @@ local backtrack_data = {}
         -- waited on and the server keeps it, so the target is given a point to
         -- chase and strafe on that the character is not standing on.
         --
-        -- The camera cannot be left to follow the character back, or it stays on
-        -- the map where the character is and the target is never in the view.
-        -- Place it on the point by hand and carry the offset it already has from
-        -- the character, so it is the same over the shoulder view from the point.
-        -- Only the position is written: the rotation is the player's, so looking
-        -- around still works.
-        local function spoof(hrp, point)
+        -- The camera is not touched. It follows the character, and the character
+        -- is back where it started before the frame ends, so the view stays the
+        -- ordinary one on the map instead of being pulled out to the point.
+        local function desync(hrp, point)
             local old_cframe = hrp["CFrame"]
             local old_velocity = hrp["Velocity"]
-            local old_camera = camera["CFrame"]
 
             hrp["Velocity"] = vector3_zero
             hrp["CFrame"] = point
             render_stepped_wait(render_stepped)
             hrp["CFrame"] = old_cframe
             hrp["Velocity"] = old_velocity
-
-            local moved = camera["CFrame"]
-
-            camera["CFrame"] = cframe_new(point["p"] + (old_camera["p"] - old_cframe["p"])) * (moved - moved["p"])
         end
 
         -- Every way out of the cycle comes through here. The spoof leaves the
@@ -23215,7 +23207,7 @@ local backtrack_data = {}
                     end
                 end
 
-                spoof(hrp, void_point)
+                desync(hrp, void_point)
                 local_server_position = void_point
             else
                 -- Baited: the bait point is the position the target is given to
@@ -23233,7 +23225,7 @@ local backtrack_data = {}
                     end
                 end
 
-                spoof(hrp, bait_position)
+                desync(hrp, bait_position)
                 local_server_position = bait_position
             end
         end)
@@ -23250,13 +23242,6 @@ local backtrack_data = {}
 
             if value then
                 anti_aim[#anti_aim+1] = do_bait
-            else
-                -- Same hand back the other two use: the camera was being written
-                -- every frame, so let the camera module have its pose back.
-                local camera_cframe = camera["CFrame"]
-
-                render_stepped_wait(render_stepped)
-                camera["CFrame"] = camera_cframe
             end
         end)
     end
