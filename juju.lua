@@ -13687,11 +13687,14 @@ end
                 local juju_env = getgenv()["juju"]
                 center_panel_waiting_protection = juju_env and juju_env["waiting_protection"] and true or false
             end
-            -- Void first: a shot cannot land from there, so it must not be
-            -- hidden by anything else. Follow target next: while it is armed the
-            -- character is being moved onto the target, which is the state worth
-            -- showing.
-            local new = (in_void or in_void == nil) and "void" or flags["follow_target"] and ragebot_target and "following" or (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or local_reloading and "reloading" or local_following and "following" or stomping and "stomping" or purchasing and "purchasing" or "unsafe" or local_parts["ForceField"] and "invulnerable"
+            -- The first state that matches is the one shown. Waiting for a
+            -- forcefield comes first, because it explains why the ragebot is
+            -- holding fire and nothing else is worth showing. Then the states that
+            -- move the character, then the void, where no shot can land, then the
+            -- manipulation: it is shown only while a solved shot exists, so a
+            -- target the solver could not reach never claims to be manipulated.
+            -- Reloading, buying and an active forcefield follow, "unsafe" last.
+            local new = (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or flags["follow_target"] and ragebot_target and "following" or local_following and "following" or stomping and "stomping" or (in_void or in_void == nil) and "void" or flags["ragebot_manipulation"] and ragebot_manipulation and "manipulation" or local_reloading and "reloading" or purchasing and "purchasing" or local_parts["ForceField"] and "invulnerable" or "unsafe"
             if old ~= new then
                 text3["Text"] = new
                 tween(text3, {["Transparency"] = 0.35}, linear, out, 0.09)
@@ -21105,6 +21108,17 @@ local backtrack_data = {}
         menu_references["auto_fire_always_fire"] = menu_references["auto_fire_settings"]:create_element({["name"] = "always fire"}, {["toggle"] = {["flag"] = "auto_fire_always_fire", ["default"] = true}})
         menu_references["auto_fire_dont_render"] = menu_references["auto_fire_settings"]:create_element({["name"] = "dont render"}, {["toggle"] = {["flag"] = "auto_fire_dont_render", ["default"] = false}})
 
+        -- The manipulation describes the shot auto fire sends, so it sits in the
+        -- auto fire settings rather than in the general list. "auto calculating"
+        -- on the hitbox re-scores every limb against the aim point instead of
+        -- using the fixed weights, and on the origin it derives the arc height
+        -- from the distance instead of the fixed lifts.
+        menu_references["ragebot_manipulation"] = menu_references["auto_fire_settings"]:create_element({["name"] = "manipulation"}, {["toggle"] = {["flag"] = "ragebot_manipulation", ["default"] = false}})
+        menu_references["ragebot_manipulation_settings"] = menu_references["ragebot_manipulation"]:create_settings()
+        menu_references["ragebot_manipulation_range"] = menu_references["ragebot_manipulation_settings"]:create_element({["name"] = "range"}, {["slider"] = {["flag"] = "ragebot_manipulation_range", ["min"] = 1, ["max"] = 100, ["suffix"] = " studs", ["default"] = 100}})
+        menu_references["ragebot_manipulation_hitbox"] = menu_references["ragebot_manipulation_settings"]:create_element({["name"] = "hitbox"}, {["dropdown"] = {["flag"] = "ragebot_manipulation_hitbox", ["options"] = {"auto", "selected", "auto calculating"}, ["default"] = {"auto"}}})
+        menu_references["ragebot_manipulation_origin"] = menu_references["ragebot_manipulation_settings"]:create_element({["name"] = "origin"}, {["dropdown"] = {["flag"] = "ragebot_manipulation_origin", ["options"] = {"above", "auto", "auto calculating"}, ["default"] = {"above"}}})
+
         menu_references["auto_equip"] = menu_references["general_section"]:create_element({["name"] = "auto equip"}, {["toggle"] = {["flag"] = "auto_equip", ["default"] = false}})
         menu_references["auto_equip_settings"] = menu_references["auto_equip"]:create_settings()
         menu_references["auto_equip_unequip_when"] = menu_references["auto_equip_settings"]:create_element({["name"] = "unequip when"}, {["dropdown"] = {["flag"] = "auto_equip_unequip_when", ["default"] = {"no target"}, ["options"] = {"no target"}, ["multi"] = true}})
@@ -21121,11 +21135,6 @@ local backtrack_data = {}
         menu_references["prediction_settings"] = menu_references["prediction"]:create_settings()
         menu_references["resolver_rate"] = menu_references["prediction_settings"]:create_element({["name"] = "resolver rate"}, {["slider"] = {["flag"] = "resolver_rate", ["min"] = 0, ["suffix"] = "s", ["max"] = 0.1, ["default"] = 0.037, ["decimals"] = 4}})
         menu_references["shot_delay"] = menu_references["general_section"]:create_element({["name"] = "shot delay"}, {["slider"] = {["flag"] = "shot_delay", ["min"] = 0, ["max"] = 1000, ["suffix"] = "ms", ["default"] = 0, ["min_text"] = "none"}})
-        menu_references["ragebot_manipulation"] = menu_references["general_section"]:create_element({["name"] = "manipulation"}, {["toggle"] = {["flag"] = "ragebot_manipulation", ["default"] = false}})
-        menu_references["ragebot_manipulation_settings"] = menu_references["ragebot_manipulation"]:create_settings()
-        menu_references["ragebot_manipulation_range"] = menu_references["ragebot_manipulation_settings"]:create_element({["name"] = "range"}, {["slider"] = {["flag"] = "ragebot_manipulation_range", ["min"] = 1, ["max"] = 100, ["suffix"] = " studs", ["default"] = 15}})
-        menu_references["ragebot_manipulation_hitbox"] = menu_references["ragebot_manipulation_settings"]:create_element({["name"] = "hitbox"}, {["dropdown"] = {["flag"] = "ragebot_manipulation_hitbox", ["options"] = {"auto", "selected"}, ["default"] = {"auto"}}})
-        menu_references["ragebot_manipulation_origin"] = menu_references["ragebot_manipulation_settings"]:create_element({["name"] = "origin"}, {["dropdown"] = {["flag"] = "ragebot_manipulation_origin", ["options"] = {"above", "auto"}, ["default"] = {"above"}}})
         menu_references["ragebot_field_of_view"] = menu_references["general_section"]:create_element({["name"] = "field of view"}, {["slider"] = {["flag"] = "ragebot_field_of_view", ["min"] = 5, ["max"] = 180, ["suffix"] = "°", ["default"] = 180, ["max_text"] = "full"}})
         menu_references["fire_cooldown"] = menu_references["general_section"]:create_element({["name"] = "fire cooldown"}, {["slider"] = {["flag"] = "fire_cooldown", ["min"] = 0, ["max"] = 300, ["suffix"] = "ms", ["default"] = 5, ["min_text"] = "none"}})
         -- How far away the ragebot will still pull the trigger. 0 hands the
@@ -21393,6 +21402,24 @@ local backtrack_data = {}
             {"LeftUpperLeg", 1.2},
             {"RightUpperLeg", 1.2}
         },
+        -- The wider list "auto calculating" scores against the live aim point, so
+        -- it can reach the arms and the lower legs the fixed list leaves out.
+        ["calculated_hitboxes"] = {
+            {"Head", 4},
+            {"UpperTorso", 3},
+            {"LowerTorso", 2.4},
+            {"HumanoidRootPart", 2.2},
+            {"LeftUpperArm", 1.6},
+            {"RightUpperArm", 1.6},
+            {"LeftLowerArm", 1.4},
+            {"RightLowerArm", 1.4},
+            {"LeftHand", 1.3},
+            {"RightHand", 1.3},
+            {"LeftUpperLeg", 1.2},
+            {"RightUpperLeg", 1.2},
+            {"LeftLowerLeg", 1},
+            {"RightLowerLeg", 1}
+        },
         ["radii"] = {0.25, 0.5, 0.75, 1},
         ["arc_radii"] = {0.5, 0.75, 0.25, 1},
         ["lifts"] = {1, 0.7, 0.4}
@@ -21452,18 +21479,28 @@ local backtrack_data = {}
         local direction = aim_position - base
         local distance = direction["Magnitude"]
         local unit = distance > 0.001 and direction["Unit"] or vector3_new(0, 0, 1)
-        local arc = flags["ragebot_manipulation_origin"][1] == "above"
+        local origin_mode = flags["ragebot_manipulation_origin"][1]
+        local hitbox_mode = flags["ragebot_manipulation_hitbox"][1]
+        local calculating = origin_mode == "auto calculating"
+        local arc = origin_mode ~= "auto"
         local fallback_penalty = arc and 3 or 0
         local candidates = {}
 
-        -- The arc: up and toward the target, capped at the configured range.
+        -- The arc: up and toward the target, capped at the configured range. The
+        -- fixed lifts give the same shape at any distance; "auto calculating"
+        -- derives both the reach and the height from the distance to the target,
+        -- so a far shot gets a taller, flatter arc.
         if arc then
             local flat = vector3_new(direction["X"], 0, direction["Z"])
-            local flat_unit = flat["Magnitude"] > 0.001 and flat["Unit"] or vector3_new(0, 0, 1)
+            local flat_distance = flat["Magnitude"]
+            local flat_unit = flat_distance > 0.001 and flat["Unit"] or vector3_new(0, 0, 1)
+            local lifts = calculating and {distance * 0.8, distance * 0.5, distance * 0.25} or manipulation["lifts"]
 
-            for _, lift in manipulation["lifts"] do
+            for _, lift in lifts do
                 for _, factor in manipulation["arc_radii"] do
-                    local offset = flat_unit * (range * factor * 0.8) + vector3_new(0, range * lift, 0)
+                    local reach = calculating and flat_distance * factor or range * factor * 0.8
+                    local height = calculating and lift or range * lift
+                    local offset = flat_unit * reach + vector3_new(0, height, 0)
                     local length = offset["Magnitude"]
 
                     if length > range then
@@ -21495,13 +21532,14 @@ local backtrack_data = {}
             end
         end
 
-        local selected_only = flags["ragebot_manipulation_hitbox"][1] == "selected"
+        local selected_only = hitbox_mode == "selected"
+        local re_scoring = hitbox_mode == "auto calculating"
         local list = {}
 
         if selected_only then
             list[1] = {hitbox, 4}
         else
-            for _, entry in manipulation["hitboxes"] do
+            for _, entry in manipulation[re_scoring and "calculated_hitboxes" or "hitboxes"] do
                 local part = parts[entry[1]]
 
                 if part then
@@ -21521,7 +21559,11 @@ local backtrack_data = {}
 
             for _, entry in list do
                 local part = entry[1]
-                local score = entry[2] - (radius / range) * 1.5 - candidate[3]
+
+                -- "auto" scores the origin by how far it had to move; "auto
+                -- calculating" scores the limb by how far it is from the aim, so
+                -- the limb the shot is already going past wins.
+                local score = entry[2] - ((re_scoring and (part["Position"] - aim_position)["Magnitude"] or radius) / range) * 1.5 - candidate[3]
 
                 if score > best_score then
                     local point = aim_position + (part["Position"] - hitbox_position)
