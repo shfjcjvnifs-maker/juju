@@ -7842,6 +7842,7 @@ local menu = {
             local main = menu.create_group("main")
                 main:create_tab("ragebot")
                 main:create_tab("legitbot")
+                main:create_tab("bullets")
                 main:create_tab("neckgrab")
 
             local visuals = menu.create_group("visuals")
@@ -8864,6 +8865,10 @@ local get_bullet_result = nil
 local purchase_item = nil
 local force_aim_position = nil
 
+-- One table is the whole top-level cost of the bullet manipulation: the chunk is
+-- close to Luau's local ceiling, so everything else it owns lives in do-blocks.
+local bm_api = {}
+
 -- > ( client stuff )
 
 local local_server_position = cframe_new()
@@ -9449,7 +9454,7 @@ do
 
     -- >> ( event setup )
 
-    get_bullet_result = LPH_JIT_MAX(function(player, part, old_server_position, aim_position, target_velocity, did_defensive)
+    get_bullet_result = LPH_JIT_MAX(function(player, part, old_server_position, aim_position, target_velocity, did_defensive, manipulation)
         setthreadidentity(8)
 
         local data = player_data[player]
@@ -9469,6 +9474,12 @@ do
             older_data = data
 
             local message = old_server_position and part and aim_position and " (pred miss: "..tostring(round((aim_position-part["Position"])["Magnitude"], 1))..") (velocity: "..tostring(round((target_velocity or vector3_zero)["Magnitude"], 1))..(did_defensive and ") (defensive: true)" or ") (defensive: false)")
+
+            -- How far the shot's reported origin sat from the character. It is the
+            -- number the server decides on, so it belongs in the log line.
+            if manipulation and message then
+                message = message.." (manipulated: "..tostring(round(manipulation["offset"], 1)).." studs)"
+            end
 
             if shot_count == old_count then
                 return signals["on_local_bullet_failed"]:Fire(player, part, not local_parts["Head"] and "death" or "unknown"..(message or ""), shot_count)
@@ -9677,16 +9688,37 @@ do
                         -- the shot as a miss.
                         local pos = aim_position + vector3_new(math_random(-3,3)/100, math_random(-3,3)/100, 0)
 
-                        -- Reported origin. This is the character's own muzzle, the
-                        -- same one the ragebot's shots leave from, and it is the
-                        -- only origin this hook ever sends. A shot reported from
-                        -- anywhere else - planted above the character, or moved out
-                        -- to the body to skip the distance to it - is a shot the
-                        -- server has no reason to accept, and it is dropped with no
-                        -- damage and nothing shown on screen. A target past the
-                        -- weapon's own range is out of reach either way, so there is
-                        -- nothing to gain by reporting it from somewhere else.
+                        -- Reported origin. On its own this hook sends the muzzle
+                        -- and nothing else, the same origin the ragebot's shots
+                        -- leave from. A shot reported from anywhere else - planted
+                        -- above the character, or moved out to the body to skip the
+                        -- distance to it - is a shot the server has no reason to
+                        -- accept, and it is dropped with no damage and nothing shown
+                        -- on screen. The one thing that moves it is the bullet
+                        -- manipulation below, which is why that feature carries its
+                        -- own log line and its own hit rate.
                         local origin = local_server_position["p"] + vector3_new(0.004, 3.0208, -0.048)
+
+                        local part = (is_ragebot_shot and args[5]) or (ragebot_target and (ragebot_target[4][resolve_ragebot_hitbox_part(ragebot_target[4])] or ragebot_target[4]["UpperTorso"])) or args[5]
+                        local shot_meta = nil
+                        local manipulated = false
+
+                        -- Manual shots go through the same solver as the ragebot's.
+                        -- A target still under spawn protection is left alone: the
+                        -- damage would be thrown away, so there is nothing to solve
+                        -- for.
+                        -- A shot the ragebot fired at a forced or defensive aim point
+                        -- is synthetic on both paths, so the hook skips it here the
+                        -- same way the ragebot's own call does.
+                        local synthetic_aim = is_ragebot_shot and (ragebot_aim_defensive or ragebot_force_position ~= nil) and true or false
+
+                        if flags["bullet_manipulation"] and part and ragebot_target and not synthetic_aim and not (ragebot_target[4]["ForceField"] or ragebot_target[4]["FORCEFIELD"]) then
+                            local solved_origin, solved_pos, meta = bm_api["solve"](ragebot_target, part, local_server_position["p"], aim_position, local_gun or 250, synthetic_aim)
+
+                            if solved_origin then
+                                origin, pos, shot_meta, manipulated = solved_origin, solved_pos, meta, true
+                            end
+                        end
 
                         -- Sixth argument is the surface normal of the hit, not the
                         -- direction of travel: the game sends the raycast result's
@@ -9697,10 +9729,15 @@ do
                         -- which a shot from this muzzle cannot have made.
                         local dir = (origin-pos)["Unit"]
                         local Magnitude = dir["Magnitude"]
-                        local part = (is_ragebot_shot and args[5]) or (ragebot_target and (ragebot_target[4][resolve_ragebot_hitbox_part(ragebot_target[4])] or ragebot_target[4]["UpperTorso"])) or args[5]
 
                         if part and ragebot_target then
-                            spawn(get_bullet_result, ragebot_target[2], part, local_server_position["p"], aim_position, ragebot_aim_velocity, ragebot_aim_defensive)
+                            spawn(get_bullet_result, ragebot_target[2], part, local_server_position["p"], aim_position, ragebot_aim_velocity, ragebot_aim_defensive, shot_meta)
+                        end
+
+                        -- The ragebot's own shots are registered where they are fired;
+                        -- this covers the manual ones.
+                        if manipulated and not is_ragebot_shot then
+                            bm_api["register_shot"](ragebot_target[2], shot_meta)
                         end
 
                         emit_local_bullet_tracer(pos)
@@ -9747,7 +9784,6 @@ do
                 elseif packet == "CHECKER_4" or packet == "CalculateShootClient" then
                     -- The game's own client-side checks report through these two.
                     -- They are swallowed here and never reach the server.
-                    print(packet)
                     return
                 end
             end
@@ -16294,6 +16330,8 @@ end
                 local new_model = clone(character)
                 character["Archivable"] = false
                 new_model["Name"] = "\0"
+
+                bm_api["normalize_clone"](new_model, character)
                 local children = get_children(new_model)
 
                 for i = 1, #children do
@@ -16353,6 +16391,8 @@ end
                 local new_model = clone(character)
                 character["Archivable"] = false
                 new_model["Name"] = "\0"
+
+                bm_api["normalize_clone"](new_model, character)
                 local children = get_children(new_model)
 
                 for i = 1, #children do
@@ -18238,7 +18278,7 @@ end
                 ["Color3"] = color,
                 ["ZIndex"] = chams_z_index,
                 ["AlwaysOnTop"] = flags["chams_behind_walls"] ~= false,
-                ["Size"] = character_part and character_part["Size"] + chams_offset or chams_offset,
+                ["Size"] = character_part and bm_api["real_size"](character_part) + chams_offset or chams_offset,
                 ["Parent"] = core_gui
             })
         end
@@ -18257,7 +18297,7 @@ end
             local local_part = parts[body_parts[i]]
             if cham then
                 cham["Adornee"] = local_part
-                cham["Size"] = local_part and local_part["Size"] + chams_offset or chams_offset
+                cham["Size"] = local_part and bm_api["real_size"](local_part) + chams_offset or chams_offset
             end
         end
     end)
@@ -21255,6 +21295,36 @@ local backtrack_data = {}
         menu_references["rapid_fire_settings"] = menu_references["rapid_fire"]:create_settings()
         menu_references["rapid_fire_rate"] = menu_references["rapid_fire_settings"]:create_element({["name"] = "rate"}, {["slider"] = {["flag"] = "rapid_fire_rate", ["min"] = 1, ["max"] = 100, ["default"] = 80, ["suffix"] = "/s"}})
         menu_references["rapid_fire_visual"] = menu_references["rapid_fire_settings"]:create_element({["name"] = "visual"}, {["toggle"] = {["flag"] = "rapid_fire_visual", ["default"] = true}})
+
+        -- Bullet manipulation and the hitbox expander share a tab. The expander is
+        -- what gives the solver a body worth aiming at through a wall, so the two
+        -- are configured side by side.
+        menu_references["bm_section"] = menu["groups"]["main"]:create_section("bullets", "bullet manipulation", 1, 1)
+        menu_references["hbx_section"] = menu["groups"]["main"]:create_section("bullets", "hitbox expander", 2, 0.55, 0)
+        menu_references["bm_debug_section"] = menu["groups"]["main"]:create_section("bullets", "debug", 2, 0.45, 0.55)
+
+        menu_references["bullet_manipulation"] = menu_references["bm_section"]:create_element({["name"] = "bullet manipulation"}, {["toggle"] = {["flag"] = "bullet_manipulation", ["default"] = false}})
+        menu_references["bm_mode"] = menu_references["bm_section"]:create_element({["name"] = "mode"}, {["dropdown"] = {["flag"] = "bm_mode", ["options"] = {"arg"}, ["default"] = {"arg"}, ["requires_one"] = true}})
+        menu_references["bm_max_offset"] = menu_references["bm_section"]:create_element({["name"] = "max offset"}, {["slider"] = {["flag"] = "bm_max_offset", ["min"] = 1, ["max"] = 250, ["default"] = 40, ["suffix"] = " studs"}})
+        menu_references["bm_standoff"] = menu_references["bm_section"]:create_element({["name"] = "standoff"}, {["slider"] = {["flag"] = "bm_standoff", ["min"] = 1, ["max"] = 20, ["default"] = 3, ["suffix"] = " studs"}})
+        menu_references["bm_candidates"] = menu_references["bm_section"]:create_element({["name"] = "candidates"}, {["slider"] = {["flag"] = "bm_candidates", ["min"] = 8, ["max"] = 96, ["default"] = 32}})
+        menu_references["bm_aim_mode"] = menu_references["bm_section"]:create_element({["name"] = "aim mode"}, {["dropdown"] = {["flag"] = "bm_aim_mode", ["options"] = {"entry point", "part center"}, ["default"] = {"entry point"}, ["requires_one"] = true}})
+        menu_references["bm_prefer"] = menu_references["bm_section"]:create_element({["name"] = "prefer"}, {["dropdown"] = {["flag"] = "bm_prefer", ["options"] = {"closest to me", "over wall", "random"}, ["default"] = {"closest to me"}, ["requires_one"] = true}})
+        menu_references["bm_only_when_blocked"] = menu_references["bm_section"]:create_element({["name"] = "only when blocked"}, {["toggle"] = {["flag"] = "bm_only_when_blocked", ["default"] = true}})
+        menu_references["bm_require_path"] = menu_references["bm_section"]:create_element({["name"] = "require path"}, {["toggle"] = {["flag"] = "bm_require_path", ["default"] = false}})
+        menu_references["bm_extend_range"] = menu_references["bm_section"]:create_element({["name"] = "extend range"}, {["toggle"] = {["flag"] = "bm_extend_range", ["default"] = false}})
+        menu_references["bm_respect_cancollide"] = menu_references["bm_section"]:create_element({["name"] = "respect cancollide"}, {["toggle"] = {["flag"] = "bm_respect_cancollide", ["default"] = true}})
+        menu_references["bm_players_block"] = menu_references["bm_section"]:create_element({["name"] = "players block"}, {["toggle"] = {["flag"] = "bm_players_block", ["default"] = false}})
+        menu_references["bm_adaptive"] = menu_references["bm_section"]:create_element({["name"] = "adaptive offset"}, {["toggle"] = {["flag"] = "bm_adaptive", ["default"] = true}})
+        menu_references["bm_notify"] = menu_references["bm_section"]:create_element({["name"] = "notify"}, {["toggle"] = {["flag"] = "bm_notify", ["default"] = false}})
+
+        menu_references["bm_debug_draw"] = menu_references["bm_debug_section"]:create_element({["name"] = "debug draw"}, {["toggle"] = {["flag"] = "bm_debug_draw", ["default"] = false}, ["colorpicker"] = {["color_flag"] = "bm_debug_color", ["default_color"] = color3_fromrgb(255, 64, 64)}})
+
+        menu_references["hitbox_expander"] = menu_references["hbx_section"]:create_element({["name"] = "hitbox expander"}, {["toggle"] = {["flag"] = "hitbox_expander", ["default"] = false}})
+        menu_references["hitbox_expander_parts"] = menu_references["hbx_section"]:create_element({["name"] = "parts"}, {["dropdown"] = {["flag"] = "hitbox_expander_parts", ["options"] = {"HumanoidRootPart", "Head", "UpperTorso"}, ["default"] = {"HumanoidRootPart"}, ["multi"] = true, ["requires_one"] = true}})
+        menu_references["hitbox_expander_size"] = menu_references["hbx_section"]:create_element({["name"] = "size"}, {["slider"] = {["flag"] = "hitbox_expander_size", ["min"] = 2, ["max"] = 40, ["default"] = 8, ["suffix"] = " studs"}})
+        menu_references["hitbox_expander_scope"] = menu_references["hbx_section"]:create_element({["name"] = "scope"}, {["dropdown"] = {["flag"] = "hitbox_expander_scope", ["options"] = {"target", "all"}, ["default"] = {"target"}, ["requires_one"] = true}})
+        menu_references["hitbox_expander_hide_visual"] = menu_references["hbx_section"]:create_element({["name"] = "hide visual"}, {["toggle"] = {["flag"] = "hitbox_expander_hide_visual", ["default"] = true}})
         --[[
         menu_references["control"] = menu_references["utility_section"]:create_element({["name"] = "control"}, {["toggle"] = {["flag"] = "control", ["default"] = false}})
         menu_references["control_settings"] = menu_references["control"]:create_settings()
@@ -21845,6 +21915,570 @@ local backtrack_data = {}
     params["FilterType"] = Enum["RaycastFilterType"]["Exclude"]
     params["FilterDescendantsInstances"] = {}
 
+    -- >> ( bullet manipulation )
+
+    -- The shot this hub reports is the shot the character can make: origin at its
+    -- own muzzle, hit point on the target. That is the shot a wall refuses. The
+    -- manipulation keeps the aim where it was and moves the reporting instead: the
+    -- origin travels to a point that can see the limb, and the hit position becomes
+    -- the entry of the ray into that limb's box. Nothing about the character moves,
+    -- so this stays a client-side rewrite of one remote call.
+    --
+    -- An accepted shot looks exactly like a normal one to the server, so the only
+    -- honest signal that it worked is damage. The adaptive controller below keeps
+    -- its hit rate per offset bucket and pulls the cap down when a bucket stops
+    -- paying, instead of trusting the geometry alone.
+    do
+
+        local bm_raycast = workspace["Raycast"]
+        local bm_directions = {}
+        local bm_shells = {1, 1.7, 2.6}
+        local bm_axes = {"X", "Y", "Z"}
+        local bm_disabled_until = 0
+        local bm_last_notify = 0
+        local bm_stats = {}
+        local bm_pending = {}
+        local bm_players_folder = find_first_child(workspace, "Players")
+        local bm_cache = {
+            ["target"] = nil,
+            ["time"] = 0,
+            ["real"] = vector3_zero,
+            ["aim"] = vector3_zero,
+            ["origin"] = nil,
+            ["pos"] = nil,
+            ["meta"] = nil
+        }
+
+        local bm_params = RaycastParams["new"]()
+        bm_params["FilterType"] = Enum["RaycastFilterType"]["Exclude"]
+        bm_params["IgnoreWater"] = true
+
+        for x = -1, 1 do
+            for y = -1, 1 do
+                for z = -1, 1 do
+                    if x ~= 0 or y ~= 0 or z ~= 0 then
+                        bm_directions[#bm_directions + 1] = vector3_new(x, y, z)["Unit"]
+                    end
+                end
+            end
+        end
+
+        -- Entry point of a segment into a box. The box is the limb's own size and
+        -- orientation, moved to the aim point, so the test describes the hitbox the
+        -- server is being told about rather than wherever the limb happens to be.
+        local bm_ray_box_entry = LPH_NO_VIRTUALIZE(function(from, to, box_cframe, size)
+            local o = box_cframe:PointToObjectSpace(from)
+            local d = box_cframe:VectorToObjectSpace(to - from)
+            local half = size * 0.5
+            local t_min, t_max = 0, 1
+
+            for i = 1, 3 do
+                local axis = bm_axes[i]
+                local oa, da, ha = o[axis], d[axis], half[axis]
+
+                if abs(da) < 1e-6 then
+                    if oa < -ha or oa > ha then
+                        return nil
+                    end
+                else
+                    local t1 = (-ha - oa) / da
+                    local t2 = (ha - oa) / da
+
+                    if t1 > t2 then
+                        t1, t2 = t2, t1
+                    end
+
+                    if t1 > t_min then
+                        t_min = t1
+                    end
+
+                    if t2 < t_max then
+                        t_max = t2
+                    end
+
+                    if t_min > t_max then
+                        return nil
+                    end
+                end
+            end
+
+            return from + (to - from) * t_min
+        end)
+
+        local bm_build_filter = LPH_NO_VIRTUALIZE(function(target_character)
+            local filter = {}
+
+            if local_character then
+                filter[#filter + 1] = local_character
+            end
+
+            if target_character then
+                filter[#filter + 1] = target_character
+            end
+
+            if ignored then
+                filter[#filter + 1] = ignored
+            end
+
+            if bush then
+                filter[#filter + 1] = bush
+            end
+
+            if vehicles then
+                filter[#filter + 1] = vehicles
+            end
+
+            if not flags["bm_players_block"] and bm_players_folder then
+                filter[#filter + 1] = bm_players_folder
+            end
+
+            for _, data in backtrack_data do
+                if data[1] then
+                    filter[#filter + 1] = data[1]
+                end
+            end
+
+            return filter
+        end)
+
+        local bm_bucket = function(offset)
+            return math["min"](floor(offset / 10), 24)
+        end
+
+        -- Adaptive cap. A bucket below a third over enough samples is a distance the
+        -- server is not paying for, so the cap drops to it. One bucket above is
+        -- retried once in a while, so a cap that fell because of a bad moment can
+        -- climb back.
+        local bm_allowed_offset = function(configured)
+            if not flags["bm_adaptive"] then
+                return configured
+            end
+
+            for bucket = 0, 24 do
+                local stat = bm_stats[bucket]
+
+                if stat and stat["total"] >= 6 and stat["ok"] / stat["total"] < 0.35 then
+                    local cap = math["max"](bucket * 10, 2)
+
+                    if math_random() < 0.1 then
+                        cap += 10
+                    end
+
+                    return math["min"](cap, configured)
+                end
+            end
+
+            return configured
+        end
+
+        local bm_record = function(id, ok)
+            local stat = bm_stats[id["bucket"]]
+
+            if not stat then
+                stat = {["ok"] = 0, ["total"] = 0}
+                bm_stats[id["bucket"]] = stat
+            end
+
+            stat["ok"] = stat["ok"] * 0.9 + (ok and 1 or 0)
+            stat["total"] = stat["total"] * 0.9 + 1
+        end
+
+        local bm_solve_raw = LPH_JIT_MAX(function(target, hitbox, real_origin, aim_position, range, is_synthetic)
+            -- A synthetic aim point (spam resolver, forced position) is not where the
+            -- limb is, and a vehicle part is not a body: both would produce a shot
+            -- that describes nothing.
+            if not hitbox or is_synthetic or not hitbox["IsDescendantOf"](hitbox, target[3]) then
+                return nil
+            end
+
+            local now = clock()
+
+            if bm_cache["target"] == target and now - bm_cache["time"] < 0.05 and (bm_cache["real"] - real_origin)["Magnitude"] < 0.5 and (bm_cache["aim"] - aim_position)["Magnitude"] < 0.5 then
+                return bm_cache["origin"], bm_cache["pos"], bm_cache["meta"]
+            end
+
+            bm_cache["target"], bm_cache["time"], bm_cache["real"], bm_cache["aim"] = target, now, real_origin, aim_position
+            bm_cache["origin"], bm_cache["pos"], bm_cache["meta"] = nil, nil, nil
+
+            bm_params["FilterDescendantsInstances"] = bm_build_filter(target[3])
+            bm_params["RespectCanCollide"] = flags["bm_respect_cancollide"]
+
+            -- Nothing to solve while the muzzle already sees the target: the normal
+            -- shot is the better shot.
+            if flags["bm_only_when_blocked"] and not bm_raycast(workspace, real_origin, aim_position - real_origin, bm_params) then
+                return nil
+            end
+
+            local size = hitbox["Size"]
+            local reach = size["Magnitude"] * 0.5 + flags["bm_standoff"]
+            local max_offset = bm_allowed_offset(flags["bm_max_offset"])
+            local prefer = flags["bm_prefer"][1]
+            local use_entry = flags["bm_aim_mode"][1] == "entry point"
+            local box_cframe = hitbox["CFrame"] - hitbox["Position"] + aim_position
+            local candidates = {}
+
+            for s = 1, #bm_shells do
+                for i = 1, #bm_directions do
+                    local point = aim_position + bm_directions[i] * (reach * bm_shells[s])
+                    local offset = (point - real_origin)["Magnitude"]
+
+                    if offset <= max_offset and (point - aim_position)["Magnitude"] <= range - 1 then
+                        candidates[#candidates + 1] = {point, prefer == "over wall" and -point["Y"] or prefer == "random" and math_random() or offset, offset}
+                    end
+                end
+            end
+
+            table["sort"](candidates, function(a, b)
+                return a[2] < b[2]
+            end)
+
+            for i = 1, math["min"](#candidates, flags["bm_candidates"]) do
+                local point = candidates[i][1]
+                local entry = use_entry and bm_ray_box_entry(point, aim_position, box_cframe, size) or aim_position
+
+                if entry and not bm_raycast(workspace, point, entry - point, bm_params) then
+                    if not flags["bm_require_path"] or not bm_raycast(workspace, real_origin, point - real_origin, bm_params) then
+                        local meta = {["offset"] = candidates[i][3], ["tested"] = i, ["real_origin"] = real_origin, ["origin"] = point, ["pos"] = entry}
+
+                        bm_cache["origin"], bm_cache["pos"], bm_cache["meta"] = point, entry, meta
+
+                        return point, entry, meta
+                    end
+                end
+            end
+
+            return nil
+        end)
+
+        -- Safe wrapper. The solve runs on the shot's own thread, so a failure there
+        -- costs a shot; it must not cost the hub. Any error parks the feature for
+        -- five seconds and the ragebot keeps firing the normal shot.
+        bm_api["solve"] = function(target, hitbox, real_origin, aim_position, range, is_synthetic)
+            if clock() < bm_disabled_until or not target or not aim_position then
+                return nil
+            end
+
+            local ok, origin, pos, meta = pcall(bm_solve_raw, target, hitbox, real_origin, aim_position, range, is_synthetic)
+
+            if not ok then
+                bm_disabled_until = clock() + 5
+                new_notification("bullet manipulation disabled for 5s (solver error)", 3)
+
+                return nil
+            end
+
+            return origin, pos, meta
+        end
+
+        -- A manipulated shot is only known to have worked when the target's health
+        -- moves, and the hub's own failure signal misses most misses. So a shot is
+        -- recorded as a miss by a timeout instead: confirmed damage clears it first,
+        -- and whatever is left when the timeout lands counts against the bucket.
+        bm_api["register_shot"] = function(player, meta)
+            if not meta then
+                return
+            end
+
+            local now = clock()
+
+            bm_api["last"] = {["origin"] = meta["origin"], ["pos"] = meta["pos"], ["real_origin"] = meta["real_origin"], ["time"] = now}
+
+            if flags["bm_notify"] and now - bm_last_notify > 2 then
+                bm_last_notify = now
+                new_notification("manipulated shot: "..tostring(round(meta["offset"], 1)).." studs", 3)
+            end
+
+            local id = {["time"] = now, ["bucket"] = bm_bucket(meta["offset"])}
+
+            bm_pending[player] = id
+
+            delay(0.25 + local_ping/1000 + 0.2, function()
+                if bm_pending[player] == id then
+                    bm_pending[player] = nil
+                    bm_record(id, false)
+                end
+            end)
+        end
+
+        create_connection(signals["on_local_bullet_confirmed"], function(player)
+            local id = bm_pending[player]
+
+            if id then
+                bm_pending[player] = nil
+                bm_record(id, true)
+            end
+        end)
+    end
+
+    -- >> ( hitbox expander )
+
+    -- The size is written on the client only, so this is a bigger target for the
+    -- hub's own rays and for the solver above, not a bigger target for the server.
+    -- Every write is remembered so that turning the toggle off puts the character
+    -- back exactly as it was, whatever the game does to those parts in the meantime.
+    do
+
+        local hbx_registry = setmetatable({}, {["__mode"] = "k"})
+        local hbx_parts = {"HumanoidRootPart"}
+        local hbx_tick = clock()
+
+        local hbx_restore_part = function(part)
+            local saved = hbx_registry[part]
+
+            if saved then
+                hbx_registry[part] = nil
+
+                pcall(function()
+                    part["Size"] = saved["size"]
+                    part["CanCollide"] = saved["can_collide"]
+                    part["Massless"] = saved["massless"]
+                    part["Transparency"] = saved["transparency"]
+                end)
+            end
+        end
+
+        local hbx_apply_part = function(part)
+            if not hbx_registry[part] then
+                hbx_registry[part] = {
+                    ["size"] = part["Size"],
+                    ["can_collide"] = part["CanCollide"],
+                    ["massless"] = part["Massless"],
+                    ["transparency"] = part["Transparency"]
+                }
+            end
+
+            local size = flags["hitbox_expander_size"]
+            local expanded = vector3_new(size, size, size)
+
+            pcall(function()
+                part["CanCollide"] = false
+                part["Massless"] = true
+
+                if part["Size"] ~= expanded then
+                    part["Size"] = expanded
+                end
+
+                if flags["hitbox_expander_hide_visual"] then
+                    part["Transparency"] = 1
+                end
+            end)
+        end
+
+        local hbx_collect = function(data, wanted)
+            if data and not data[7] then
+                local parts = data[4]
+
+                for i = 1, #hbx_parts do
+                    local part = parts[hbx_parts[i]]
+
+                    if part then
+                        wanted[part] = true
+                    end
+                end
+            end
+        end
+
+        -- Re-applied on a quarter second: the game hands the character new parts on
+        -- respawn and re-writes sizes of its own, and a part restored behind the
+        -- expander's back is a target that quietly shrank.
+        local do_hitbox_expander = LPH_NO_VIRTUALIZE(function(dt)
+            local tick = clock()
+
+            if tick - hbx_tick < 0.25 then
+                return
+            end
+
+            hbx_tick = tick
+
+            local wanted = {}
+
+            if flags["hitbox_expander_scope"][1] == "all" then
+                for player, data in player_data do
+                    hbx_collect(data, wanted)
+                end
+            else
+                hbx_collect(ragebot_target, wanted)
+            end
+
+            for part in hbx_registry do
+                if not wanted[part] or not part["Parent"] then
+                    hbx_restore_part(part)
+                end
+            end
+
+            for part in wanted do
+                hbx_apply_part(part)
+            end
+        end)
+
+        bm_api["real_size"] = function(part)
+            local saved = hbx_registry[part]
+
+            return saved and saved["size"] or part["Size"]
+        end
+
+        -- A cloned character copies the expanded sizes onto the clone; the chams and
+        -- the backtrack models measure those parts, so the real ones go back first.
+        bm_api["normalize_clone"] = function(clone_model, source_character)
+            if not clone_model or not source_character then
+                return
+            end
+
+            for _, child in get_children(clone_model) do
+                local source = find_first_child(source_character, child["Name"])
+                local saved = source and hbx_registry[source]
+
+                if saved and child["IsA"](child, "BasePart") then
+                    pcall(function()
+                        child["Size"] = saved["size"]
+                        child["Transparency"] = saved["transparency"]
+                    end)
+                end
+            end
+        end
+
+        create_connection(menu_references["hitbox_expander"]["on_toggle_change"], function(value)
+            for i = 1, #heartbeat do
+                if heartbeat[i] == do_hitbox_expander then
+                    remove(heartbeat, i)
+                    break
+                end
+            end
+
+            for part in hbx_registry do
+                hbx_restore_part(part)
+            end
+
+            if value then
+                hbx_tick = 0
+                heartbeat[#heartbeat + 1] = do_hitbox_expander
+            end
+        end)
+
+        create_connection(menu_references["hitbox_expander_parts"]["on_dropdown_change"], function(value)
+            hbx_parts = value
+            hbx_tick = 0
+        end)
+
+        create_connection(signals["on_ragebot_target_changed"], function()
+            hbx_tick = 0
+        end)
+    end
+
+    -- >> ( bullet manipulation debug draw )
+
+    do
+        local bm_drawings = nil
+
+        local bm_draw_destroy = function()
+            if bm_drawings then
+                for i = 1, #bm_drawings do
+                    bm_drawings[i]:Destroy()
+                end
+
+                bm_drawings = nil
+            end
+        end
+
+        -- Three points and the two legs between them: where the character is, where
+        -- the shot claims to come from, and where it claims to have landed. The
+        -- file's drawing proxy has no square, so a small filled circle stands in for
+        -- one.
+        local bm_draw_create = function()
+            bm_drawings = {}
+
+            for i = 1, 3 do
+                bm_drawings[i] = create_real_drawing("Circle", {
+                    ["Radius"] = 3,
+                    ["Thickness"] = 2,
+                    ["Filled"] = true,
+                    ["Transparency"] = 0.25,
+                    ["ZIndex"] = 12,
+                    ["Visible"] = false
+                })
+            end
+
+            for i = 4, 5 do
+                bm_drawings[i] = create_real_drawing("Line", {
+                    ["Thickness"] = 1,
+                    ["Transparency"] = 0.6,
+                    ["ZIndex"] = 12,
+                    ["Visible"] = false
+                })
+            end
+        end
+
+        local do_bm_debug_draw = LPH_NO_VIRTUALIZE(function()
+            if not bm_drawings then
+                return
+            end
+
+            local last = bm_api["last"]
+
+            if not last or clock() - last["time"] > 0.5 then
+                for i = 1, #bm_drawings do
+                    bm_drawings[i]["Visible"] = false
+                end
+
+                return
+            end
+
+            local color = flags["bm_debug_color"] or color3_fromrgb(255, 64, 64)
+            local world = {last["real_origin"], last["origin"], last["pos"]}
+            local screen = {}
+
+            for i = 1, 3 do
+                local position, on_screen = world_to_viewport_point(camera, world[i])
+                screen[i] = on_screen and vector2_new(position["X"], position["Y"]) or nil
+            end
+
+            for i = 1, 3 do
+                local point = bm_drawings[i]
+
+                if screen[i] then
+                    point["Position"] = screen[i]
+                    point["Color"] = color
+                    point["Visible"] = true
+                else
+                    point["Visible"] = false
+                end
+            end
+
+            for i = 4, 5 do
+                local from, to = screen[i - 3], screen[i - 2]
+                local line = bm_drawings[i]
+
+                if from and to then
+                    line["From"] = from
+                    line["To"] = to
+                    line["Color"] = color
+                    line["Visible"] = true
+                else
+                    line["Visible"] = false
+                end
+            end
+        end)
+
+        create_connection(menu_references["bm_debug_draw"]["on_toggle_change"], function(value)
+            for i = 1, #heartbeat do
+                if heartbeat[i] == do_bm_debug_draw then
+                    remove(heartbeat, i)
+                    break
+                end
+            end
+
+            if value then
+                if not bm_drawings then
+                    bm_draw_create()
+                end
+
+                heartbeat[#heartbeat + 1] = do_bm_debug_draw
+            else
+                bm_draw_destroy()
+            end
+        end)
+    end
+
     local do_ragebot = LPH_JIT_MAX(function(dt, hrp)
         local target = ragebot_target
         local tick = clock()
@@ -22089,6 +22723,13 @@ local backtrack_data = {}
                 local shoot_distance = ragebot_max_distance == 2500 and math["huge"] or (ragebot_max_distance == 0 and (local_gun or 250) or ragebot_max_distance)
                 local in_shoot_distance = (local_server_position - ragebot_aim_position)["Magnitude"] <= shoot_distance
 
+                -- The solver already keeps the reported origin inside the weapon's
+                -- own reach of the aim point, so a target past the character's reach
+                -- can still be reported from a point that reaches it.
+                if not in_shoot_distance and flags["bullet_manipulation"] and flags["bm_extend_range"] then
+                    in_shoot_distance = true
+                end
+
                 if in_shoot_distance and local_gun and (((not local_reloading or auto_fire_always_fire) and not target[18] and not target[7] and not spawn_guard["check"](target) and not grabbing_constraint) and (flags["auto_fire"] and (auto_fire_always_fire or (((local_server_position-ragebot_aim_position)["Magnitude"] > 0) or flags["follow_target"] or did_defensive)) and old_time-last_fire > fire_cooldown)) then
                     local delay = flags["shot_delay"]
                     if delay > 0 then
@@ -22125,6 +22766,18 @@ local backtrack_data = {}
                             if (ammo == nil or ammo > 0) and handle and handle["Parent"] and not spawn_guard["check"](target) then
                                 last_fire = clock()
 
+                                local shot_origin, shot_pos, shot_meta = origin, pos, nil
+
+                                -- The solved shot is handed to both the beam and the
+                                -- remote, so the two describe the same call.
+                                if flags["bullet_manipulation"] then
+                                    local solved_origin, solved_pos, meta = bm_api["solve"](target, hitbox, origin, pos, tonumber(entry[2]) or 1000, did_defensive or ragebot_force_position ~= nil)
+
+                                    if solved_origin then
+                                        shot_origin, shot_pos, shot_meta = solved_origin, solved_pos, meta
+                                    end
+                                end
+
                                 if shoot and not flags["auto_fire_dont_render"] then
                                     setthreadidentity(8)
                                     pcall(function()
@@ -22133,8 +22786,8 @@ local backtrack_data = {}
                                         shoot({
                                             Shooter = local_character,
                                             Handle = handle,
-                                            ForcedOrigin = origin,
-                                            AimPosition = pos,
+                                            ForcedOrigin = shot_origin,
+                                            AimPosition = shot_pos,
                                             BeamColor = color3_fromrgb(1, 0.545098, 0.14902),
                                             Range = tonumber(entry[2]) or 1000
                                         })
@@ -22143,16 +22796,17 @@ local backtrack_data = {}
                                     setthreadidentity(4)
                                 end
 
-                                local dir = (pos-origin)
+                                local dir = (shot_pos - shot_origin)
                                 local Magnitude = dir["Magnitude"]
                                 
                                 for i = 1, ragebot_force_position and 2 or 1 do
                                     ragebot_firing_shot = true
-                                    event:FireServer("ShootGun", handle, origin, pos, hitbox, (Magnitude <= 0 or Magnitude ~= Magnitude) and ((handle["Position"])-pos)["Unit"] or dir)
+                                    event:FireServer("ShootGun", handle, shot_origin, shot_pos, hitbox, (Magnitude <= 0 or Magnitude ~= Magnitude) and ((handle["Position"]) - shot_pos)["Unit"] or dir)
                                     ragebot_firing_shot = false
                                 end
 
-                                spawn(get_bullet_result, target[2], hitbox, origin, pos, target_velocity, did_defensive)
+                                spawn(get_bullet_result, target[2], hitbox, origin, pos, target_velocity, did_defensive, shot_meta)
+                                bm_api["register_shot"](target[2], shot_meta)
                             end
                         end
                     end
@@ -26542,6 +27196,8 @@ local get_backtrack_models = nil
             local new_model = clone(character)
             character["Archivable"] = false
             new_model["SetAttribute"](new_model, "1", "1")
+
+            bm_api["normalize_clone"](new_model, character)
             local children = get_children(new_model)
 
             local model_parts = {}
