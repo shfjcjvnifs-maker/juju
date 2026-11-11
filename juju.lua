@@ -21108,12 +21108,13 @@ local backtrack_data = {}
         menu_references["auto_fire_always_fire"] = menu_references["auto_fire_settings"]:create_element({["name"] = "always fire"}, {["toggle"] = {["flag"] = "auto_fire_always_fire", ["default"] = true}})
         menu_references["auto_fire_dont_render"] = menu_references["auto_fire_settings"]:create_element({["name"] = "dont render"}, {["toggle"] = {["flag"] = "auto_fire_dont_render", ["default"] = false}})
 
-        -- The manipulation describes the shot auto fire sends, so it sits in the
-        -- auto fire settings rather than in the general list. "auto calculating"
-        -- on the hitbox re-scores every limb against the aim point instead of
-        -- using the fixed weights, and on the origin it derives the arc height
-        -- from the distance instead of the fixed lifts.
-        menu_references["ragebot_manipulation"] = menu_references["auto_fire_settings"]:create_element({["name"] = "manipulation"}, {["toggle"] = {["flag"] = "ragebot_manipulation", ["default"] = false}})
+        -- The manipulation describes the shot auto fire sends, so it is its own
+        -- entry in the general list, directly under auto fire and above auto
+        -- equip and the spam resolver. "auto calculating" on the hitbox re-scores
+        -- every limb against the aim point instead of using the fixed weights,
+        -- and on the origin it derives the arc height from the distance instead
+        -- of the fixed lifts.
+        menu_references["ragebot_manipulation"] = menu_references["general_section"]:create_element({["name"] = "manipulation"}, {["toggle"] = {["flag"] = "ragebot_manipulation", ["default"] = false}})
         menu_references["ragebot_manipulation_settings"] = menu_references["ragebot_manipulation"]:create_settings()
         menu_references["ragebot_manipulation_range"] = menu_references["ragebot_manipulation_settings"]:create_element({["name"] = "range"}, {["slider"] = {["flag"] = "ragebot_manipulation_range", ["min"] = 1, ["max"] = 100, ["suffix"] = " studs", ["default"] = 100}})
         menu_references["ragebot_manipulation_hitbox"] = menu_references["ragebot_manipulation_settings"]:create_element({["name"] = "hitbox"}, {["dropdown"] = {["flag"] = "ragebot_manipulation_hitbox", ["options"] = {"auto", "selected", "auto calculating"}, ["default"] = {"auto"}}})
