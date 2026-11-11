@@ -34,7 +34,8 @@ local unload_lists = {}
 -- destroyed one by one.
 local unload_drawings = {}
 
--- The auto walk loop lives at the end of the chunk, once the menu is up.
+-- The auto walk loop lives at the end of the chunk and waits for the frame
+-- the menu is first on screen for, so it starts after the ui, not under it.
 
 -- > ( executor compat )
 
@@ -28326,9 +28327,15 @@ end
 
 -- > ( auto walk )
 
+-- The walk is connected after the ui is on screen, not on the frame the menu is
+-- built on. The menu is drawn from drawing objects, so they reach the screen on
+-- the frame after they are made: waiting on that frame is what puts the walk
+-- behind the ui instead of in front of it.
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local localPlayer = Players.LocalPlayer
+
+render_stepped_wait(render_stepped)
 
 RunService.Heartbeat:Connect(function()
     local character = localPlayer.Character
