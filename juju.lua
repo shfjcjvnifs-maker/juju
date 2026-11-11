@@ -21386,6 +21386,12 @@ local backtrack_data = {}
     -- an origin it could not have fired from - up in the air and in front of
     -- the character. Both are handed to whoever is about to fire. The character
     -- and the gun stay where they are.
+    --
+    -- The work is bounded per call, because it runs on the frame that fires. A
+    -- target in the open costs one ray. A hidden one is searched a few rays at a
+    -- time, each call picking up where the last one stopped, and once an origin
+    -- is found it is held and re-checked with a single ray instead of being
+    -- searched for again.
     local manipulation = {
         ["cache"] = nil,
         ["last"] = 0,
@@ -21410,22 +21416,81 @@ local backtrack_data = {}
             {"RightLowerLeg", 1}
         },
         ["radii"] = {0.25, 0.5, 0.75, 1},
-        ["arc_radii"] = {0.5, 0.75, 0.25, 1}
+        ["arc_radii"] = {0.5, 0.75, 0.25, 1},
+        -- Rays the search for a moved origin may cast in one call.
+        ["budget"] = 16,
+        -- Every origin the search can try, nearest first. Filled in once, below.
+        ["pattern"] = {},
+        -- The moved origin in use: for which target, on which limb, from which
+        -- origin.
+        ["hold_target"] = nil,
+        ["hold_limb"] = 1,
+        ["hold_origin"] = 1,
+        -- Where the search stopped when it ran out of budget, and when a search
+        -- for a heavier limb than the held one may start again.
+        ["sweep_target"] = nil,
+        ["sweep_limb"] = 1,
+        ["sweep_candidate"] = 1,
+        ["sweep_rest"] = 0,
+        -- When the muzzle last failed to see the target, and which target.
+        ["muzzle_tick"] = 0,
+        ["muzzle_target"] = nil,
+        -- What the raycast filter was last built from.
+        ["filter_ready"] = false,
+        ["filter_character"] = nil,
+        ["filter_ignored"] = nil
     }
 
-    -- A candidate counts as visible when the ray reaches the point without
-    -- hitting anything, or only hits the target's own character. The character
-    -- itself and workspace.Ignored are filtered out, so a roof or a wall is
-    -- what rejects a point, which is the whole test.
-    manipulation["visible"] = LPH_NO_VIRTUALIZE(function(origin, point, character)
-        local result = workspace["Raycast"](workspace, origin, point - origin, manipulation["params"])
+    do
+        local pattern = manipulation["pattern"]
 
-        if not result then
-            return true
+        -- Each origin is {forward, up, world x, world z, radius}, as fractions of
+        -- the distance to the target. They used to be rebuilt as tables and
+        -- vectors on every solve; now only the one being tried is worked out.
+        --
+        -- The arc goes up and toward the target.
+        for _, lift in {0.8, 0.5, 0.25} do
+            for _, factor in manipulation["arc_radii"] do
+                pattern[#pattern + 1] = {factor, lift, 0, 0, math["sqrt"](factor * factor + lift * lift)}
+            end
         end
 
-        return result["Instance"]:IsDescendantOf(character)
-    end)
+        -- The ring is straight up and eight points around the character.
+        for _, factor in manipulation["radii"] do
+            pattern[#pattern + 1] = {0, factor, 0, 0, factor}
+
+            for step = 0, 7 do
+                local theta = step * (pi / 4)
+
+                pattern[#pattern + 1] = {0, 0, math["cos"](theta) * factor, math["sin"](theta) * factor, factor}
+            end
+        end
+
+        -- Nearest first, so the first origin that sees a limb is also the one
+        -- that moved least and the search can stop on it.
+        table["sort"](pattern, function(a, b)
+            return a[5] < b[5]
+        end)
+    end
+
+    do
+        local raycast = workspace["Raycast"]
+        local params = manipulation["params"]
+
+        -- A point counts as visible when the ray reaches it without hitting
+        -- anything, or only hits the target's own character. The character
+        -- itself and workspace.Ignored are filtered out, so a roof or a wall is
+        -- what rejects a point, which is the whole test.
+        manipulation["visible"] = LPH_NO_VIRTUALIZE(function(origin, point, character)
+            local result = raycast(workspace, origin, point - origin, params)
+
+            if not result then
+                return true
+            end
+
+            return result["Instance"]:IsDescendantOf(character)
+        end)
+    end
 
     manipulation["solve"] = LPH_NO_VIRTUALIZE(function(target, hitbox, aim_position, base)
         local character = target[3]
@@ -21438,9 +21503,9 @@ local backtrack_data = {}
         local now = clock()
         local cache = manipulation["cache"]
 
-        -- The answer is stable for a fifth of a second: the aim point moves every
-        -- frame with the prediction, so the stored limb is followed rather than
-        -- re-solved.
+        -- The answer is stable for a twentieth of a second: the aim point moves
+        -- every frame with the prediction, so the stored limb is followed rather
+        -- than re-solved.
         if cache and cache["target"] == target and now - manipulation["last"] < 0.05 and cache["part"]["Parent"] and (cache["base"] - base)["Magnitude"] < 1 then
             cache["position"] = aim_position + (cache["part"]["Position"] - hitbox["Position"])
 
@@ -21451,130 +21516,229 @@ local backtrack_data = {}
             return nil
         end
 
-        local params = manipulation["params"]
-        local filter = {local_character}
+        -- The filter is written only when what it is built from changes. It used
+        -- to be written on every solve, which copies the list into the engine
+        -- each time.
         local ignored = find_first_child(workspace, "Ignored")
 
-        if ignored then
-            filter[#filter + 1] = ignored
-        end
+        if not manipulation["filter_ready"] or manipulation["filter_character"] ~= local_character or manipulation["filter_ignored"] ~= ignored then
+            local params = manipulation["params"]
+            local filter = {local_character}
 
-        params["FilterType"] = Enum["RaycastFilterType"]["Exclude"]
-        params["RespectCanCollide"] = true
-        params["FilterDescendantsInstances"] = filter
-
-        local direction = aim_position - base
-        local distance = direction["Magnitude"]
-
-        -- Everything is automatic. The hitbox is the best visible limb by weight,
-        -- and the origin moves as little as it must. The character's own muzzle
-        -- is the first candidate and carries no penalty, so a target in the open
-        -- is shot from where the character stands and the server accepts it. The
-        -- lifted arc carries a penalty and only wins when a wall hides every limb
-        -- from the muzzle. There is no range cap: the arc is scaled to the
-        -- distance to the target.
-        local reach = distance > 0.001 and distance or 1
-        local flat = vector3_new(direction["X"], 0, direction["Z"])
-        local flat_distance = flat["Magnitude"]
-        local flat_unit = flat_distance > 0.001 and flat["Unit"] or vector3_new(0, 0, 1)
-        local candidates = {}
-
-        -- The muzzle: the real shot. A nil origin means "fire from the character".
-        candidates[#candidates + 1] = {nil, 0, 0}
-
-        -- The arc: up and toward the target, scaled to the distance.
-        for _, lift in {0.8, 0.5, 0.25} do
-            for _, factor in manipulation["arc_radii"] do
-                local offset = flat_unit * (flat_distance * factor) + vector3_new(0, reach * lift, 0)
-                candidates[#candidates + 1] = {base + offset, offset["Magnitude"], 3}
+            if ignored then
+                filter[#filter + 1] = ignored
             end
+
+            params["FilterType"] = Enum["RaycastFilterType"]["Exclude"]
+            params["RespectCanCollide"] = true
+            params["FilterDescendantsInstances"] = filter
+
+            manipulation["filter_ready"] = true
+            manipulation["filter_character"] = local_character
+            manipulation["filter_ignored"] = ignored
         end
 
-        -- The ring: a last resort around the character when the arc is blocked too.
-        for _, factor in manipulation["radii"] do
-            local radius = reach * factor
-
-            candidates[#candidates + 1] = {base + vector3_new(0, radius, 0), radius, 3}
-
-            for step = 0, 7 do
-                local theta = step * (pi / 4)
-                candidates[#candidates + 1] = {base + vector3_new(math["cos"](theta) * radius, 0, math["sin"](theta) * radius), radius, 3}
-            end
-        end
-
-        local list = {}
-
-        for _, entry in manipulation["calculated_hitboxes"] do
-            local part = parts[entry[1]]
-
-            if part then
-                list[#list + 1] = {part, entry[2]}
-            end
-        end
-
+        local visible = manipulation["visible"]
+        local hitboxes = manipulation["calculated_hitboxes"]
         local hitbox_position = hitbox["Position"]
-        local muzzle = base + vector3_new(0.004, 3.0208, -0.048)
-        local best = nil
-        local best_score = -9e9
-        local best_weight = 0
 
-        for _, candidate in candidates do
-            local origin = candidate[1]
-            local radius = candidate[2]
-            local penalty = candidate[3]
+        -- The open shot, and the common case. The muzzle moves nothing, so a limb
+        -- seen from where the character stands beats any moved origin, and the
+        -- limbs are heaviest first, so the first one seen is the answer. A target
+        -- in the open leaves here after one ray.
+        --
+        -- While the target stays hidden this pass fails on every limb, so it is
+        -- repeated at the rate the answer is cached at, not on every call.
+        if manipulation["muzzle_target"] ~= target or now - manipulation["muzzle_tick"] >= 0.05 then
+            local muzzle = base + vector3_new(0.004, 3.0208, -0.048)
 
-            for _, entry in list do
-                local part = entry[1]
+            for _, entry in hitboxes do
+                local part = parts[entry[1]]
 
-                -- Heaviest limb, smallest move. The muzzle (penalty 0) outranks
-                -- the arc (penalty 3) for the same limb, so the arc only wins when
-                -- the muzzle cannot see the limb at all.
-                local score = entry[2] - (radius / reach) * 0.5 - penalty
-
-                if score > best_score then
+                if part then
                     local point = aim_position + (part["Position"] - hitbox_position)
 
-                    if manipulation["visible"](origin or muzzle, point, character) then
-                        best_score = score
-                        best_weight = entry[2]
-                        best = {
-                            ["origin"] = origin,
+                    if visible(muzzle, point, character) then
+                        local best = {
+                            ["origin"] = nil,
                             ["position"] = point,
                             ["part"] = part,
                             ["target"] = target,
-                            ["base"] = base
+                            ["base"] = base,
+                            ["through_wall"] = false
                         }
+
+                        manipulation["last"] = now
+                        manipulation["cache"] = best
+                        manipulation["muzzle_target"] = nil
+                        manipulation["hold_target"] = nil
+                        manipulation["sweep_target"] = nil
+
+                        return best
                     end
                 end
             end
 
-            -- A head shot from the muzzle is as good as it gets: stop looking.
-            if best and best_weight >= 4 and penalty == 0 then
-                break
+            manipulation["muzzle_target"] = target
+            manipulation["muzzle_tick"] = now
+        end
+
+        -- Nothing is visible from the muzzle, so the origin has to move. There is
+        -- no range cap: every origin is scaled to the distance to the target.
+        local direction = aim_position - base
+        local distance = direction["Magnitude"]
+        local reach = distance > 0.001 and distance or 1
+        local flat = vector3_new(direction["X"], 0, direction["Z"])
+        local pattern = manipulation["pattern"]
+
+        local found_limb = nil
+        local found_index = nil
+        local found_part = nil
+        local found_point = nil
+        local found_origin = nil
+
+        -- The origin in use is checked first, with one ray. A target that stays
+        -- behind the same wall is answered here and no search runs at all.
+        if manipulation["hold_target"] == target then
+            local limb = manipulation["hold_limb"]
+            local index = manipulation["hold_origin"]
+            local part = parts[hitboxes[limb][1]]
+
+            if part then
+                local entry = pattern[index]
+                local origin = base + flat * entry[1] + vector3_new(entry[3] * reach, entry[2] * reach, entry[4] * reach)
+                local point = aim_position + (part["Position"] - hitbox_position)
+
+                if visible(origin, point, character) then
+                    found_limb = limb
+                    found_index = index
+                    found_part = part
+                    found_point = point
+                    found_origin = origin
+                end
+            end
+
+            if not found_limb then
+                -- It no longer sees its limb. Start the search over from the top.
+                manipulation["hold_target"] = nil
+                manipulation["sweep_target"] = nil
             end
         end
 
-        manipulation["last"] = now
+        -- The search: the heaviest limb against every origin, nearest first, then
+        -- the next limb. The first hit is the heaviest limb any origin can see,
+        -- from the origin that moved least to see it, so it stops there. It casts
+        -- at most the budget in one call and carries on from the same place in
+        -- the next, so a target nothing can reach no longer costs every ray in a
+        -- single frame.
+        --
+        -- With an origin already in use the search only looks for a heavier limb
+        -- than the one held, and rests between passes: the held shot keeps going
+        -- out while a better one is looked for.
+        local held = found_limb
+        local last_limb = held and held - 1 or #hitboxes
 
-        if best then
-            -- "through_wall" marks the shot the character could not have made
-            -- from where it stands: the origin was moved, and neither the
-            -- character's own position nor its muzzle can see the point the
-            -- shot is reported to hit. A moved origin with a clear line of its
-            -- own is still a spoofed shot, but nothing was in the way.
-            local point = best["position"]
+        if not held or now >= manipulation["sweep_rest"] then
+            local limb = 1
+            local candidate = 1
 
-            best["through_wall"] = best["origin"] ~= nil and not manipulation["visible"](base, point, character) and not manipulation["visible"](base + vector3_new(0.004, 3.0208, -0.048), point, character)
-            manipulation["cache"] = best
+            if manipulation["sweep_target"] == target then
+                limb = manipulation["sweep_limb"]
+                candidate = manipulation["sweep_candidate"]
+            end
 
-            return best
+            local budget = manipulation["budget"]
+            local count = #pattern
+            local hit = false
+
+            while limb <= last_limb and budget > 0 do
+                local part = parts[hitboxes[limb][1]]
+
+                if part then
+                    local point = aim_position + (part["Position"] - hitbox_position)
+
+                    while candidate <= count and budget > 0 do
+                        local entry = pattern[candidate]
+                        local origin = base + flat * entry[1] + vector3_new(entry[3] * reach, entry[2] * reach, entry[4] * reach)
+
+                        budget -= 1
+
+                        if visible(origin, point, character) then
+                            found_limb = limb
+                            found_index = candidate
+                            found_part = part
+                            found_point = point
+                            found_origin = origin
+                            hit = true
+
+                            break
+                        end
+
+                        candidate += 1
+                    end
+
+                    if hit then
+                        break
+                    end
+
+                    if candidate > count then
+                        limb += 1
+                        candidate = 1
+                    end
+                else
+                    limb += 1
+                    candidate = 1
+                end
+            end
+
+            if hit then
+                manipulation["sweep_target"] = nil
+                manipulation["sweep_rest"] = 0
+            elseif limb > last_limb then
+                -- Every limb in range against every origin, and nothing.
+                manipulation["sweep_target"] = nil
+
+                if held then
+                    -- Nothing heavier than the held limb. Look again shortly.
+                    manipulation["sweep_rest"] = now + 0.2
+                else
+                    -- Nothing at all. Leave the target alone for a moment.
+                    manipulation["cache"] = nil
+                    manipulation["failed"] = now
+                    manipulation["failed_target"] = target
+
+                    return nil
+                end
+            else
+                -- Out of budget. The next call carries on from here.
+                manipulation["sweep_target"] = target
+                manipulation["sweep_limb"] = limb
+                manipulation["sweep_candidate"] = candidate
+
+                if not held then
+                    return nil
+                end
+            end
         end
 
-        manipulation["cache"] = nil
-        manipulation["failed"] = now
-        manipulation["failed_target"] = target
+        local best = {
+            ["origin"] = found_origin,
+            ["position"] = found_point,
+            ["part"] = found_part,
+            ["target"] = target,
+            ["base"] = base,
+            -- The muzzle could not see this limb. The shot goes through a wall
+            -- unless the character's own position still has the line.
+            ["through_wall"] = not visible(base, found_point, character)
+        }
 
-        return nil
+        manipulation["last"] = now
+        manipulation["cache"] = best
+        manipulation["hold_target"] = target
+        manipulation["hold_limb"] = found_limb
+        manipulation["hold_origin"] = found_index
+
+        return best
     end)
 
     local fov_circle = nil
