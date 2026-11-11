@@ -28324,10 +28324,8 @@ local RunService = game:GetService("RunService")
 local localPlayer = Players.LocalPlayer
 
 -- The walk is one Heartbeat connection that writes a small horizontal velocity
--- whenever the character is standing still. A 5 second loop re-arms it: if the
--- connection is ever dropped - a respawn, an executor hiccup - the next tick
--- reconnects it. The connection is kept in early_connections so unload can stop
--- it, and the live one is remembered so the re-arm never stacks a second.
+-- whenever the character is standing still. It is connected once, on load, and
+-- kept in early_connections so unload can stop it.
 local auto_walk_connection = nil
 
 local function auto_walk_step()
@@ -28341,25 +28339,8 @@ local function auto_walk_step()
     end
 end
 
-local function arm_auto_walk()
-    if auto_walk_connection and auto_walk_connection.Connected then
-        return
-    end
-
-    auto_walk_connection = RunService.Heartbeat:Connect(auto_walk_step)
-    early_connections[#early_connections+1] = auto_walk_connection
-end
-
-arm_auto_walk()
-
-local auto_walk_last_arm = clock()
-
-early_connections[#early_connections+1] = RunService.Heartbeat:Connect(function()
-    if clock() - auto_walk_last_arm >= 1 then
-        auto_walk_last_arm = clock()
-        arm_auto_walk()
-    end
-end)
+auto_walk_connection = RunService.Heartbeat:Connect(auto_walk_step)
+early_connections[#early_connections+1] = auto_walk_connection
 
 end, function(err)
     local ok, trace = pcall(debug.traceback, "", 2)
