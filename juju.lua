@@ -28339,13 +28339,13 @@ end
 
 -- > ( auto walk )
 
--- Deferred a tick rather than five seconds: the walk is a velocity write per
--- beat and has nothing to wait for, but it still must not race the load.
+-- Deferred a second rather than five: the walk is a velocity write per beat and
+-- has nothing to wait for, but it still must not race the load.
 local walk_players = game:GetService("Players")
 local walk_run_service = game:GetService("RunService")
 local walk_local_player = walk_players.LocalPlayer
 
-task.delay(0.01, function()
+task.delay(1, function()
     early_connections[#early_connections+1] = walk_run_service.Heartbeat:Connect(function()
         local character = walk_local_player.Character
         local rootPart = character and character:FindFirstChild("HumanoidRootPart")
