@@ -23102,12 +23102,12 @@ local backtrack_data = {}
     -- >> ( bait )
 
     -- With a ragebot target set, the bait runs a two-phase cycle. For "void
-    -- time" the character sits far out across the map, a long way from anything
-    -- it can be shot from, which is what the server and the chasing target see.
-    -- For "bait time" the character is set down on a bait point and held there
-    -- without moving for the whole phase, so whatever is chasing it walks onto a
-    -- point that stays put instead of one that slides away, and the ragebot
-    -- fires at the chaser from there. The cycle then repeats.
+    -- time" the character is left out at a void point, a long way from anything
+    -- it can be shot from, and that position is what the target is given to
+    -- chase. For "bait time" it is set down on a bait point and held there
+    -- without moving, so whatever is chasing it walks onto a point that stays
+    -- put instead of one that slides away, and the ragebot fires at the chaser
+    -- from there. The cycle then repeats.
     --
     -- Both points are ninety million studs out: far enough that the target
     -- cannot reach them, near enough that the client still replicates a position
@@ -23118,50 +23118,77 @@ local backtrack_data = {}
         local cframe_angles = CFrame["Angles"]
         local cycle_start = clock()
         -- Where the character really is, the point the bait phase sets it down
-        -- on, and the camera pose it started from. All three survive the cycle;
-        -- none is re-rolled while it runs.
+        -- on, and the point the void phase holds it at. Neither point is rolled
+        -- again while the target stays set, so what is being chased does not
+        -- move under the chaser every time the cycle comes round.
         local bait_home = nil
         local bait_position = nil
-        local bait_camera = nil
+        local void_point = nil
+        local phase = nil
 
-        -- The camera follows the character, so being out at either point drags
-        -- the view out with it, and target selection is measured against the
-        -- viewport. Hold the view at the character's real position for the whole
-        -- cycle instead. Only the position is written back: the rotation is the
+        local function roll_point()
+            return cframe_new(vector3_new(math_random(-90000000, 90000000), math_random(-90000000, 90000000), math_random(-90000000, 90000000)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
+        end
+
+        -- Anti void: out there the character is on its own. Gravity, knockback
+        -- and the game's own void handling all act on it, and any of them can
+        -- carry it off the point the phase put it on, or off the map entirely.
+        -- Clear the velocity it arrived with, write the point, and write it a
+        -- second time after the frame, so the position the frame ends on is the
+        -- point and nothing is still moving the character off it.
+        local function hold(hrp, point)
+            hrp["Velocity"] = vector3_zero
+            hrp["CFrame"] = point
+            render_stepped_wait(render_stepped)
+            hrp["CFrame"] = point
+            hrp["Velocity"] = vector3_zero
+        end
+
+        -- The camera follows the character, so standing out at either point
+        -- drags the view out with it. Target selection picks players out of the
+        -- camera viewport and measures them from the client position, so the view
+        -- is held on the point the phase is working from instead: that is where
+        -- the target is being pulled to, and so the only place it can still be
+        -- picked from. Only the position is written back, the rotation is the
         -- player's, so looking around still works.
-        local function pin_camera()
+        local function pin_camera(point)
             local moved = camera["CFrame"]
 
-            camera["CFrame"] = cframe_new(bait_camera["p"]) * (moved - moved["p"])
+            camera["CFrame"] = cframe_new(point["p"]) * (moved - moved["p"])
+        end
+
+        -- Every way out of the cycle comes through here, so the character is
+        -- never left standing out at a point with the bait state still set.
+        local function stop(hrp)
+            if hrp and bait_home then
+                hrp["CFrame"] = bait_home
+            end
+
+            baiting = false
+            baited = false
+            phase = nil
+            cycle_start = clock()
+            bait_home = nil
+            bait_position = nil
+            void_point = nil
         end
 
         local do_bait = LPH_JIT_MAX(function(dt, hrp)
             if not hrp or ragebot_force_position then
-                baiting = false
-                baited = false
+                stop(hrp)
                 return
             end
 
             -- The bait runs off the selected target and nothing else. No
             -- target, no cycle: there is nothing to bait and nothing to shoot
-            -- when the surface phase comes round.
+            -- when the bait phase comes round.
             if not ragebot_target then
-                if baited and bait_home then
-                    hrp["CFrame"] = bait_home
-                end
-
-                baiting = false
-                baited = false
-                cycle_start = clock()
-                bait_home = nil
-                bait_position = nil
-                bait_camera = nil
+                stop(hrp)
                 return
             end
 
             if not bait_home then
                 bait_home = hrp["CFrame"]
-                bait_camera = camera["CFrame"]
             end
 
             local void_time = flags["bait_void_time"] or 0.5
@@ -23170,55 +23197,51 @@ local backtrack_data = {}
             local elapsed = (clock() - cycle_start) % cycle
 
             if elapsed < void_time then
-                -- Baiting: out at the anchor, held in the void so no shot is
-                -- taken while the position is garbage.
+                -- Baiting: the character is left out in the void for the whole
+                -- phase rather than being flicked out and pulled straight back.
+                -- It is that position the target chases, and a position that
+                -- stays where it is put is what makes the chase go anywhere.
                 baiting = true
                 baited = false
                 in_void = true
 
-                local old_velocity = hrp["Velocity"]
+                if phase ~= "void" then
+                    phase = "void"
 
-                hrp["Velocity"] = vector3_zero
-                hrp["CFrame"] = cframe_new(vector3_new(math_random(-90000000, 90000000), math_random(-90000000, 90000000), math_random(-90000000, 90000000)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
-                render_stepped_wait(render_stepped)
-                hrp["CFrame"] = bait_home
-                hrp["Velocity"] = old_velocity
+                    if not void_point then
+                        void_point = roll_point()
+                    end
+                end
 
-                -- Put the view and both position mirrors back in the same
-                -- window the character came back in. The heartbeat reads the
-                -- server position straight after the anti-aim pass, while the
-                -- character is still out at the anchor, and the camera follows it
-                -- there: target selection picks players out of the camera
-                -- viewport and measures them from the client position, so a
-                -- cycle left to run on its own leaves nothing that can be set as
-                -- a target.
-                pin_camera()
-                local_client_position = bait_home
-                local_server_position = bait_home
+                hold(hrp, void_point)
+                pin_camera(void_point)
+                local_client_position = void_point
+                local_server_position = void_point
             else
                 -- Baited: the character is set down on the bait point and pinned
                 -- there for the phase, not surfaced back at its own position.
                 -- Movement input, gravity and knockback are all overwritten by
-                -- the hold, so the point the target is chasing does not move and
-                -- in_void is cleared, which lets the ragebot fire at the chaser
-                -- from it.
+                -- the hold, so the point the target is chasing and strafing on
+                -- does not move, and in_void is cleared, which lets the ragebot
+                -- fire at the chaser from it. Both position mirrors are left on
+                -- the bait point as well, so the aim and the distance checks in
+                -- the fire path are spent on the position the server has.
                 baiting = false
                 baited = true
                 in_void = false
 
-                if not bait_position then
-                    bait_position = cframe_new(vector3_new(math_random(-90000000, 90000000), math_random(-90000000, 90000000), math_random(-90000000, 90000000)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
+                if phase ~= "bait" then
+                    phase = "bait"
+
+                    if not bait_position then
+                        bait_position = roll_point()
+                    end
                 end
 
-                hrp["Velocity"] = vector3_zero
-                hrp["CFrame"] = bait_position
-                render_stepped_wait(render_stepped)
-                hrp["CFrame"] = bait_position
-
-                -- Same as the void phase: the character is not where the view
-                -- is, and the pick has to be made against the real surroundings.
-                pin_camera()
-                local_client_position = bait_home
+                hold(hrp, bait_position)
+                pin_camera(bait_position)
+                local_client_position = bait_position
+                local_server_position = bait_position
             end
         end)
 
@@ -23230,20 +23253,7 @@ local backtrack_data = {}
                 end
             end
 
-            if baited and bait_home then
-                local hrp = local_parts["HumanoidRootPart"]
-
-                if hrp then
-                    hrp["CFrame"] = bait_home
-                end
-            end
-
-            baiting = false
-            baited = false
-            cycle_start = clock()
-            bait_home = nil
-            bait_position = nil
-            bait_camera = nil
+            stop(local_parts["HumanoidRootPart"])
 
             if value then
                 anti_aim[#anti_aim+1] = do_bait
