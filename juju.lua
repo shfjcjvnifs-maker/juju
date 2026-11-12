@@ -9897,6 +9897,10 @@ do
     local detector = nil
     local is_ammo = false
 
+    -- Set once the armor buy has been clicked, so the loop below stops
+    -- clicking it: the shop charges for armor on every click it takes.
+    local armor_clicked = false
+
     local purchase_function = nil; purchase_function = LPH_JIT_MAX(function(dt, hrp)
         local stop = false
         if flags["safe_purchasing"] and purchasing then
@@ -9931,8 +9935,14 @@ do
         local didnt_buy = local_bought_count ~= new_bought_count
         local ping = local_ping/1000
         local skip = purchasing and purchasing[6]:find("armor") or not purchasing
+
+        -- Armor is charged for on every click the shop takes, and the shop
+        -- takes them faster than the charge comes back, so an armor buy is
+        -- one click and what it did is read off the cash a moment later.
+        -- Everything else is clicked again until the window closes.
+        local armor_item = purchasing and purchasing[6]:find("armor") or false
         
-        if not stop and (didnt_buy and hrp and clock() - start_time < (local_reloading and 2 + ping * 2 or ping*2 + purchase_count*0.36) and (not is_ammo or not local_reloading)) then
+        if not stop and (didnt_buy and hrp and clock() - start_time < (local_reloading and 2 + ping * 2 or ping*2 + purchase_count*0.36) and (not is_ammo or not local_reloading) and not (armor_item and armor_clicked)) then
             if not skip then
                 for gun, data in local_guns do
                     local gun = gun["Parent"]
@@ -9953,6 +9963,10 @@ do
 
             render_stepped_wait(render_stepped)
             hrp["CFrame"] = old_cframe
+
+            if armor_item then
+                armor_clicked = true
+            end
         else
             local old_purchasing = purchasing
 
@@ -10011,6 +10025,10 @@ do
             )
 
             start_time = clock()
+
+            -- Every purchase starts with its click still owed.
+            armor_clicked = false
+
             local found = false
 
             for i = 1, #anti_aim do
@@ -23706,8 +23724,23 @@ local backtrack_data = {}
     local last_attempt = clock()
     local cooldown = 0.05
 
+    -- The shop charges for armor a moment after it is clicked, so until that
+    -- charge is seen the armor still reads low and the cash still reads whole.
+    -- A buy made in that moment is charged for a second armor, so the last
+    -- buy is waited out: it is over when the armor came up or the cash went
+    -- down. A buy the shop never charged for is let go after the wait, so a
+    -- failed one is retried rather than waited on for ever.
+    local armor_buy_armor = nil
+    local armor_buy_count = nil
+    local armor_buy_time = nil
+
     local do_auto_armor = LPH_JIT_MAX(function(dt, hrp)
         local tick = clock()
+
+        if armor_buy_time and local_armor <= armor_buy_armor and local_bought_count == armor_buy_count and tick - armor_buy_time < 0.75 + local_ping/250 then
+            return
+        end
+
         -- A purchase already in flight owns the character until it lands, the
         -- same way the other buy loops wait for one.
         if local_armor < threshold and not local_knocked and not purchasing and (tick-last_attempt > cooldown) then
@@ -23731,6 +23764,9 @@ local backtrack_data = {}
             end
 
             if armor_item then
+                armor_buy_armor = local_armor
+                armor_buy_count = local_bought_count
+                armor_buy_time = tick
                 purchase_item(armor_item)
             end
         end
