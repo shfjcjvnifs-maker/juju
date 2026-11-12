@@ -13693,12 +13693,9 @@ end
         -- only changes when the ragebot arms, so it is sampled at 10 Hz.
         local center_panel_waiting_protection = false
         local center_panel_waiting_tick = 0
-        -- The state word last shown, kept apart from the text because the
-        -- waiting forcefield state carries the seconds it has been holding and
-        -- that is no reason to flash the panel again every frame.
+        -- The state word last shown, kept apart from the text so the panel only
+        -- flashes when the state itself changes.
         local center_panel_state = nil
-        -- When the forcefield wait began, so its length can be counted.
-        local center_panel_waiting_since = nil
         local do_center_panel = LPH_JIT_MAX(function(dt)
             local old = text3["Text"]
 
@@ -13720,21 +13717,6 @@ end
             -- solver could not reach, and a shot with no gun to fire it all show
             -- nothing. Buying and an active forcefield follow, "unsafe" last.
             local state = (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or stomping and "stomping" or local_reloading and "reloading" or flags["follow_target"] and ragebot_target and "following" or local_following and "following" or (in_void or in_void == nil) and "void" or flags["ragebot_manipulation"] and ragebot_manipulation and ragebot_manipulation["through_wall"] and local_gun and "manipulated" or purchasing and "purchasing" or local_parts["ForceField"] and "invulnerable" or "unsafe"
-            local new = state
-
-            -- A forcefield wait can run for as long as the target holds one, so
-            -- the panel counts the seconds it has been holding instead of
-            -- leaving the word alone with no sign of how long it will last.
-            if state == "waiting forcefield" then
-                if not center_panel_waiting_since then
-                    center_panel_waiting_since = clock()
-                end
-
-                new = state.." "..string["format"]("%.1f", clock() - center_panel_waiting_since)
-            else
-                center_panel_waiting_since = nil
-            end
-
             if state ~= center_panel_state then
                 center_panel_state = state
                 tween(text3, {["Transparency"] = 0.35}, linear, out, 0.09)
@@ -13743,8 +13725,8 @@ end
                 end
             end
 
-            if old ~= new then
-                text3["Text"] = new
+            if old ~= state then
+                text3["Text"] = state
             end
             local tick = clock()
             if tick - last_beat > 0.8 then
