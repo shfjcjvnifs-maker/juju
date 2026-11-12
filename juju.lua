@@ -8884,20 +8884,6 @@ local local_gun = nil
 local local_following = false
 
 local purchasing = nil
-
--- Armor a shop has refused, as the buys report it: the name, how many times
--- in a row it was refused, and when. The armor loop reads this so a shop
--- that keeps taking the click and charging nothing is not asked again.
-local armor_refused = {}
-
--- A shop that took the click and charged nothing is passed over for a
--- while: asking every second only fills the screen with failures.
-local function armor_refused_now(name, tick)
-    local refused = armor_refused[name]
-
-    return refused ~= nil and refused[1] >= 2 and tick - refused[2] < 60
-end
-
 local vehicle_data = {}
 local vehicle = nil
 
@@ -10004,22 +9990,6 @@ do
             spawn(function()
                 wait(local_ping/250)
                 if local_bought_count < new_bought_count then
-                    -- What the shop did not sell is remembered where the armor
-                    -- loop can read it: armor refused twice is passed over for
-                    -- a while instead of being asked for again and again.
-                    local refused_name = old_purchasing[6]
-
-                    if refused_name:find("armor") then
-                        local refused = armor_refused[refused_name]
-
-                        if refused then
-                            refused[1] = refused[1] + 1
-                            refused[2] = clock()
-                        else
-                            armor_refused[refused_name] = {1, clock()}
-                        end
-                    end
-
                     new_notification(
                         stop and "failed to purchase "..old_purchasing[6].." (due to safe purchasing)" or "failed to purchase "..old_purchasing[6],
                         3
@@ -23771,61 +23741,12 @@ local backtrack_data = {}
     local last_attempt = clock()
     local cooldown = 0.05
 
-    -- The armor the loop goes for. The shop is still the authority on what it
-    -- sells and what it charges, so a shop without this armor, or one asking
-    -- more for it than the character has, falls back to the best armor it does
-    -- sell at a price that can be paid.
-    local armor_wanted = "high-medium armor"
-
-    -- The shop charges for armor a moment after it is clicked, so until that
-    -- charge is seen the armor still reads low and the cash still reads whole.
-    -- A buy made in that moment is charged for a second armor, so the last
-    -- buy is waited out: it is over when the armor came up or the cash went
-    -- down. A buy the shop never charged for is let go after the wait, so a
-    -- failed one is retried rather than waited on for ever.
-    local armor_buy_armor = nil
-    local armor_buy_count = nil
-    local armor_buy_time = nil
-
     local do_auto_armor = LPH_JIT_MAX(function(dt, hrp)
         local tick = clock()
-
-        if armor_buy_time and local_armor <= armor_buy_armor and local_bought_count == armor_buy_count and tick - armor_buy_time < 0.75 + local_ping/250 then
-            return
-        end
-
-        -- A purchase already in flight owns the character until it lands, the
-        -- same way the other buy loops wait for one.
-        if local_armor < threshold and not local_knocked and not purchasing and (tick-last_attempt > cooldown) then
+        if (local_armor < threshold and not local_knocked) and (tick-last_attempt > cooldown) then
             last_attempt = tick
-
-            -- The armor that is wanted is bought when the shop sells it and the
-            -- character can pay. Otherwise the shop is still the authority on
-            -- what it sells and what it charges: out of what is on sale the best
-            -- that can be paid for is taken, and armor the shop has refused is
-            -- passed over rather than asked for again and again.
-            local armor_item = nil
-
-            if shops[armor_wanted] and (shops[armor_wanted][2] or 0) <= local_cash and not armor_refused_now(armor_wanted, tick) then
-                armor_item = armor_wanted
-            else
-                local armor_price = nil
-
-                for name, data in shops do
-                    local price = data[2]
-
-                    if name:find("armor") and price and price <= local_cash and not armor_refused_now(name, tick) and (not armor_item or price > armor_price or (price == armor_price and name < armor_item)) then
-                        armor_item = name
-                        armor_price = price
-                    end
-                end
-            end
-
-            if armor_item then
-                armor_buy_armor = local_armor
-                armor_buy_count = local_bought_count
-                armor_buy_time = tick
-                purchase_item(armor_item)
+            if local_cash > 5000 then
+                purchase_item("high-medium armor")
             end
         end
     end)
