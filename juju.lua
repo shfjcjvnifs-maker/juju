@@ -28321,14 +28321,13 @@ render_stepped_wait(render_stepped)
 
 -- One walk, driven from both sides of the physics step.
 --
--- A velocity write alone cannot make a standing character move. While it is
--- standing, the humanoid writes its own horizontal velocity on every step it
--- takes, so the write is replaced before the step that would have carried the
--- character: it only ever landed on frames the humanoid was not controlling,
--- which is why the walk worked on some frames and not others. The walk drives
--- the humanoid itself instead, and the humanoid carries that through its own
--- step. The velocity write stays for the frames the humanoid is not
--- controlling, where nothing else carries the character.
+-- The walk is a velocity and not a step: the character stays where it is, and
+-- only the velocity the game reads is held off zero, which is what tells a
+-- character that is still there from one that is not. Driving the humanoid
+-- instead sets a direction with no input behind it, so the character walks
+-- off on its own, and a walking humanoid carries its own velocity through the
+-- step - the write this walk exists for is replaced before it lands. Nothing
+-- but the velocity is written here.
 local function autowalk()
     if local_knocked then
         return
@@ -28343,23 +28342,13 @@ local function autowalk()
         return
     end
 
-    -- A direction the humanoid already has is either the player's or this walk's
-    -- own from the frame before. The walk's direction is compared as a unit
-    -- vector, so anything that is not this walk is left alone: the player keeps
-    -- the character, and the walk picks it back up when the input stops.
-    local direction = humanoid["MoveDirection"]
-    local magnitude = direction["Magnitude"]
-
-    if magnitude > 0.05 then
-        local x = direction["X"] / magnitude
-        local z = direction["Z"] / magnitude
-
-        if (x - 0.7071)*(x - 0.7071) + (z - 0.7071)*(z - 0.7071) > 0.02 then
-            return
-        end
+    -- The player keeps the character while the stick is held. The direction is
+    -- measured as a length and not against an exact zero: the humanoid reports a
+    -- small direction on the frames either side of a release, and those frames
+    -- are the ones this walk is for.
+    if humanoid["MoveDirection"]["Magnitude"] > 0.05 then
+        return
     end
-
-    humanoid["Move"](humanoid, Vector3.new(0.1, 0, 0.1))
 
     local velocity = rootPart["AssemblyLinearVelocity"]
 
