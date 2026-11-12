@@ -23277,13 +23277,24 @@ local backtrack_data = {}
                     end
                 end
 
-                -- The follow target "stop if" list holds the walk: reloading, a
-                -- knocked target and no gun equipped all leave the character
-                -- waiting on the point instead of walking it round.
-                local waiting = (bait_stop_if_reloading and local_reloading) or (bait_stop_if_target_knocked and ragebot_target[18]) or (bait_stop_if_no_gun_equipped and not local_gun)
+                -- The follow target "stop if" list holds the walk: a knocked
+                -- target and no gun equipped leave the character waiting on the
+                -- point instead of walking it round.
+                --
+                -- A reload is not a wait. Nothing can be fired through it, so
+                -- there is nothing on the bait point worth standing in view for,
+                -- and a body left standing there for the length of a reload is
+                -- the easiest shot the target is given all cycle. The character
+                -- goes to the void point for the reload and comes back out to the
+                -- bait point when the reload is through.
+                local reloading = bait_stop_if_reloading and local_reloading
+                local waiting = (bait_stop_if_target_knocked and ragebot_target[18]) or (bait_stop_if_no_gun_equipped and not local_gun)
                 local point = bait_position
 
-                if not waiting then
+                if reloading then
+                    in_void = true
+                    point = void_point or bait_position
+                elseif not waiting then
                     local distance = flags["follow_target_distance"] or 15
                     local speed = flags["follow_target_speed"] or 75
                     local height = vector3_new(0, flags["follow_target_height"] or 0, 0)
