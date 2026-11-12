@@ -28461,34 +28461,25 @@ local localPlayer = Players.LocalPlayer
 
 render_stepped_wait(render_stepped)
 
--- One walk, driven from both sides of the physics step.
+-- One keepalive, driven from both sides of the physics step.
 --
--- The walk is the speed the character keeps while nobody is at the controls,
--- and that is all it is: the stick takes the character straight back, and the
--- vertical speed is never touched, so a fall stays a fall. It is a walk and not
--- a teleport - the character crosses ground at a speed the game reads as
--- movement, which is what holds off an idle check. A velocity that only just
--- leaves zero does not cross anything: the ground takes it before the step, so
--- the character stands exactly where it was and the game sees a character that
--- has not moved at all.
+-- While a follow, a buy or a stomp is in flight, those loops snap the character
+-- to the target or the shop and hand the frame back a step later. The server
+-- reads that snap as a teleport and freezes the character unless it is already
+-- moving under its own power, so a small velocity is written every step the
+-- character is standing: enough for the part to stay owned and awake, not
+-- enough to carry it anywhere. The character stays where it is and the desync
+-- does the aiming.
 --
--- The walk turns a corner every few studs instead of holding one line, so it
--- walks a small square around the place it started rather than running into a
--- wall and standing against it. The leg is measured in studs covered and not
--- in seconds, so the walk needs no clock of its own.
-local autowalk_speed = 6
-local autowalk_leg_length = 4
-local autowalk_legs = {
-    {["x"] = 1, ["z"] = 0},
-    {["x"] = 0, ["z"] = 1},
-    {["x"] = -1, ["z"] = 0},
-    {["x"] = 0, ["z"] = -1}
-}
-local autowalk_leg = 1
-local autowalk_leg_start = nil
+-- It runs only while one of those loops is working. Standing with nothing in
+-- flight writes nothing, so a character the player is not moving is left as the
+-- game has it.
+local autowalk_keepalive = 0.1
 
 local function autowalk()
-    if local_knocked then
+    -- Nothing to keep alive unless a follow, a buy or a stomp is snapping the
+    -- character about.
+    if local_knocked or not (purchasing or local_following or stomping) then
         return
     end
 
@@ -28496,16 +28487,14 @@ local function autowalk()
     local rootPart = character and character:FindFirstChild("HumanoidRootPart")
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 
-    -- Nothing to walk on a character that is gone, dead or sitting.
+    -- Nothing to keep alive on a character that is gone, dead or sitting.
     if not humanoid or not rootPart or humanoid["Health"] <= 0 or humanoid["SeatPart"] then
-        autowalk_leg_start = nil
         return
     end
 
     -- The player keeps the character while the stick is held. The direction is
     -- measured as a length and not against an exact zero: the humanoid reports a
-    -- small direction on the frames either side of a release, and those frames
-    -- are the ones this walk is for.
+    -- small direction on the frames either side of a release.
     if humanoid["MoveDirection"]["Magnitude"] > 0.05 then
         return
     end
@@ -28513,27 +28502,14 @@ local function autowalk()
     local velocity = rootPart["AssemblyLinearVelocity"]
 
     -- Leave the character alone while something else is carrying it faster than
-    -- this walk goes: a knock, a slide, a fling. This walk's own speed is left
-    -- alone, so the walk holds its speed between the steps instead of writing it
-    -- once and letting the ground take it.
-    if velocity["X"]*velocity["X"] + velocity["Z"]*velocity["Z"] > autowalk_speed*autowalk_speed + 4 then
+    -- the keepalive goes: a knock, a slide, a fling. Only a standing character
+    -- is kept awake, and the vertical speed is carried through so a fall stays a
+    -- fall.
+    if velocity["X"]*velocity["X"] + velocity["Z"]*velocity["Z"] > 1 then
         return
     end
 
-    local position = rootPart["Position"]
-    local start = autowalk_leg_start
-
-    -- A corner is turned once the leg has been walked out.
-    if not start then
-        autowalk_leg_start = position
-    elseif math.abs(position["X"] - start["X"]) + math.abs(position["Z"] - start["Z"]) >= autowalk_leg_length then
-        autowalk_leg = autowalk_leg % #autowalk_legs + 1
-        autowalk_leg_start = position
-    end
-
-    local leg = autowalk_legs[autowalk_leg]
-
-    rootPart["AssemblyLinearVelocity"] = Vector3.new(autowalk_speed * leg["x"], velocity["Y"], autowalk_speed * leg["z"])
+    rootPart["AssemblyLinearVelocity"] = Vector3.new(autowalk_keepalive, velocity["Y"], autowalk_keepalive)
 end
 
 RunService["Stepped"]:Connect(autowalk)
