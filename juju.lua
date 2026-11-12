@@ -9995,7 +9995,10 @@ do
         old_equipped = {}
         if shop then
             if purchasing then
-                if not item:find("armor") or purchasing[6]:find("armor") then
+                -- One purchase at a time. Armor over armor is the same buy asked
+                -- for again, which is a retry; anything else starting here would
+                -- drop what is in flight and leave neither bought.
+                if not (item:find("armor") and purchasing[6]:find("armor")) then
                     return
                 end
             end
@@ -21204,7 +21207,6 @@ local backtrack_data = {}
         menu_references["target_selection_target_when_shot_at_force"]:set_visible(false)
         menu_references["target_selection_untarget_when"] = menu_references["target_selection_settings"]:create_element({["name"] = "untarget when"}, {["dropdown"] = {["flag"] = "target_selection_untarget_when", ["default"] = {"invulnerable", "dead"}, ["options"] = {"better target", "invulnerable", "knocked", "flung", "dead"}, ["multi"] = true}})
         menu_references["target_statuses"] = menu_references["target_selection_settings"]:create_element({["name"] = "target statuses"}, {["dropdown"] = {["flag"] = "target_statuses", ["options"] = {"friendly", "neutral", "enemy"}, ["default"] = {"neutral"}, ["multi"] = true, ["requires_one"] = true}})
-        menu_references["target_players"] = menu_references["target_selection_settings"]:create_element({["name"] = "target players"}, {["dropdown"] = {["flag"] = "target_players", ["options"] = {}, ["default"] = {}, ["multi"] = true, ["requires_one"] = false}})
         menu_references["target_selection_prioritize_by"] = menu_references["target_selection_settings"]:create_element({["name"] = "prioritize by"}, {["dropdown"] = {["flag"] = "prioritize_by", ["options"] = {"closest to character", "closest to mouse", "highest wanted", "lowest health", "random"}, ["default"] = {"closest to mouse"}}})
         menu_references["target_selection_ignore_if"] = menu_references["target_selection_settings"]:create_element({["name"] = "ignore if"}, {["dropdown"] = {["flag"] = "ignore_if", ["options"] = {"invulnerable", "knocked", "in void"}, ["default"] = {"invulnerable"}, ["multi"] = true}})
         menu_references["target_selection_target_distance"] = menu_references["target_selection_settings"]:create_element({["name"] = "target distance"}, {["slider"] = {["flag"] = "target_selection_target_distance", ["default"] = 2500, ["max_text"] = "max", ["min"] = 5, ["max"] = 2500, ["suffix"] = " studs"}})
@@ -21271,6 +21273,8 @@ local backtrack_data = {}
         menu_references["auto_loadout_disable_when"] = menu_references["auto_loadout_settings"]:create_element({["name"] = "disable when"}, {["dropdown"] = {["flag"] = "auto_loadout_disable_when", ["options"] = {"below x health", "forcefield"}, ["multi"] = true, ["requires_one"] = false, ["default"] = {"forcefield"}}})
         menu_references["auto_loadout_guns"] = menu_references["auto_loadout_settings"]:create_element({["name"] = "guns"}, {["dropdown"] = {["flag"] = "auto_loadout_guns", ["options"] = {"double-barrel sg", "tacticalshotgun", "flintlock", "revolver", "rifle", "knife", "ak47", "aug", "lmg"}, ["multi"] = true, ["requires_one"] = true, ["default"] = {"rifle"}}})
         menu_references["auto_loadout_ammo"] = menu_references["auto_loadout_settings"]:create_element({["name"] = "ammo"}, {["slider"] = {["flag"] = "auto_loadout_ammo", ["min"] = 0, ["max"] = 50, ["default"] = 5, ["suffix"] = "x"}})
+        menu_references["auto_loadout_health"] = menu_references["auto_loadout_settings"]:create_element({["name"] = "health"}, {["slider"] = {["flag"] = "auto_loadout_health", ["min"] = 10, ["max"] = 100, ["default"] = 50, ["suffix"] = "%"}})
+        menu_references["auto_loadout_health"]:set_visible(false)
         menu_references["follow_target"] = menu_references["utility_section"]:create_element({["name"] = "follow target"}, {["toggle"] = {["flag"] = "follow_target"}})
         menu_references["follow_target_settings"] = menu_references["follow_target"]:create_settings()
         menu_references["follow_target_style"] = menu_references["follow_target_settings"]:create_element({["name"] = "follow style"}, {["dropdown"] = {["flag"] = "follow_target_dropdown", ["options"] = {"random spam", "random", "strafe"}, ["default"] = {"random"}, ["multi"] = false, ["requires_one"] = true}})
@@ -21327,7 +21331,6 @@ local backtrack_data = {}
     local ragebot_ignore_if_invulnerable = true
     local ragebot_ignore_if_in_void = false
     local ragebot_ignore_if_knocked = false
-    local resolver_rate = 0.043
 
     local target_last_position = nil
     local target_velocity = nil
@@ -22467,7 +22470,9 @@ local backtrack_data = {}
                 torso = nil
                 last_refresh = clock()
             elseif torso then
-                if clock() - last_refresh > resolver_rate then
+                -- Read from the setting every time: the slider owns it, and a
+                -- value loaded with a config is the slider's.
+                if clock() - last_refresh > (flags["resolver_rate"] or 0.037) then
                     local torso_position = torso["Position"]
 
                     if target_last_position then
@@ -22522,7 +22527,10 @@ local backtrack_data = {}
                     end
                 end
 
-                if flags["auto_fire_at_backtrack"] then
+                -- "at backtrack" aims at a hitbox the target was at, which is
+                -- the opposite of what confidence mode is reading the frame for,
+                -- so the mode keeps the point it solved.
+                if flags["auto_fire_at_backtrack"] and not confidence_mode then
                     local data = backtrack_data[target[2]]
 
                     if data then
@@ -22536,7 +22544,11 @@ local backtrack_data = {}
                 end
             
                 local local_server_position = local_server_position["p"]
-                local did_defensive = false
+
+                -- The frame is read for this flag after the aim block closes, so
+                -- this resets the frame's own value; a second one standing up here
+                -- would die with the block and leave the read outside it always false.
+                did_defensive = false
             
                 if flags["auto_fire_defensive"] and not confidence_mode then
                     local weight_to_add = (hitbox_position["Magnitude"] < 9e5 and void_spam_resolver_position_weight or void_spam_resolver_void_weight)
@@ -22769,9 +22781,6 @@ local backtrack_data = {}
         defensive_positions = {}
     end)
 
-    create_connection(menu_references["resolver_rate"]["on_slider_change"], function(value)
-        resolver_rate = value
-    end)
 
     create_connection(menu_references["target_selection_automatic"]["on_toggle_change"], function(value)
         automatic = value
@@ -23699,27 +23708,29 @@ local backtrack_data = {}
 
     local do_auto_armor = LPH_JIT_MAX(function(dt, hrp)
         local tick = clock()
-        if (local_armor < threshold and not local_knocked) and (tick-last_attempt > cooldown) then
+        -- A purchase already in flight owns the character until it lands, the
+        -- same way the other buy loops wait for one.
+        if local_armor < threshold and not local_knocked and not purchasing and (tick-last_attempt > cooldown) then
             last_attempt = tick
 
-            -- The shop is the authority on what it sells and what it charges,
-            -- so the armor is looked up there: a name or a price baked in here
-            -- either sends the buy at something that is not there or blocks
-            -- armor the character can pay for.
-            local armor_item = "high-medium armor"
+            -- The shop is the authority on what it sells and what it charges, so
+            -- the armor is looked up there, and out of what is on sale the best
+            -- the character can pay for is taken. Picking by name alone either
+            -- sends the buy at something the shop does not have, or buys whichever
+            -- armor the table happened to be walked first.
+            local armor_item = nil
+            local armor_price = nil
 
-            if not shops[armor_item] then
-                for name in shops do
-                    if name:find("armor") then
-                        armor_item = name
-                        break
-                    end
+            for name, data in shops do
+                local price = data[2]
+
+                if name:find("armor") and price and price <= local_cash and (not armor_item or price > armor_price or (price == armor_price and name < armor_item)) then
+                    armor_item = name
+                    armor_price = price
                 end
             end
 
-            local armor = shops[armor_item]
-
-            if armor and local_cash >= armor[2] then
+            if armor_item then
                 purchase_item(armor_item)
             end
         end
@@ -23945,7 +23956,10 @@ local backtrack_data = {}
 
                     line["From"] = vector2_new(pos1["X"], pos1["Y"])
                     line["To"] = vector2_new(pos2["X"], pos2["Y"])
-                    line["Transparency"] = math.max(0, fade)
+                    -- The fade is the ring's own ramp around it; the colour's
+                    -- transparency is laid over it, so the ring can be dimmed as
+                    -- a whole.
+                    line["Transparency"] = clamp(fade + (flags["3d_target_circle_transparency"] or 0), 0, 1)
                     line["Color"] = color3_lerp(color, gradient_color, i / 32)
                     line["Visible"] = true
                 else
@@ -24192,12 +24206,26 @@ local backtrack_data = {}
         local auto_loadout_connection2 = nil
         local auto_loadout_connection = nil
         local auto_loadout_guns = {"rifle"}
+        local auto_loadout_disable_below_health = nil
+        local auto_loadout_disable_forcefield = nil
 
         local do_auto_loadout = LPH_JIT_MAX(function()
             local old_hrp = local_parts["HumanoidRootPart"]
 
             if not old_hrp or local_cash < 10000 or (purchasing and purchasing[6]:find("armor")) then
                 return
+            end
+
+            if auto_loadout_disable_forcefield and (local_parts["ForceField"] or local_parts["FORCEFIELD"]) then
+                return
+            end
+
+            if auto_loadout_disable_below_health then
+                local humanoid = local_parts["Humanoid"]
+
+                if humanoid and humanoid["Health"]/humanoid["MaxHealth"] < auto_loadout_disable_below_health then
+                    return
+                end
             end
 
             local children = get_children(local_player["Backpack"])
@@ -24301,6 +24329,38 @@ local backtrack_data = {}
                 do_auto_loadout()
             end
         end)
+
+        local set_auto_loadout_disable_when = function(value)
+            auto_loadout_disable_below_health = nil
+            auto_loadout_disable_forcefield = nil
+
+            if type(value) == "table" then
+                for i = 1, #value do
+                    local pick = value[i]
+
+                    if pick == "below x health" then
+                        auto_loadout_disable_below_health = (flags["auto_loadout_health"] or 50)/100
+                    elseif pick == "forcefield" then
+                        auto_loadout_disable_forcefield = true
+                    end
+                end
+            end
+
+            -- The health only has a say while it is the picked reason.
+            menu_references["auto_loadout_health"]:set_visible(auto_loadout_disable_below_health ~= nil)
+        end
+
+        create_connection(menu_references["auto_loadout_disable_when"]["on_dropdown_change"], set_auto_loadout_disable_when)
+
+        create_connection(menu_references["auto_loadout_health"]["on_slider_change"], function(value)
+            if auto_loadout_disable_below_health then
+                auto_loadout_disable_below_health = value/100
+            end
+        end)
+
+        -- The dropdown is read at load too, so the pick it is saved with counts
+        -- before anything is touched.
+        set_auto_loadout_disable_when(flags["auto_loadout_disable_when"])
     end
 
     -- >> ( auto ammo )
@@ -24488,11 +24548,9 @@ local backtrack_data = {}
         local void_hide_teleport_time = flags["void_hide_teleport_time"]
         local void_hide_void_time = flags["void_hide_void_time"]
         local void_hide_offset = flags["void_hide_offset"]
-        local void_hide_disable_when_purchasing = false
         local void_hide_disable_when_target_selected = false
         local void_hide_disable_when_following_target = false
         local void_hide_disable_when_target_knocked = false
-        local void_hide_disable_when_forced_position = false
 
         local void_hide_force_when_reloading = false
         local void_hide_force_when_tabbed_out = false
@@ -24578,7 +24636,7 @@ local backtrack_data = {}
             -- A purchase owns the character until it lands - the shop has to be
             -- reached on foot - so the void stands off for it. The rest of the
             -- line is the "disable when" picks, which hold it off too.
-            if held or purchasing or (void_hide_disable_when_forced_position and ragebot_force_position) or (void_hide_disable_when_target_selected and ragebot_target) or (void_hide_disable_when_target_knocked and (flags["ragebot"] and ragebot_target and ragebot_target[18])) or (void_hide_disable_when_following_target and local_following) then
+            if held or purchasing or (void_hide_disable_when_target_selected and ragebot_target) or (void_hide_disable_when_target_knocked and (flags["ragebot"] and ragebot_target and ragebot_target[18])) or (void_hide_disable_when_following_target and local_following) then
                 -- This frame is not in the void, and a stale "in the void" is
                 -- read by the panel and by the stomp.
                 in_void = false
@@ -24721,15 +24779,15 @@ local backtrack_data = {}
         end)
 
         create_connection(menu_references["void_hide_disable_when"]["on_dropdown_change"], function(value)
-            void_hide_disable_when_purchasing = false
+            -- "purchasing" is not tracked here: a purchase stands void hide off
+            -- whether it is picked or not, because nothing is bought from out in
+            -- the void.
             void_hide_disable_when_following_target = false
             void_hide_disable_when_target_knocked = false
             void_hide_disable_when_target_selected = false
             for i = 1, #value do
                 local value = value[i]
-                if value == "purchasing" then
-                    void_hide_disable_when_purchasing = true
-                elseif value == "following target" then
+                if value == "following target" then
                     void_hide_disable_when_following_target = true
                 elseif value == "target knocked" then
                     void_hide_disable_when_target_knocked = true
@@ -25554,7 +25612,7 @@ local get_backtrack_models = nil
         menu_references["legitbot_target_selection_target_bind"] = menu_references["legitbot_settings_section"]:create_element({["name"] = "target bind"}, {["keybind"] = {["flag"] = "legitbot_target_selection_target_bind", ["default"] = Enum["KeyCode"]["E"]}})
         menu_references["legitbot_target_selection_untarget_when"] = menu_references["legitbot_settings_section"]:create_element({["name"] = "untarget when"}, {["dropdown"] = {["flag"] = "legitbot_target_selection_untarget_when", ["default"] = {"not visible", "knocked"}, ["options"] = {"better target", "not visible", "off screen", "knocked"}, ["multi"] = true}})
         menu_references["legitbot_target_statuses"] = menu_references["legitbot_settings_section"]:create_element({["name"] = "target statuses"}, {["dropdown"] = {["flag"] = "legitbot_target_statuses", ["options"] = {"friendly", "neutral", "enemy"}, ["default"] = {"neutral", "enemy"}, ["multi"] = true, ["requires_one"] = true}})
-        menu_references["legitbot_target_selection_ignore_if"] = menu_references["legitbot_settings_section"]:create_element({["name"] = "ignore if"}, {["dropdown"] = {["flag"] = "ignore_if", ["options"] = {"invulnerable", "not visible", "knocked"}, ["default"] = {"invulnerable", "not visible", "knocked"}, ["multi"] = true}})
+        menu_references["legitbot_target_selection_ignore_if"] = menu_references["legitbot_settings_section"]:create_element({["name"] = "ignore if"}, {["dropdown"] = {["flag"] = "legitbot_ignore_if", ["options"] = {"invulnerable", "not visible", "knocked"}, ["default"] = {"invulnerable", "not visible", "knocked"}, ["multi"] = true}})
         menu_references["legitbot_field_of_view"] = menu_references["legitbot_settings_section"]:create_element({["name"] = "field of view"}, {["slider"] = {["flag"] = "legitbot_field_of_view", ["min"] = 0, ["max"] = 180, ["default"] = 180, ["suffix"] = "°", ["max_text"] = "full"}})
     menu_references["aim_assist_section"] = menu["groups"]["main"]:create_section("legitbot", "assistance", 1, 0.2, 0.57)
         menu_references["aim_assist"] = menu_references["aim_assist_section"]:create_element({["name"] = "aim assist"}, {["toggle"] = {["flag"] = "aim_assist"}})
