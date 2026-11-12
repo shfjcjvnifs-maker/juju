@@ -13693,6 +13693,12 @@ end
         -- only changes when the ragebot arms, so it is sampled at 10 Hz.
         local center_panel_waiting_protection = false
         local center_panel_waiting_tick = 0
+        -- The state word last shown, kept apart from the text because the
+        -- waiting forcefield state carries the seconds it has been holding and
+        -- that is no reason to flash the panel again every frame.
+        local center_panel_state = nil
+        -- When the forcefield wait began, so its length can be counted.
+        local center_panel_waiting_since = nil
         local do_center_panel = LPH_JIT_MAX(function(dt)
             local old = text3["Text"]
 
@@ -13714,13 +13720,32 @@ end
             -- nothing in the way, a target the solver could not reach, and a shot
             -- with no gun to fire it all show nothing. Buying and an active
             -- forcefield follow, "unsafe" last.
-            local new = (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or flags["follow_target"] and ragebot_target and "following" or local_following and "following" or stomping and "stomping" or local_reloading and "reloading" or (in_void or in_void == nil) and "void" or flags["ragebot_manipulation"] and ragebot_manipulation and ragebot_manipulation["through_wall"] and local_gun and "manipulated" or purchasing and "purchasing" or local_parts["ForceField"] and "invulnerable" or "unsafe"
-            if old ~= new then
-                text3["Text"] = new
+            local state = (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or flags["follow_target"] and ragebot_target and "following" or local_following and "following" or stomping and "stomping" or local_reloading and "reloading" or (in_void or in_void == nil) and "void" or flags["ragebot_manipulation"] and ragebot_manipulation and ragebot_manipulation["through_wall"] and local_gun and "manipulated" or purchasing and "purchasing" or local_parts["ForceField"] and "invulnerable" or "unsafe"
+            local new = state
+
+            -- A forcefield wait can run for as long as the target holds one, so
+            -- the panel counts the seconds it has been holding instead of
+            -- leaving the word alone with no sign of how long it will last.
+            if state == "waiting forcefield" then
+                if not center_panel_waiting_since then
+                    center_panel_waiting_since = clock()
+                end
+
+                new = state.." "..string["format"]("%.1f", clock() - center_panel_waiting_since)
+            else
+                center_panel_waiting_since = nil
+            end
+
+            if state ~= center_panel_state then
+                center_panel_state = state
                 tween(text3, {["Transparency"] = 0.35}, linear, out, 0.09)
-                if new ~= "void" then
+                if state ~= "void" then
                     delay(0.07, tween, text3, {["Transparency"] = 0.7}, linear, out, 0.09)
                 end
+            end
+
+            if old ~= new then
+                text3["Text"] = new
             end
             local tick = clock()
             if tick - last_beat > 0.8 then
@@ -21149,6 +21174,16 @@ local backtrack_data = {}
         menu_references["prediction"] = menu_references["general_section"]:create_element({["name"] = "prediction"}, {["slider"] = {["flag"] = "prediction", ["min"] = 0, ["max"] = 2000, ["default"] = 0, ["min_text"] = "auto", ["max_text"] = "disabled", ["suffix"] = "%", ["decimals"] = 2}})
         menu_references["prediction_settings"] = menu_references["prediction"]:create_settings()
         menu_references["resolver_rate"] = menu_references["prediction_settings"]:create_element({["name"] = "resolver rate"}, {["slider"] = {["flag"] = "resolver_rate", ["min"] = 0, ["suffix"] = "s", ["max"] = 0.1, ["default"] = 0.037, ["decimals"] = 4}})
+        menu_references["resolver_mode"] = menu_references["prediction_settings"]:create_element({["name"] = "resolver mode"}, {["dropdown"] = {["flag"] = "resolver_mode", ["options"] = {"normal", "confidence"}, ["default"] = {"normal"}}})
+        menu_references["resolver_mode_settings"] = menu_references["resolver_mode"]:create_settings()
+        menu_references["confidence_refresh_time"] = menu_references["resolver_mode_settings"]:create_element({["name"] = "refresh time"}, {["slider"] = {["flag"] = "confidence_refresh_time", ["min"] = 0, ["max"] = 10, ["default"] = 3, ["decimals"] = 1, ["suffix"] = "s"}})
+        menu_references["confidence_forgiveness"] = menu_references["resolver_mode_settings"]:create_element({["name"] = "forgiveness"}, {["slider"] = {["flag"] = "confidence_forgiveness", ["min"] = 0, ["max"] = 20, ["default"] = 14.4, ["decimals"] = 1}})
+        menu_references["confidence_void_bonus"] = menu_references["resolver_mode_settings"]:create_element({["name"] = "out of void bonus"}, {["slider"] = {["flag"] = "confidence_void_bonus", ["min"] = 0, ["max"] = 12, ["default"] = 5, ["decimals"] = 1}})
+        menu_references["confidence_distance_penalty"] = menu_references["resolver_mode_settings"]:create_element({["name"] = "distance based penalty"}, {["slider"] = {["flag"] = "confidence_distance_penalty", ["min"] = 0, ["max"] = 5, ["default"] = 2, ["decimals"] = 1, ["suffix"] = "x"}})
+        menu_references["confidence_refresh_time"]:set_visible(false)
+        menu_references["confidence_forgiveness"]:set_visible(false)
+        menu_references["confidence_void_bonus"]:set_visible(false)
+        menu_references["confidence_distance_penalty"]:set_visible(false)
         menu_references["shot_delay"] = menu_references["general_section"]:create_element({["name"] = "shot delay"}, {["slider"] = {["flag"] = "shot_delay", ["min"] = 0, ["max"] = 1000, ["suffix"] = "ms", ["default"] = 0, ["min_text"] = "none"}})
         menu_references["ragebot_field_of_view"] = menu_references["general_section"]:create_element({["name"] = "field of view"}, {["slider"] = {["flag"] = "ragebot_field_of_view", ["min"] = 5, ["max"] = 180, ["suffix"] = "°", ["default"] = 180, ["max_text"] = "full"}})
         menu_references["fire_cooldown"] = menu_references["general_section"]:create_element({["name"] = "fire cooldown"}, {["slider"] = {["flag"] = "fire_cooldown", ["min"] = 0, ["max"] = 300, ["suffix"] = "ms", ["default"] = 5, ["min_text"] = "none"}})
@@ -22185,6 +22220,93 @@ local backtrack_data = {}
     local void_spam_resolver_lerp = 0.1
     local void_spam_resolver_void_weight = 0.2
     local void_spam_resolver_position_weight = 1.5
+    local resolver_mode = flags["resolver_mode"] and flags["resolver_mode"][1] or "normal"
+
+    -- The confidence resolver keeps the positions the target's hitbox was seen
+    -- at. A target that is really standing somewhere shows a cluster of samples
+    -- there; the copies it spams out are spread thin and never gather the same
+    -- count. The aim point is read off the densest cluster.
+    local confidence_samples = {}
+    local confidence_position = nil
+    local confidence_last_refresh = clock()
+    local confidence_last_solve = 0
+
+    local confidence_resolve = function(position)
+        local now = clock()
+        local samples = confidence_samples
+
+        if now - confidence_last_refresh >= (flags["confidence_refresh_time"] or 3) then
+            samples = {}
+            confidence_samples = samples
+            confidence_last_refresh = now
+            confidence_position = nil
+        end
+
+        samples[#samples+1] = position
+
+        if #samples > 200 then
+            remove(samples, 1)
+        end
+
+        -- Ten samples is the smallest set that can hold a cluster worth reading;
+        -- under it the hitbox position itself is passed straight through. The
+        -- sample is still taken every frame, the reading is not.
+        if #samples < 10 or now - confidence_last_solve < resolver_rate then
+            return confidence_position or position
+        end
+
+        confidence_last_solve = now
+
+        local forgiveness = flags["confidence_forgiveness"] or 14.4
+
+        -- Out past the map the target's copies are further apart, so the radius
+        -- opens up; close in, the distance penalty pulls it back down so a near
+        -- target is pinned to where it actually is.
+        if math["abs"](position["X"]) + math["abs"](position["Z"]) < 8955 then
+            forgiveness += flags["confidence_void_bonus"] or 5
+        end
+
+        local hrp = local_parts["HumanoidRootPart"]
+
+        if hrp then
+            forgiveness = clamp(forgiveness - ((position - hrp["Position"])["Magnitude"] / 100) * (flags["confidence_distance_penalty"] or 2), 1, 100)
+        end
+
+        local clusters = {}
+
+        for i = 1, #samples do
+            local point = samples[i]
+            local count = 0
+            local sum = vector3_zero
+
+            for j = 1, #samples do
+                local other = samples[j]
+
+                if (point - other)["Magnitude"] <= forgiveness then
+                    count += 1
+                    sum += other
+                end
+            end
+
+            if count >= 4 then
+                clusters[#clusters+1] = {["p"] = sum / count, ["count"] = count}
+            end
+        end
+
+        local best = nil
+
+        for i = 1, #clusters do
+            if not best or clusters[i]["count"] > best["count"] then
+                best = clusters[i]
+            end
+        end
+
+        if best then
+            confidence_position = best["p"]
+        end
+
+        return confidence_position or position
+    end
 
     set_ragebot_target = LPH_NO_VIRTUALIZE(function(target, message)
         if not target then
@@ -22200,6 +22322,10 @@ local backtrack_data = {}
         end
 
         ragebot_aim_position = nil
+        -- The samples belong to the target they were taken on.
+        confidence_samples = {}
+        confidence_position = nil
+        confidence_last_refresh = clock()
         -- The solve belongs to the target it was made for.
         ragebot_manipulation = nil
         ragebot_aim_velocity = nil
@@ -22387,11 +22513,18 @@ local backtrack_data = {}
                 end
             
                 local old_time = clock()
-            
-                ragebot_aim_position = hitbox_position
-            
-                if target_velocity then
-                    ragebot_aim_position+=(target_velocity*(prediction == 0 and local_ping/500 or prediction == 2 and 0 or prediction))
+
+                if resolver_mode == "confidence" then
+                    -- The resolved point already accounts for where the target
+                    -- keeps coming back to, so the velocity prediction is not
+                    -- laid over it.
+                    ragebot_aim_position = confidence_resolve(hitbox_position)
+                else
+                    ragebot_aim_position = hitbox_position
+
+                    if target_velocity then
+                        ragebot_aim_position+=(target_velocity*(prediction == 0 and local_ping/500 or prediction == 2 and 0 or prediction))
+                    end
                 end
 
                 if flags["auto_fire_at_backtrack"] then
@@ -22410,7 +22543,7 @@ local backtrack_data = {}
                 local local_server_position = local_server_position["p"]
                 local did_defensive = false
             
-                if flags["auto_fire_defensive"] then
+                if flags["auto_fire_defensive"] and resolver_mode ~= "confidence" then
                     local weight_to_add = (hitbox_position["Magnitude"] < 9e5 and void_spam_resolver_position_weight or void_spam_resolver_void_weight)
                     local done = false
             
@@ -22629,6 +22762,21 @@ local backtrack_data = {}
 
     create_connection(menu_references["target_selection_notification"]["on_toggle_change"], function(value)
         do_notification = value
+    end)
+
+    create_connection(menu_references["resolver_mode"]["on_dropdown_change"], function(value)
+        resolver_mode = value[1] or "normal"
+
+        local confidence = resolver_mode == "confidence"
+
+        menu_references["confidence_refresh_time"]:set_visible(confidence)
+        menu_references["confidence_forgiveness"]:set_visible(confidence)
+        menu_references["confidence_void_bonus"]:set_visible(confidence)
+        menu_references["confidence_distance_penalty"]:set_visible(confidence)
+
+        confidence_samples = {}
+        confidence_position = nil
+        confidence_last_refresh = clock()
     end)
 
     create_connection(menu_references["resolver_rate"]["on_slider_change"], function(value)
@@ -28171,12 +28319,16 @@ local localPlayer = Players.LocalPlayer
 
 render_stepped_wait(render_stepped)
 
--- One walk, driven from both sides of the physics step. While the character is
--- standing, the humanoid writes its own horizontal velocity on each step, so a
--- walk written only on Heartbeat is overwritten before the step that would
--- carry the character. Writing on Stepped as well puts the walk in front of that
--- write on the frames the humanoid is about to overwrite it. Both signals are
--- used so the walk still lands when either one is late.
+-- One walk, driven from both sides of the physics step.
+--
+-- A velocity write alone cannot make a standing character move. While it is
+-- standing, the humanoid writes its own horizontal velocity on every step it
+-- takes, so the write is replaced before the step that would have carried the
+-- character: it only ever landed on frames the humanoid was not controlling,
+-- which is why the walk worked on some frames and not others. The walk drives
+-- the humanoid itself instead, and the humanoid carries that through its own
+-- step. The velocity write stays for the frames the humanoid is not
+-- controlling, where nothing else carries the character.
 local function autowalk()
     if local_knocked then
         return
@@ -28186,13 +28338,28 @@ local function autowalk()
     local rootPart = character and character:FindFirstChild("HumanoidRootPart")
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 
-    -- Nothing to walk on a character that is gone, dead, sitting or already
-    -- being moved by the player. The direction test is a length and not an exact
-    -- zero: the humanoid reports a direction on every frame the stick is held,
-    -- including the near zero ones on either side of a release.
-    if not humanoid or not rootPart or humanoid["Health"] <= 0 or humanoid["SeatPart"] or humanoid["MoveDirection"]["Magnitude"] > 0.05 then
+    -- Nothing to walk on a character that is gone, dead or sitting.
+    if not humanoid or not rootPart or humanoid["Health"] <= 0 or humanoid["SeatPart"] then
         return
     end
+
+    -- A direction the humanoid already has is either the player's or this walk's
+    -- own from the frame before. The walk's direction is compared as a unit
+    -- vector, so anything that is not this walk is left alone: the player keeps
+    -- the character, and the walk picks it back up when the input stops.
+    local direction = humanoid["MoveDirection"]
+    local magnitude = direction["Magnitude"]
+
+    if magnitude > 0.05 then
+        local x = direction["X"] / magnitude
+        local z = direction["Z"] / magnitude
+
+        if (x - 0.7071)*(x - 0.7071) + (z - 0.7071)*(z - 0.7071) > 0.02 then
+            return
+        end
+    end
+
+    humanoid["Move"](humanoid, Vector3.new(0.1, 0, 0.1))
 
     local velocity = rootPart["AssemblyLinearVelocity"]
 
