@@ -9956,7 +9956,11 @@ do
             fireclickdetector(detector)
             local old_cframe = hrp["CFrame"]
 
-            if not in_void then
+            -- The bait gives up the character for the purchase, but a void phase
+            -- can still be set on the frame before it does: the teleport has to
+            -- land either way, or the click goes off wherever the character was
+            -- left and nothing is bought.
+            if not in_void or baiting or baited then
                 hrp["CFrame"] = cframe_new(position - vector3_new(0,8.8,0))
             end
 
@@ -23211,6 +23215,22 @@ local backtrack_data = {}
             -- when the bait phase comes round.
             if not ragebot_target then
                 stop()
+                return
+            end
+
+            -- A purchase owns the character while it is in flight. The shop
+            -- teleport and the click land on the frame the purchase takes, and
+            -- the bait handing the character out to its point on that same frame
+            -- is what takes the purchase off the shop, so armor and ammo stop
+            -- going through while the bait is on. The cycle stands down for the
+            -- purchase and picks up from the point it already rolled once the
+            -- purchase is through; out of the void, so the shop teleport is not
+            -- held off.
+            if purchasing then
+                baiting = false
+                baited = false
+                in_void = false
+                bait_phase_seconds = nil
                 return
             end
 
