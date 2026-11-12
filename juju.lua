@@ -13711,16 +13711,15 @@ end
             end
             -- The first state that matches is the one shown. Waiting for a
             -- forcefield comes first, because it explains why the ragebot is
-            -- holding fire. Then the states that move the character, following
-            -- and stomping, with reloading alongside them -
-            -- a reload holds the shot the same way. Then the void, where no shot
-            -- can land, then "manipulated": shown only while a gun is held and
-            -- the solved shot goes through a wall - the origin was moved and the
-            -- character itself has no line to the hit point. A solved shot with
-            -- nothing in the way, a target the solver could not reach, and a shot
-            -- with no gun to fire it all show nothing. Buying and an active
-            -- forcefield follow, "unsafe" last.
-            local state = (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or flags["follow_target"] and ragebot_target and "following" or local_following and "following" or stomping and "stomping" or local_reloading and "reloading" or (in_void or in_void == nil) and "void" or flags["ragebot_manipulation"] and ragebot_manipulation and ragebot_manipulation["through_wall"] and local_gun and "manipulated" or purchasing and "purchasing" or local_parts["ForceField"] and "invulnerable" or "unsafe"
+            -- holding fire. Then the states that move the character: stomping,
+            -- then reloading, which holds the shot the same way, then following.
+            -- Then the void, where no shot can land, then "manipulated": shown
+            -- only while a gun is held and the solved shot goes through a wall -
+            -- the origin was moved and the character itself has no line to the
+            -- hit point. A solved shot with nothing in the way, a target the
+            -- solver could not reach, and a shot with no gun to fire it all show
+            -- nothing. Buying and an active forcefield follow, "unsafe" last.
+            local state = (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or stomping and "stomping" or local_reloading and "reloading" or flags["follow_target"] and ragebot_target and "following" or local_following and "following" or (in_void or in_void == nil) and "void" or flags["ragebot_manipulation"] and ragebot_manipulation and ragebot_manipulation["through_wall"] and local_gun and "manipulated" or purchasing and "purchasing" or local_parts["ForceField"] and "invulnerable" or "unsafe"
             local new = state
 
             -- A forcefield wait can run for as long as the target holds one, so
@@ -21166,16 +21165,17 @@ local backtrack_data = {}
         menu_references["auto_fire_defensive"] = menu_references["general_section"]:create_element({["name"] = "spam resolver"}, {["toggle"] = {["flag"] = "auto_fire_defensive", ["default"] = false}})
         menu_references["auto_fire_defensive_settings"] = menu_references["auto_fire_defensive"]:create_settings()
         menu_references["resolver_mode"] = menu_references["auto_fire_defensive_settings"]:create_element({["name"] = "resolver mode"}, {["dropdown"] = {["flag"] = "resolver_mode", ["options"] = {"normal", "confidence"}, ["default"] = {"normal"}, ["requires_one"] = true}})
+        -- The confidence settings are part of the resolver settings, not a
+        -- popup of their own: they are shown under the mode that uses them.
+        menu_references["confidence_refresh_time"] = menu_references["auto_fire_defensive_settings"]:create_element({["name"] = "refresh time"}, {["slider"] = {["flag"] = "confidence_refresh_time", ["min"] = 0, ["max"] = 10, ["default"] = 3, ["decimals"] = 1, ["suffix"] = "s"}})
+        menu_references["confidence_forgiveness"] = menu_references["auto_fire_defensive_settings"]:create_element({["name"] = "forgiveness"}, {["slider"] = {["flag"] = "confidence_forgiveness", ["min"] = 0, ["max"] = 20, ["default"] = 14.4, ["decimals"] = 1}})
+        menu_references["confidence_void_bonus"] = menu_references["auto_fire_defensive_settings"]:create_element({["name"] = "out of void bonus"}, {["slider"] = {["flag"] = "confidence_void_bonus", ["min"] = 0, ["max"] = 12, ["default"] = 5, ["decimals"] = 1}})
+        menu_references["confidence_distance_penalty"] = menu_references["auto_fire_defensive_settings"]:create_element({["name"] = "distance based penalty"}, {["slider"] = {["flag"] = "confidence_distance_penalty", ["min"] = 0, ["max"] = 5, ["default"] = 2, ["decimals"] = 1, ["suffix"] = "x"}})
         menu_references["void_spam_resolver_position_weight"] = menu_references["auto_fire_defensive_settings"]:create_element({["name"] = "normal position trust"}, {["slider"] = {["flag"] = "void_spam_resolver_position_weight", ["min"] = 0.1, ["max"] = 5, ["default"] = 1.5, ["decimals"] = 2}})
         menu_references["void_spam_resolver_forget_rate"] = menu_references["auto_fire_defensive_settings"]:create_element({["name"] = "forget rate"}, {["slider"] = {["flag"] = "void_spam_resolver_forget_rate", ["min"] = 0, ["max"] = 1000, ["default"] = 80, ["decimals"] = 2, ["suffix"] = "%"}})
         menu_references["void_spam_resolver_void_weight"] = menu_references["auto_fire_defensive_settings"]:create_element({["name"] = "void trust"}, {["slider"] = {["flag"] = "void_spam_resolver_void_weight", ["min"] = 0.1, ["max"] = 5, ["default"] = 0.2, ["decimals"] = 2}})
         menu_references["void_spam_resolver_accuracy"] = menu_references["auto_fire_defensive_settings"]:create_element({["name"] = "accuracy"}, {["slider"] = {["flag"] = "void_spam_resolver_accuracy", ["min"] = 5, ["suffix"] = "%", ["max_text"] = "high", ["max"] = 110, ["default"] = 76.82, ["decimals"] = 2}})
         menu_references["void_spam_resolver_lerp"] = menu_references["auto_fire_defensive_settings"]:create_element({["name"] = "lerp % when close"}, {["slider"] = {["flag"] = "void_spam_resolver_lerp", ["min"] = 10, ["suffix"] = "%", ["max_text"] = "instant", ["max"] = 100, ["default"] = 10, ["decimals"] = 1}})
-        menu_references["resolver_mode_settings"] = menu_references["resolver_mode"]:create_settings()
-        menu_references["confidence_refresh_time"] = menu_references["resolver_mode_settings"]:create_element({["name"] = "refresh time"}, {["slider"] = {["flag"] = "confidence_refresh_time", ["min"] = 0, ["max"] = 10, ["default"] = 3, ["decimals"] = 1, ["suffix"] = "s"}})
-        menu_references["confidence_forgiveness"] = menu_references["resolver_mode_settings"]:create_element({["name"] = "forgiveness"}, {["slider"] = {["flag"] = "confidence_forgiveness", ["min"] = 0, ["max"] = 20, ["default"] = 14.4, ["decimals"] = 1}})
-        menu_references["confidence_void_bonus"] = menu_references["resolver_mode_settings"]:create_element({["name"] = "out of void bonus"}, {["slider"] = {["flag"] = "confidence_void_bonus", ["min"] = 0, ["max"] = 12, ["default"] = 5, ["decimals"] = 1}})
-        menu_references["confidence_distance_penalty"] = menu_references["resolver_mode_settings"]:create_element({["name"] = "distance based penalty"}, {["slider"] = {["flag"] = "confidence_distance_penalty", ["min"] = 0, ["max"] = 5, ["default"] = 2, ["decimals"] = 1, ["suffix"] = "x"}})
         menu_references["confidence_refresh_time"]:set_visible(false)
         menu_references["confidence_forgiveness"]:set_visible(false)
         menu_references["confidence_void_bonus"]:set_visible(false)
@@ -22220,7 +22220,6 @@ local backtrack_data = {}
     local void_spam_resolver_lerp = 0.1
     local void_spam_resolver_void_weight = 0.2
     local void_spam_resolver_position_weight = 1.5
-    local resolver_mode = flags["resolver_mode"] and flags["resolver_mode"][1] or "normal"
 
     -- The confidence resolver keeps the positions the target's hitbox was seen
     -- at. A target that is really standing somewhere shows a cluster of samples
@@ -22514,7 +22513,7 @@ local backtrack_data = {}
             
                 local old_time = clock()
 
-                if resolver_mode == "confidence" then
+                if (flags["resolver_mode"] and flags["resolver_mode"][1]) == "confidence" then
                     -- The resolved point already accounts for where the target
                     -- keeps coming back to, so the velocity prediction is not
                     -- laid over it.
@@ -22543,7 +22542,7 @@ local backtrack_data = {}
                 local local_server_position = local_server_position["p"]
                 local did_defensive = false
             
-                if flags["auto_fire_defensive"] and resolver_mode ~= "confidence" then
+                if flags["auto_fire_defensive"] and (flags["resolver_mode"] and flags["resolver_mode"][1]) ~= "confidence" then
                     local weight_to_add = (hitbox_position["Magnitude"] < 9e5 and void_spam_resolver_position_weight or void_spam_resolver_void_weight)
                     local done = false
             
@@ -22765,9 +22764,7 @@ local backtrack_data = {}
     end)
 
     create_connection(menu_references["resolver_mode"]["on_dropdown_change"], function(value)
-        resolver_mode = value[1] or "normal"
-
-        local confidence = resolver_mode == "confidence"
+        local confidence = value and value[1] == "confidence"
 
         menu_references["confidence_refresh_time"]:set_visible(confidence)
         menu_references["confidence_forgiveness"]:set_visible(confidence)
