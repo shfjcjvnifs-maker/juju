@@ -9946,9 +9946,10 @@ do
             fireclickdetector(detector)
             local old_cframe = hrp["CFrame"]
 
-            if not in_void then
-                hrp["CFrame"] = cframe_new(position - vector3_new(0,8.8,0))
-            end
+            -- The click only counts from the shop, so the purchase takes the
+            -- character there whatever the void hide did with the frame, and
+            -- hands it back below.
+            hrp["CFrame"] = cframe_new(position - vector3_new(0,8.8,0))
 
             render_stepped_wait(render_stepped)
             hrp["CFrame"] = old_cframe
@@ -22228,37 +22229,33 @@ local backtrack_data = {}
     -- The confidence resolver keeps the positions the target's hitbox was seen
     -- at. A target that is really standing somewhere shows a cluster of samples
     -- there; the copies it spams out are spread thin and never gather the same
-    -- count. The aim point is read off the densest cluster.
+    -- count. The aim point is read off the densest cluster, and the position the
+    -- hitbox is at stands whenever no cluster holds up.
     local confidence_samples = {}
-    local confidence_position = nil
     local confidence_last_refresh = clock()
-    local confidence_last_solve = 0
 
     local confidence_resolve = function(position)
         local now = clock()
-        local samples = confidence_samples
 
+        -- Every call is a sample. The set is the last few seconds of them, not a
+        -- count of them, so the whole set is thrown away and filled again.
         if now - confidence_last_refresh >= (flags["confidence_refresh_time"] or 3) then
-            samples = {}
-            confidence_samples = samples
+            confidence_samples = {}
             confidence_last_refresh = now
-            confidence_position = nil
         end
 
+        local samples = confidence_samples
         samples[#samples+1] = position
 
-        if #samples > 200 then
+        if #samples > 500 then
             remove(samples, 1)
         end
 
         -- Ten samples is the smallest set that can hold a cluster worth reading;
-        -- under it the hitbox position itself is passed straight through. The
-        -- sample is still taken every frame, the reading is not.
-        if #samples < 10 or now - confidence_last_solve < resolver_rate then
-            return confidence_position or position
+        -- under it the hitbox position itself is passed straight through.
+        if #samples < 10 then
+            return position
         end
-
-        confidence_last_solve = now
 
         local forgiveness = flags["confidence_forgiveness"] or 14.4
 
@@ -22275,7 +22272,8 @@ local backtrack_data = {}
             forgiveness = clamp(forgiveness - ((position - hrp["Position"])["Magnitude"] / 100) * (flags["confidence_distance_penalty"] or 2), 1, 100)
         end
 
-        local clusters = {}
+        local best = nil
+        local best_count = 0
 
         for i = 1, #samples do
             local point = samples[i]
@@ -22291,24 +22289,15 @@ local backtrack_data = {}
                 end
             end
 
-            if count >= 4 then
-                clusters[#clusters+1] = {["p"] = sum / count, ["count"] = count}
+            if count >= 4 and count > best_count then
+                best_count = count
+                best = sum / count
             end
         end
 
-        local best = nil
-
-        for i = 1, #clusters do
-            if not best or clusters[i]["count"] > best["count"] then
-                best = clusters[i]
-            end
-        end
-
-        if best then
-            confidence_position = best["p"]
-        end
-
-        return confidence_position or position
+        -- Nothing holds up: the aim point is where the hitbox is, never the
+        -- cluster read off an older set of samples.
+        return best or position
     end
 
     set_ragebot_target = LPH_NO_VIRTUALIZE(function(target, message)
@@ -22327,7 +22316,6 @@ local backtrack_data = {}
         ragebot_aim_position = nil
         -- The samples belong to the target they were taken on.
         confidence_samples = {}
-        confidence_position = nil
         confidence_last_refresh = clock()
         -- The solve belongs to the target it was made for.
         ragebot_manipulation = nil
@@ -22496,12 +22484,16 @@ local backtrack_data = {}
                 local hitbox_position = hitbox["Position"]
 
                 local current_time = clock()
+                local confidence_mode = (flags["resolver_mode"] and flags["resolver_mode"][1]) == "confidence"
             
                 local positions_to_remove = {}
                 for position, data in defensive_positions do
                     local time_delta = current_time - data["last_update_time"]
                     if time_delta > 0 then
-                        local rate = flags["void_spam_resolver_forget_rate"]/20
+                        -- Normal mode walks its own weights down here; in
+                        -- confidence mode none of it is read, so they are left
+                        -- standing instead of being spent for nothing.
+                        local rate = confidence_mode and 0 or flags["void_spam_resolver_forget_rate"]/20
                         data["weight"]-=((position - hitbox_position)["magnitude"] > 200 and time_delta*(rate*2.5) or time_delta*rate)
                         data["last_update_time"] = current_time
                     end
@@ -22517,7 +22509,7 @@ local backtrack_data = {}
             
                 local old_time = clock()
 
-                if (flags["resolver_mode"] and flags["resolver_mode"][1]) == "confidence" then
+                if confidence_mode then
                     -- The resolved point already accounts for where the target
                     -- keeps coming back to, so the velocity prediction is not
                     -- laid over it.
@@ -22546,7 +22538,7 @@ local backtrack_data = {}
                 local local_server_position = local_server_position["p"]
                 local did_defensive = false
             
-                if flags["auto_fire_defensive"] and (flags["resolver_mode"] and flags["resolver_mode"][1]) ~= "confidence" then
+                if flags["auto_fire_defensive"] and not confidence_mode then
                     local weight_to_add = (hitbox_position["Magnitude"] < 9e5 and void_spam_resolver_position_weight or void_spam_resolver_void_weight)
                     local done = false
             
@@ -22770,9 +22762,11 @@ local backtrack_data = {}
     create_connection(menu_references["resolver_mode"]["on_dropdown_change"], function(value)
         menu_references["set_resolver_settings_visible"](value)
 
+        -- Both resolvers keep state of their own, and neither one's belongs to
+        -- the mode that is now on.
         confidence_samples = {}
-        confidence_position = nil
         confidence_last_refresh = clock()
+        defensive_positions = {}
     end)
 
     create_connection(menu_references["resolver_rate"]["on_slider_change"], function(value)
@@ -23707,8 +23701,26 @@ local backtrack_data = {}
         local tick = clock()
         if (local_armor < threshold and not local_knocked) and (tick-last_attempt > cooldown) then
             last_attempt = tick
-            if local_cash > 5000 then
-                purchase_item("high-medium armor")
+
+            -- The shop is the authority on what it sells and what it charges,
+            -- so the armor is looked up there: a name or a price baked in here
+            -- either sends the buy at something that is not there or blocks
+            -- armor the character can pay for.
+            local armor_item = "high-medium armor"
+
+            if not shops[armor_item] then
+                for name in shops do
+                    if name:find("armor") then
+                        armor_item = name
+                        break
+                    end
+                end
+            end
+
+            local armor = shops[armor_item]
+
+            if armor and local_cash >= armor[2] then
+                purchase_item(armor_item)
             end
         end
     end)
@@ -24488,7 +24500,11 @@ local backtrack_data = {}
         local void_hide_type = game["PlaceId"] == 7213786345 and "vc server" or "random"
 
 
-        local isrbxactive = isrbxactive or LPH_NO_VIRTUALIZE(function() return true end)
+        -- An executor that has isrbxactive keeps it; without one the window is read
+        -- off UserInputService, which is what the fallback stub never did.
+        local isrbxactive = isrbxactive or LPH_NO_VIRTUALIZE(function()
+            return user_input_service["WindowFocused"]
+        end)
 
         create_connection(menu_references["void_hide_teleport_time"]["on_slider_change"], function(value)
             void_hide_teleport_time = value
@@ -24548,12 +24564,25 @@ local backtrack_data = {}
         local do_void_hide = LPH_JIT_MAX(function(dt, hrp)
             local humanoid = local_parts["Humanoid"]
 
-            local forced = (void_hide_force_when_reloading and local_reloading) or (void_hide_force_when_tabbed_out and not isrbxactive()) or (void_hide_force_when_not_full_health and (humanoid and humanoid["Health"] ~= humanoid["MaxHealth"] or false))
+            -- "force when" holds void hide off while one of its conditions is
+            -- on. Those are the moments the character has to stay where it is:
+            -- the teleport breaks a reload, and nothing is bought from out in
+            -- the void.
+            --
+            -- "stop if forced" is the way back to the old reading of the same
+            -- pick: ticked, void hide runs on through the moment it was told to
+            -- hold off in. A purchase is not part of that - it stands off on its
+            -- own below, whether this is ticked or not.
+            local held = not flags["void_hide_stop_if_forced"] and ((void_hide_force_when_reloading and local_reloading) or (void_hide_force_when_tabbed_out and not isrbxactive()) or (void_hide_force_when_not_full_health and (humanoid and humanoid["Health"] ~= humanoid["MaxHealth"] or false)))
 
-            if not forced then
-                if (void_hide_disable_when_forced_position and ragebot_force_position) or (void_hide_disable_when_target_selected and ragebot_target) or (void_hide_disable_when_target_knocked and (flags["ragebot"] and ragebot_target and ragebot_target[18])) or (void_hide_disable_when_following_target and local_following) or (void_hide_disable_when_purchasing and purchasing) then
-                    return
-                end
+            -- A purchase owns the character until it lands - the shop has to be
+            -- reached on foot - so the void stands off for it. The rest of the
+            -- line is the "disable when" picks, which hold it off too.
+            if held or purchasing or (void_hide_disable_when_forced_position and ragebot_force_position) or (void_hide_disable_when_target_selected and ragebot_target) or (void_hide_disable_when_target_knocked and (flags["ragebot"] and ragebot_target and ragebot_target[18])) or (void_hide_disable_when_following_target and local_following) then
+                -- This frame is not in the void, and a stale "in the void" is
+                -- read by the panel and by the stomp.
+                in_void = false
+                return
             end
 
             if hrp and not ragebot_force_position then
@@ -24562,7 +24591,7 @@ local backtrack_data = {}
                 in_void = true
                 local tick = clock()
                 local do_void_hide = not ragebot_force_position or math_random(1,10) == 1
-                if flags["void_hide_exploit"] and (not flags["void_hide_stop_if_forced"] or not forced) then
+                if flags["void_hide_exploit"] then
                     if tick - last > void_hide_void_time then
                         last = tick
                         in_void = false
