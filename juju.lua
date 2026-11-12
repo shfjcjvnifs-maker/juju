@@ -21148,7 +21148,8 @@ local backtrack_data = {}
         menu_references["auto_fire_defensive_settings"] = menu_references["auto_fire_defensive"]:create_settings()
         menu_references["resolver_mode"] = menu_references["auto_fire_defensive_settings"]:create_element({["name"] = "resolver mode"}, {["dropdown"] = {["flag"] = "resolver_mode", ["options"] = {"normal", "confidence"}, ["default"] = {"normal"}, ["requires_one"] = true}})
         -- The confidence settings are part of the resolver settings, not a
-        -- popup of their own: they are shown under the mode that uses them.
+        -- popup of their own: they sit under the mode that uses them, and the
+        -- two modes are swapped for each other, never shown together.
         menu_references["confidence_refresh_time"] = menu_references["auto_fire_defensive_settings"]:create_element({["name"] = "refresh time"}, {["slider"] = {["flag"] = "confidence_refresh_time", ["min"] = 0, ["max"] = 10, ["default"] = 3, ["decimals"] = 1, ["suffix"] = "s"}})
         menu_references["confidence_forgiveness"] = menu_references["auto_fire_defensive_settings"]:create_element({["name"] = "forgiveness"}, {["slider"] = {["flag"] = "confidence_forgiveness", ["min"] = 0, ["max"] = 20, ["default"] = 14.4, ["decimals"] = 1}})
         menu_references["confidence_void_bonus"] = menu_references["auto_fire_defensive_settings"]:create_element({["name"] = "out of void bonus"}, {["slider"] = {["flag"] = "confidence_void_bonus", ["min"] = 0, ["max"] = 12, ["default"] = 5, ["decimals"] = 1}})
@@ -21158,10 +21159,31 @@ local backtrack_data = {}
         menu_references["void_spam_resolver_void_weight"] = menu_references["auto_fire_defensive_settings"]:create_element({["name"] = "void trust"}, {["slider"] = {["flag"] = "void_spam_resolver_void_weight", ["min"] = 0.1, ["max"] = 5, ["default"] = 0.2, ["decimals"] = 2}})
         menu_references["void_spam_resolver_accuracy"] = menu_references["auto_fire_defensive_settings"]:create_element({["name"] = "accuracy"}, {["slider"] = {["flag"] = "void_spam_resolver_accuracy", ["min"] = 5, ["suffix"] = "%", ["max_text"] = "high", ["max"] = 110, ["default"] = 76.82, ["decimals"] = 2}})
         menu_references["void_spam_resolver_lerp"] = menu_references["auto_fire_defensive_settings"]:create_element({["name"] = "lerp % when close"}, {["slider"] = {["flag"] = "void_spam_resolver_lerp", ["min"] = 10, ["suffix"] = "%", ["max_text"] = "instant", ["max"] = 100, ["default"] = 10, ["decimals"] = 1}})
-        menu_references["confidence_refresh_time"]:set_visible(false)
-        menu_references["confidence_forgiveness"]:set_visible(false)
-        menu_references["confidence_void_bonus"]:set_visible(false)
-        menu_references["confidence_distance_penalty"]:set_visible(false)
+        -- The two modes are two resolvers with settings of their own, so the
+        -- popup holds one set at a time: the confidence settings while
+        -- confidence is selected, the spam resolver settings while normal is.
+        -- Both sets are always made, and the one the mode does not use is left
+        -- out of the popup, so a change of mode swaps the rows for each other
+        -- instead of laying them over one another.
+        local set_resolver_settings_visible = function(value)
+            -- A plain true/false, never nil: the rows are handed this straight.
+            local confidence = (value and value[1] == "confidence") and true or false
+
+            menu_references["confidence_refresh_time"]:set_visible(confidence)
+            menu_references["confidence_forgiveness"]:set_visible(confidence)
+            menu_references["confidence_void_bonus"]:set_visible(confidence)
+            menu_references["confidence_distance_penalty"]:set_visible(confidence)
+
+            menu_references["void_spam_resolver_position_weight"]:set_visible(not confidence)
+            menu_references["void_spam_resolver_forget_rate"]:set_visible(not confidence)
+            menu_references["void_spam_resolver_void_weight"]:set_visible(not confidence)
+            menu_references["void_spam_resolver_accuracy"]:set_visible(not confidence)
+            menu_references["void_spam_resolver_lerp"]:set_visible(not confidence)
+        end
+
+        menu_references["set_resolver_settings_visible"] = set_resolver_settings_visible
+
+        set_resolver_settings_visible(flags["resolver_mode"])
         menu_references["ragebot_hitbox"] = menu_references["general_section"]:create_element({["name"] = "target hitbox"}, {["dropdown"] = {["flag"] = "ragebot_hitbox", ["options"] = {"head", "root", "torso", "arms", "legs", "randomize"}, ["default"] = {"head"}}})
         menu_references["prediction"] = menu_references["general_section"]:create_element({["name"] = "prediction"}, {["slider"] = {["flag"] = "prediction", ["min"] = 0, ["max"] = 2000, ["default"] = 0, ["min_text"] = "auto", ["max_text"] = "disabled", ["suffix"] = "%", ["decimals"] = 2}})
         menu_references["prediction_settings"] = menu_references["prediction"]:create_settings()
@@ -22746,12 +22768,7 @@ local backtrack_data = {}
     end)
 
     create_connection(menu_references["resolver_mode"]["on_dropdown_change"], function(value)
-        local confidence = value and value[1] == "confidence"
-
-        menu_references["confidence_refresh_time"]:set_visible(confidence)
-        menu_references["confidence_forgiveness"]:set_visible(confidence)
-        menu_references["confidence_void_bonus"]:set_visible(confidence)
-        menu_references["confidence_distance_penalty"]:set_visible(confidence)
+        menu_references["set_resolver_settings_visible"](value)
 
         confidence_samples = {}
         confidence_position = nil
