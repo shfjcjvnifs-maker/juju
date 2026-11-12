@@ -8518,16 +8518,6 @@ local local_knocked = false
 local ragebot_force_position = nil
 local in_void = false
 local stomping = false
--- The bait: after a target is set, hand the character out past the map the way
--- the built in void hands its own over, and let the target chase the point it is
--- given. "baiting" is the phase counted as in the void; "baited" is the phase
--- counted out of it, when the shot is taken.
-local baiting = false
-local baited = false
--- Seconds left in the bait phase the cycle is on, read by the center panel. nil
--- while the bait is not running.
-local bait_phase_seconds = nil
-
 -- Ragebot hitbox selection. The dropdown names either one part or a group
 -- whose part is rolled per target and held for a short window, so the aim and
 -- the shot resolve to the same part instead of jittering every frame.
@@ -9956,11 +9946,7 @@ do
             fireclickdetector(detector)
             local old_cframe = hrp["CFrame"]
 
-            -- The bait gives up the character for the purchase, but a void phase
-            -- can still be set on the frame before it does: the teleport has to
-            -- land either way, or the click goes off wherever the character was
-            -- left and nothing is bought.
-            if not in_void or baiting or baited then
+            if not in_void then
                 hrp["CFrame"] = cframe_new(position - vector3_new(0,8.8,0))
             end
 
@@ -13707,11 +13693,6 @@ end
         -- only changes when the ragebot arms, so it is sampled at 10 Hz.
         local center_panel_waiting_protection = false
         local center_panel_waiting_tick = 0
-        -- The state word on its own, without the bait's seconds on it, so the
-        -- flash below still fires on a state change and not on every tick of a
-        -- countdown.
-        local old_state = nil
-
         local do_center_panel = LPH_JIT_MAX(function(dt)
             local old = text3["Text"]
 
@@ -13724,11 +13705,8 @@ end
             end
             -- The first state that matches is the one shown. Waiting for a
             -- forcefield comes first, because it explains why the ragebot is
-            -- holding fire. Then the bait's own two phases, each carrying the
-            -- seconds left in it: "baiting" out in the void while the target
-            -- chases the point, "baited" waiting on the point and firing. Then
-            -- the states that move the character, following and stomping, with
-            -- reloading alongside them -
+            -- holding fire. Then the states that move the character, following
+            -- and stomping, with reloading alongside them -
             -- a reload holds the shot the same way. Then the void, where no shot
             -- can land, then "manipulated": shown only while a gun is held and
             -- the solved shot goes through a wall - the origin was moved and the
@@ -13736,19 +13714,13 @@ end
             -- nothing in the way, a target the solver could not reach, and a shot
             -- with no gun to fire it all show nothing. Buying and an active
             -- forcefield follow, "unsafe" last.
-            local state = (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or baiting and "baiting" or baited and "baited" or flags["follow_target"] and ragebot_target and "following" or local_following and "following" or stomping and "stomping" or local_reloading and "reloading" or (in_void or in_void == nil) and "void" or flags["ragebot_manipulation"] and ragebot_manipulation and ragebot_manipulation["through_wall"] and local_gun and "manipulated" or purchasing and "purchasing" or local_parts["ForceField"] and "invulnerable" or "unsafe"
-            local new = (baiting or baited) and (state .. " " .. string["format"]("%.1f", bait_phase_seconds or 0)) or state
-
-            if state ~= old_state then
-                old_state = state
-                tween(text3, {["Transparency"] = 0.35}, linear, out, 0.09)
-                if state ~= "void" then
-                    delay(0.07, tween, text3, {["Transparency"] = 0.7}, linear, out, 0.09)
-                end
-            end
-
+            local new = (flags["ragebot"] and center_panel_waiting_protection) and "waiting forcefield" or flags["follow_target"] and ragebot_target and "following" or local_following and "following" or stomping and "stomping" or local_reloading and "reloading" or (in_void or in_void == nil) and "void" or flags["ragebot_manipulation"] and ragebot_manipulation and ragebot_manipulation["through_wall"] and local_gun and "manipulated" or purchasing and "purchasing" or local_parts["ForceField"] and "invulnerable" or "unsafe"
             if old ~= new then
                 text3["Text"] = new
+                tween(text3, {["Transparency"] = 0.35}, linear, out, 0.09)
+                if new ~= "void" then
+                    delay(0.07, tween, text3, {["Transparency"] = 0.7}, linear, out, 0.09)
+                end
             end
             local tick = clock()
             if tick - last_beat > 0.8 then
@@ -21251,11 +21223,6 @@ local backtrack_data = {}
         menu_references["void_hide_teleport_time"] = menu_references["void_hide_settings"]:create_element({["name"] = "teleport time"}, {["slider"] = {["min"] = 0.01, ["max"] = 2, ["decimals"] = 3, ["default"] = 0.1, ["flag"] = "void_hide_teleport_time", ["suffix"] = "s"}})
         menu_references["void_hide_stop_if_forced"]:set_visible(false)
     menu_references["utility_section"] = menu["groups"]["main"]:create_section("ragebot", "utility", 2, 0.7, 0.3)
-        menu_references["bait"] = menu_references["utility_section"]:create_element({["name"] = "bait"}, {["toggle"] = {["flag"] = "bait", ["default"] = false}})
-        menu_references["bait_settings"] = menu_references["bait"]:create_settings()
-        menu_references["bait_void_time"] = menu_references["bait_settings"]:create_element({["name"] = "void time"}, {["slider"] = {["flag"] = "bait_void_time", ["min"] = 0.1, ["max"] = 5, ["default"] = 0.5, ["decimals"] = 2, ["suffix"] = "s"}})
-        menu_references["bait_time"] = menu_references["bait_settings"]:create_element({["name"] = "bait time"}, {["slider"] = {["flag"] = "bait_time", ["min"] = 0.1, ["max"] = 5, ["default"] = 1, ["decimals"] = 2, ["suffix"] = "s"}})
-        menu_references["bait_distance"] = menu_references["bait_settings"]:create_element({["name"] = "bait distance"}, {["slider"] = {["flag"] = "bait_distance", ["min"] = 50000000, ["max"] = 1000000000, ["default"] = 1000000000, ["decimals"] = 0, ["suffix"] = " studs"}})
         menu_references["safe_purchasing"] = menu_references["utility_section"]:create_element({["name"] = "safe purchasing"}, {["toggle"] = {["flag"] = "safe_purchasing"}})
         menu_references["safe_purchasing_settings"] = menu_references["safe_purchasing"]:create_settings()
         menu_references["safe_purchasing_avoid_statuses"] = menu_references["safe_purchasing_settings"]:create_element({["name"] = "avoid statuses"}, {["dropdown"] = {["flag"] = "safe_purchasing_avoid_statuses", ["options"] = {"friendly", "target", "neutral", "enemy"}, ["default"] = {"target", "enemy"}, ["multi"] = true, ["requires_one"] = true}})
@@ -22506,13 +22473,7 @@ local backtrack_data = {}
                 -- No distance gate. The trigger is pulled at any range; the shot
                 -- is what reaches or does not, and the manipulation can move the
                 -- origin onto the target from anywhere.
-                --
-                -- The bait's firing phase pulls the trigger on its own: while it
-                -- is on, the shot does not wait on auto fire being armed or on
-                -- the range clause under it. Every other condition still holds,
-                -- so a reload, a knocked target, a forcefield and no gun held all
-                -- hold the shot the way they do for auto fire.
-                if local_gun and not baiting and (((not local_reloading or auto_fire_always_fire) and not target[18] and not target[7] and not spawn_guard["check"](target) and not grabbing_constraint) and ((baited or (flags["auto_fire"] and (auto_fire_always_fire or (((local_server_position-ragebot_aim_position)["Magnitude"] > 0) or flags["follow_target"] or did_defensive)))) and old_time-last_fire > fire_cooldown)) then
+                if local_gun and (((not local_reloading or auto_fire_always_fire) and not target[18] and not target[7] and not spawn_guard["check"](target) and not grabbing_constraint) and (flags["auto_fire"] and (auto_fire_always_fire or (((local_server_position-ragebot_aim_position)["Magnitude"] > 0) or flags["follow_target"] or did_defensive)) and old_time-last_fire > fire_cooldown)) then
                     local delay = flags["shot_delay"]
                     if delay > 0 then
                         wait(delay/1000)
@@ -23007,14 +22968,6 @@ local backtrack_data = {}
         end
 
         local follow_target = LPH_JIT_MAX(function(dt, hrp, bypass)
-            -- The bait holds the character on its own point. Following the
-            -- target would pull it straight back off that point every frame, so
-            -- the bait wins and following stops while it runs.
-            if baiting or baited then
-                local_following = false
-                return
-            end
-
             local waiting_for_forcefield = ragebot_target and (ragebot_target[7] or spawn_guard["check"](ragebot_target))
 
             if waiting_for_forcefield and hrp and not bypass and not in_void and not stomping and not purchasing then
@@ -23127,222 +23080,6 @@ local backtrack_data = {}
         end)
     end
 
-    -- >> ( bait )
-
-    -- With a ragebot target set, the bait runs a two-phase cycle and hands the
-    -- character over the way the built in void hands its own over: out past
-    -- anything on the map, one frame waited on, and back to where the character
-    -- really is before the frame ends. The server holds the character out there
-    -- for that frame while the client sits at home, so the character is never
-    -- standing anywhere a target can reach it, and no health is written to keep
-    -- it alive.
-    --
-    -- For "void time" the character is given the void point and counted as in the
-    -- void, and no shot is taken. For "bait time" it is given the bait point and
-    -- counted out of it, which is the phase the trigger is pulled on: the
-    -- character waits on the point and is walked around it the way follow target
-    -- walks around a target, at the follow target distance, speed and height,
-    -- with the follow target "stop if" list holding the walk the same way it
-    -- holds a follow. Nothing here follows anybody, so the point stays where it
-    -- was rolled and the target kept on it has something moving to shoot at.
-    --
-    -- Neither point is rolled again while the target stays set, so what is being
-    -- chased does not move under the chaser every time the cycle comes round.
-    do
-        local cframe_angles = CFrame["Angles"]
-        local rad = math["rad"]
-        local cycle_start = clock()
-        -- The bait point and the void point.
-        local bait_position = nil
-        local void_point = nil
-        local phase = nil
-        -- The bait's own copy of the follow target "stop if" list, kept here the
-        -- way follow target keeps its own, so the two blocks stay independent.
-        local bait_stop_if_reloading = true
-        local bait_stop_if_target_knocked = true
-        local bait_stop_if_no_gun_equipped = true
-
-        -- Rolled the way the built in void rolls its own point, bounded by the
-        -- bait distance: out past everything on the map, where nothing can reach
-        -- the character while the server holds it there for the frame that is
-        -- waited on.
-        local function roll_point()
-            local distance = flags["bait_distance"] or 1000000000
-
-            return cframe_new(vector3_new(math_random(-distance, distance), math_random(-400, distance), math_random(-distance, distance)))
-        end
-
-        -- One frame on the point, the rest of the frame where the character
-        -- really is: the position goes out on the wire for the frame that is
-        -- waited on and the server keeps it, so the target is given a point to
-        -- chase and strafe on that the character is not standing on.
-        --
-        -- The camera is not touched. It follows the character, and the character
-        -- is back where it started before the frame ends, so the view stays the
-        -- ordinary one on the map instead of being pulled out to the point.
-        local function desync(hrp, point)
-            local old_cframe = hrp["CFrame"]
-            local old_velocity = hrp["Velocity"]
-
-            hrp["Velocity"] = vector3_zero
-            hrp["CFrame"] = point
-            render_stepped_wait(render_stepped)
-            hrp["CFrame"] = old_cframe
-            hrp["Velocity"] = old_velocity
-        end
-
-        -- Every way out of the cycle comes through here. The desync leaves the
-        -- character where it found it, so there is nothing to put back; this only
-        -- drops the cycle so the next one starts clean.
-        local function stop()
-            baiting = false
-            baited = false
-            phase = nil
-            cycle_start = clock()
-            bait_position = nil
-            void_point = nil
-            bait_phase_seconds = nil
-        end
-
-        local do_bait = LPH_JIT_MAX(function(dt, hrp)
-            if not hrp or ragebot_force_position then
-                stop()
-                return
-            end
-
-            -- The bait runs off the selected target and nothing else. No
-            -- target, no cycle: there is nothing to bait and nothing to shoot
-            -- when the bait phase comes round.
-            if not ragebot_target then
-                stop()
-                return
-            end
-
-            -- A purchase owns the character while it is in flight. The shop
-            -- teleport and the click land on the frame the purchase takes, and
-            -- the bait handing the character out to its point on that same frame
-            -- is what takes the purchase off the shop, so armor and ammo stop
-            -- going through while the bait is on. The cycle stands down for the
-            -- purchase and picks up from the point it already rolled once the
-            -- purchase is through; out of the void, so the shop teleport is not
-            -- held off.
-            if purchasing then
-                baiting = false
-                baited = false
-                in_void = false
-                bait_phase_seconds = nil
-                return
-            end
-
-            local void_time = flags["bait_void_time"] or 0.5
-            local bait_time = flags["bait_time"] or 1
-            local cycle = void_time + bait_time
-            local elapsed = (clock() - cycle_start) % cycle
-
-            if elapsed < void_time then
-                -- Baiting: the void point is the position the target is given to
-                -- chase, and no shot is taken while the cycle is on it.
-                baiting = true
-                baited = false
-                in_void = true
-                bait_phase_seconds = void_time - elapsed
-
-                if phase ~= "void" then
-                    phase = "void"
-
-                    if not void_point then
-                        void_point = roll_point()
-                    end
-                end
-
-                desync(hrp, void_point)
-                local_server_position = void_point
-            else
-                -- Baited: the character waits on the bait point and is walked
-                -- around it the way follow target walks around a target. Nothing
-                -- here follows anybody: the point stays where it was rolled and
-                -- the character is carried around it, so the target kept on the
-                -- point has something moving to shoot at. in_void is cleared,
-                -- which is what lets the shot be taken on this phase.
-                baiting = false
-                baited = true
-                in_void = false
-                bait_phase_seconds = cycle - elapsed
-
-                if phase ~= "bait" then
-                    phase = "bait"
-
-                    if not bait_position then
-                        bait_position = roll_point()
-                    end
-                end
-
-                -- The follow target "stop if" list holds the walk: a knocked
-                -- target and no gun equipped leave the character waiting on the
-                -- point instead of walking it round.
-                --
-                -- A reload is not a wait. Nothing can be fired through it, so
-                -- there is nothing on the bait point worth standing in view for,
-                -- and a body left standing there for the length of a reload is
-                -- the easiest shot the target is given all cycle. The character
-                -- goes to the void point for the reload and comes back out to the
-                -- bait point when the reload is through.
-                local reloading = bait_stop_if_reloading and local_reloading
-                local waiting = (bait_stop_if_target_knocked and ragebot_target[18]) or (bait_stop_if_no_gun_equipped and not local_gun)
-                local point = bait_position
-
-                if reloading then
-                    in_void = true
-                    point = void_point or bait_position
-                elseif not waiting then
-                    local distance = flags["follow_target_distance"] or 15
-                    local speed = flags["follow_target_speed"] or 75
-                    local height = vector3_new(0, flags["follow_target_height"] or 0, 0)
-
-                    point = cframe_angles(0, rad(360 * ((clock() * speed) % 1)), 0) * cframe_new(0, 0, distance) + (bait_position["p"] + height)
-                end
-
-                desync(hrp, point)
-                local_server_position = point
-            end
-        end)
-
-        create_connection(menu_references["bait"]["on_toggle_change"], function(value)
-            for i = 1, #anti_aim do
-                if anti_aim[i] == do_bait then
-                    remove(anti_aim, i)
-                    break
-                end
-            end
-
-            stop()
-
-            if value then
-                anti_aim[#anti_aim+1] = do_bait
-            end
-        end)
-
-        -- The same list follow target keeps, read the same way, so the bait's
-        -- walk answers the follow target "stop if" settings without the two
-        -- blocks sharing a local.
-        create_connection(menu_references["follow_target_stop_if"]["on_dropdown_change"], function(value)
-            bait_stop_if_reloading = false
-            bait_stop_if_target_knocked = false
-            bait_stop_if_no_gun_equipped = false
-
-            for i = 1, #value do
-                local value = value[i]
-                if value == "reloading" then
-                    bait_stop_if_reloading = true
-                elseif value == "target knocked" then
-                    bait_stop_if_target_knocked = true
-                elseif value == "no gun equipped" then
-                    bait_stop_if_no_gun_equipped = true
-                end
-            end
-        end)
-    end
-
     -- >> ( rapid fire )
 
     do
@@ -23383,7 +23120,7 @@ local backtrack_data = {}
                 return
             end
 
-            if not flags["rapid_fire"] or baiting or baited or local_reloading or not local_character or menu["is_menu_open"]() then
+            if not flags["rapid_fire"] or local_reloading or not local_character or menu["is_menu_open"]() then
                 return
             end
 
@@ -24665,10 +24402,6 @@ local backtrack_data = {}
         local new_cframe = cframe_new()
         
         local do_void_hide = LPH_JIT_MAX(function(dt, hrp)
-            if baiting or baited then
-                return
-            end
-
             local humanoid = local_parts["Humanoid"]
 
             local forced = (void_hide_force_when_reloading and local_reloading) or (void_hide_force_when_tabbed_out and not isrbxactive()) or (void_hide_force_when_not_full_health and (humanoid and humanoid["Health"] ~= humanoid["MaxHealth"] or false))
