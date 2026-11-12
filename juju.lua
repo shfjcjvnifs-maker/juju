@@ -8871,6 +8871,11 @@ local force_aim_position = nil
 
 local local_server_position = cframe_new()
 local local_client_position = cframe_new()
+
+-- While a buy's click is in the air, the frame the game's own code reads
+-- for the character is the shop's: the click is taken from the shop with the
+-- character never moved there, so nothing of that buy reaches the server.
+local buy_frame = nil
 local local_bought_count = 0
 local local_character = local_player["Character"]
 local local_reloading = false
@@ -8894,8 +8899,20 @@ do
 
         local new = {
             ["__index"] = newcclosure(LPH_NO_VIRTUALIZE(function(self, index)
-                if not checkcaller() and self and index == "CFrame" and (#anti_aim ~= 0 or purchasing) and not vehicle then
-                    return local_client_position
+                if not checkcaller() and self and not vehicle then
+                    -- A buy in the air is read where the shop is, whatever
+                    -- the character itself is doing.
+                    if buy_frame then
+                        if index == "CFrame" then
+                            return buy_frame
+                        elseif index == "Position" then
+                            return buy_frame["p"]
+                        end
+                    end
+
+                    if index == "CFrame" and (#anti_aim ~= 0 or purchasing) then
+                        return local_client_position
+                    end
                 end
                 return old_index(self, index)
             end))
@@ -9897,9 +9914,11 @@ do
     local detector = nil
     local is_ammo = false
 
-    -- When the armor buy's one click was sent, if it was: the shop charges
-    -- for armor on every click it takes, and it takes the click a round trip
-    -- after it is sent.
+    -- An armor buy is clicked once into the spoofed frame and, if the shop
+    -- did not take that click, once more from the shop itself. These are when
+    -- each of those clicks was sent: the shop charges for armor on every
+    -- click it takes, and it takes a click a round trip after it is sent.
+    local armor_spoof_time = nil
     local armor_click_time = nil
 
     local purchase_function = nil; purchase_function = LPH_JIT_MAX(function(dt, hrp)
@@ -9943,15 +9962,40 @@ do
         -- Everything else is clicked again until the window closes.
         local armor_item = purchasing and purchasing[6]:find("armor") or false
 
-        -- While that click is in the air the purchase stays open: the
-        -- character has to still be at the shop when the shop takes it, so it
-        -- is not handed back to the void hide, and a second click would be
-        -- charged for a second armor.
-        if armor_item and armor_click_time and didnt_buy and not stop and clock() - armor_click_time < local_ping/1000 + 0.05 then
+        -- A click is taken a round trip after it is sent, and it is read as
+        -- coming from wherever the character is when it is taken: that round
+        -- trip is how long the shop is handed to the game for.
+        local round_trip = local_ping/1000 + 0.05
+
+        -- While a spoofed click is in the air the purchase stays open: the
+        -- frame the game reads has to still be the shop's when the shop takes
+        -- it, and a second click would be charged for a second armor.
+        if armor_item and armor_spoof_time and didnt_buy and not stop and clock() - armor_spoof_time < round_trip then
+            buy_frame = cframe_new(position - vector3_new(0,8.8,0))
+            return
+        end
+
+        -- Same again for a click fired from the shop itself: the character
+        -- has to still be there when the shop takes it, so it is not handed
+        -- back to the void hide.
+        if armor_item and armor_click_time and didnt_buy and not stop and clock() - armor_click_time < round_trip then
             return
         end
         
-        if not stop and (didnt_buy and hrp and clock() - start_time < (local_reloading and 2 + ping * 2 or ping*2 + purchase_count*0.36) and (not is_ammo or not local_reloading) and not (armor_item and armor_click_time)) then
+        -- The click goes into the spoofed frame first: the game's own reads of
+        -- where the character is are handed the shop, so the click counts from
+        -- there while the character itself stays where it is. The round trip
+        -- that click goes out on is how long it is given, and a shop that does
+        -- not take it is reached in person after that.
+        local spoof_click = clock() - start_time < round_trip
+
+        -- An armor buy is clicked once each way and no more: the shop charges
+        -- for every click it takes. The spoofed click is only let go of a round
+        -- trip after its own, so a click the shop did take is not charged for
+        -- twice by the one that follows it.
+        local armor_click = armor_item and armor_click_time == nil and (armor_spoof_time == nil or clock() - armor_spoof_time >= round_trip * 2)
+
+        if not stop and (didnt_buy and hrp and clock() - start_time < (local_reloading and 2 + ping * 2 or ping*2 + purchase_count*0.36) and (not is_ammo or not local_reloading) and (not armor_item or armor_click)) then
             if not skip then
                 for gun, data in local_guns do
                     local gun = gun["Parent"]
@@ -9964,27 +10008,54 @@ do
 
             local old_cframe = hrp["CFrame"]
 
-            -- The click only counts from the shop, so the character is taken
-            -- there before it is fired, whatever the void hide did with the
-            -- frame, and it is handed back below.
-            hrp["CFrame"] = cframe_new(position - vector3_new(0,8.8,0))
+            if spoof_click then
+                -- The shop is handed to the game as where the character is for
+                -- the round trip the click is taken in, and the character
+                -- itself is not moved: nothing of this buy reaches the server.
+                buy_frame = cframe_new(position - vector3_new(0,8.8,0))
 
-            fireclickdetector(detector)
+                fireclickdetector(detector)
 
-            render_stepped_wait(render_stepped)
+                render_stepped_wait(render_stepped)
 
-            if armor_item then
-                -- One click for the armor: the shop charges for every click it
-                -- takes, and it takes this one a round trip after it is sent,
-                -- so the character is held at the shop until then. Handed back
-                -- any sooner, the click counts for nothing and no armor is
-                -- bought.
-                armor_click_time = clock()
-                wait(local_ping/1000 + 0.05)
+                if armor_item then
+                    -- One click for the armor: the shop charges for every
+                    -- click it takes, and it takes this one a round trip after
+                    -- it is sent, so the frame the game reads is held there
+                    -- until then.
+                    armor_spoof_time = clock()
+                    wait(round_trip)
+                    buy_frame = nil
+                end
+            else
+                -- The spoofed click bought nothing, so the character is taken
+                -- to the shop in person, whatever the void hide did with the
+                -- frame, and the frame is handed back below.
+                buy_frame = nil
+
+                hrp["CFrame"] = cframe_new(position - vector3_new(0,8.8,0))
+
+                fireclickdetector(detector)
+
+                render_stepped_wait(render_stepped)
+
+                if armor_item then
+                    -- One click from the shop for the armor: the shop charges
+                    -- for every click it takes, and it takes this one a round
+                    -- trip after it is sent, so the character is held at the
+                    -- shop until then. Handed back any sooner, the click counts
+                    -- for nothing and no armor is bought.
+                    armor_click_time = clock()
+                    wait(round_trip)
+                end
+
+                hrp["CFrame"] = old_cframe
             end
-
-            hrp["CFrame"] = old_cframe
         else
+            -- Whatever it did, the buy is over: the frame the game reads is
+            -- the character's own again.
+            buy_frame = nil
+
             local old_purchasing = purchasing
 
             spawn(function()
@@ -10043,8 +10114,10 @@ do
 
             start_time = clock()
 
-            -- Every purchase starts with its click still owed.
+            -- Every purchase starts with no click owed and no frame spoofed.
+            armor_spoof_time = nil
             armor_click_time = nil
+            buy_frame = nil
 
             local found = false
 
