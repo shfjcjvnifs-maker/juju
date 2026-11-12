@@ -9969,9 +9969,14 @@ do
 
         -- While a spoofed click is in the air the purchase stays open: the
         -- frame the game reads has to still be the shop's when the shop takes
-        -- it, and a second click would be charged for a second armor.
-        if armor_item and armor_spoof_time and didnt_buy and not stop and clock() - armor_spoof_time < round_trip then
-            buy_frame = cframe_new(position - vector3_new(0,8.8,0))
+        -- it, and a second click would be charged for a second armor. The
+        -- click that follows it is owed a round trip after it, so the purchase
+        -- is held for that as well rather than closed on a click still to come.
+        if armor_item and armor_spoof_time and armor_click_time == nil and didnt_buy and not stop and clock() - armor_spoof_time < round_trip * 2 then
+            if clock() - armor_spoof_time < round_trip then
+                buy_frame = cframe_new(position - vector3_new(0,8.8,0))
+            end
+
             return
         end
 
@@ -10098,9 +10103,13 @@ do
         if shop then
             if purchasing then
                 -- One purchase at a time. Armor over armor is the same buy asked
-                -- for again, which is a retry; anything else starting here would
-                -- drop what is in flight and leave neither bought.
-                if not (item:find("armor") and purchasing[6]:find("armor")) then
+                -- for again, which is a retry, but not while the buy it would
+                -- stand in for is still running: that would put the buy's clicks
+                -- back to the start every time, and one still waiting on the shop
+                -- would never get past its first click. A buy that has run its
+                -- whole window is a different matter - it is let go of, and the
+                -- retry starts from the beginning.
+                if not (item:find("armor") and purchasing[6]:find("armor")) or clock() - start_time < (local_reloading and 2 + local_ping/500 or local_ping/500 + purchase_count*0.36) then
                     return
                 end
             end
@@ -23869,15 +23878,20 @@ local backtrack_data = {}
                     last_attempt = tick
                     
                     if local_cash > 5000 and not popcorn then
-                        popcorn = find_first_child(local_player["Backpack"], "[Popcorn]")
+                        local backpack = find_first_child(local_player, "Backpack")
+                        popcorn = (backpack and find_first_child(backpack, "[Popcorn]")) or nil
 
                         if not popcorn then
                             purchase_item("popcorn")
                         end
                     end
                 elseif popcorn then
-                    popcorn["Parent"] = local_player["Backpack"]
-                    popcorn = nil
+                    local backpack = find_first_child(local_player, "Backpack")
+
+                    if backpack then
+                        popcorn["Parent"] = backpack
+                        popcorn = nil
+                    end
                 end
             end
 
@@ -23931,9 +23945,13 @@ local backtrack_data = {}
 
             if mask or local_knocked or purchasing or local_cash < 5000 then
                 if current_mask then
-                    setscriptable(current_mask, "Parent", true)
-                    current_mask["Parent"] = local_player["Backpack"]
-                    current_mask = nil
+                    local backpack = find_first_child(local_player, "Backpack")
+
+                    if backpack then
+                        setscriptable(current_mask, "Parent", true)
+                        current_mask["Parent"] = backpack
+                        current_mask = nil
+                    end
                 end
                 return
             end
@@ -23942,7 +23960,8 @@ local backtrack_data = {}
                 return
             end
             
-            current_mask = find_first_child(local_player["Backpack"], "[Mask]") or local_parts["[Mask]"]
+            local mask_backpack = find_first_child(local_player, "Backpack")
+            current_mask = (mask_backpack and find_first_child(mask_backpack, "[Mask]")) or local_parts["[Mask]"]
 
             local tick = clock()
 
@@ -23997,6 +24016,9 @@ local backtrack_data = {}
     local old_radius = 0
     local rendering = false
     local get_bounding_box = nil
+    local bbox_cache_character = nil
+    local bbox_cache_tick = 0
+    local bbox_cache_radius = 2
 
     do
         local model = create_instance("Model", {})
@@ -24007,14 +24029,27 @@ local backtrack_data = {}
     local sin = math["sin"]
 
     local do_target_circle = LPH_JIT_MAX(function(dt, hrp)
-        if ragebot_target and hrp and not ragebot_target[7] then
+        local upper_torso = ragebot_target and ragebot_target[4] and ragebot_target[4]["UpperTorso"]
+
+        if ragebot_target and hrp and upper_torso and not ragebot_target[7] then
             rendering = true
-            local position = ragebot_target[4]["UpperTorso"]["Position"]
+            local position = upper_torso["Position"]
             local color = flags["3d_target_circle_color"]
             local gradient_color = flags["3d_target_circle_gradient_color"]
 
-            local _, radius = get_bounding_box(ragebot_target[3])
-            local new_radius = clamp((radius["X"] + radius["Z"]) / 3, 2, 10)
+            -- > the bounding box walk is expensive: what it measured is kept
+            -- for a moment, and only walked again when the target changes
+
+            local circle_character = ragebot_target[3]
+
+            if circle_character ~= bbox_cache_character or clock() - bbox_cache_tick > 0.25 then
+                local _, radius = get_bounding_box(circle_character)
+                bbox_cache_radius = clamp((radius["X"] + radius["Z"]) / 3, 2, 10)
+                bbox_cache_character = circle_character
+                bbox_cache_tick = clock()
+            end
+
+            local new_radius = bbox_cache_radius
 
             if new_radius ~= old_radius and abs(new_radius - old_radius) > 1.1 then
                 old_radius = new_radius
@@ -24092,18 +24127,48 @@ local backtrack_data = {}
     -- >> ( crosshair follow )
 
     do
-        local mid_position = camera["ViewportSize"]/2 - vector2_new(2, 58)
+        local cached_mouse_position = nil
+        local cached_mouse_tick = 0
+        local cached_viewport_size = nil
+        local cached_viewport_tick = 0
+
+        local function get_mouse_position_cached()
+            local t = clock()
+
+            if not cached_mouse_position or t - cached_mouse_tick > 0.0075 then
+                cached_mouse_position = user_input_service["GetMouseLocation"](user_input_service)
+                cached_mouse_tick = t
+            end
+
+            return cached_mouse_position
+        end
+
+        local function get_viewport_size_cached()
+            local t = clock()
+
+            if not cached_viewport_size or t - cached_viewport_tick > 0.0075 then
+                cached_viewport_size = camera["ViewportSize"]
+                cached_viewport_tick = t
+            end
+
+            return cached_viewport_size
+        end
+
+        local mid_position = get_viewport_size_cached()/2 - vector2_new(2, 58)
         local old_value = udim2_new(0, mid_position["X"], 0, mid_position["Y"])
         local aim_frame = nil
         local blank = vector2_new(0, 0)
         local do_crosshair_follow = LPH_JIT_MAX(function(dt, hrp)
             render_stepped_wait(render_stepped)
-            local mouse_position = user_input_service["GetMouseLocation"](user_input_service)
+            local mouse_position = get_mouse_position_cached()
             if aim_frame and ragebot_target and ragebot_aim_position then
                 if ragebot_aim_position then
                     local position, on_screen = world_to_viewport_point(camera, ragebot_aim_position)
 
-                    local goal_position = udim2_new(0, mouse_position["X"], 0, mouse_position["Y"])
+                    -- > the goal is kept in screen pixels, so both of the ways
+                    -- it can go are one type
+
+                    local goal_position = vector2_new(mouse_position["X"], mouse_position["Y"])
 
                     if on_screen and not local_reloading and not ragebot_target[7] then
                         goal_position = vector2_new(position["X"] - 2, position["Y"] - 58)
@@ -24118,8 +24183,12 @@ local backtrack_data = {}
                         aim_frame["Position"] = old_value
                     end
 
-                    local new = (goal_position - vector2_new(old_value["X"]["Offset"], old_value["Y"]["Offset"]))
-                    new = old_value + udim2_new(0, new["X"] * tween_value, 0, new["Y"] * tween_value)
+                    -- > smoothed in pixels, and packed into a UDim2 once
+
+                    local old_pixel = vector2_new(old_value["X"]["Offset"], old_value["Y"]["Offset"])
+                    local new_pixel = old_pixel + (goal_position - old_pixel) * tween_value
+
+                    local new = udim2_new(0, new_pixel["X"], 0, new_pixel["Y"])
 
                     aim_frame["Position"] = new
 
@@ -24316,7 +24385,8 @@ local backtrack_data = {}
                 end
             end
 
-            local children = get_children(local_player["Backpack"])
+            local loadout_backpack = find_first_child(local_player, "Backpack")
+            local children = loadout_backpack and get_children(loadout_backpack) or {}
             children[#children+1] = local_tool
 
             for gun, data in local_guns do
@@ -24349,13 +24419,23 @@ local backtrack_data = {}
                 purchase_item(gun)
 
                 while old_hrp == local_parts["HumanoidRootPart"] and flags["auto_loadout"] do
-                    local backpack = local_player["Backpack"]
+                    local backpack = find_first_child(local_player, "Backpack")
+
+                    if not backpack then
+                        wait(0.05)
+                        continue
+                    end
 
                     local children = get_children(backpack)
                     children[#children+1] = local_tool
 
-                    for gun, data in local_guns do
-                        local parent = gun["Parent"]
+                    -- > no shadowing: this loop used to overwrite the weapon
+                    -- string with a tool instance, so every gun after the first
+                    -- just re-bought the first one's ammo instead of being
+                    -- purchased
+
+                    for handle, data in local_guns do
+                        local parent = handle["Parent"]
                         if parent then
                             children[#children+1] = parent
                         end
@@ -24459,12 +24539,17 @@ local backtrack_data = {}
         local minimum_clips = flags["auto_ammo_minimum_clips"]+1
 
         local do_auto_ammo = LPH_JIT_MAX(function(dt, hrp)
-            if (disable_when_target_alive and ((ragebot_target and not ragebot_target[7]) or nil)) or purchasing or local_reloading or not hrp then
+            if (disable_when_target_alive and ((ragebot_target and not ragebot_target[7]) or nil)) or purchasing or local_reloading or not hrp or not inventory then
                 return
             end
 
             for gun, data in local_guns do
                 local gun = gun["Parent"]
+
+                if not gun then
+                    continue
+                end
+
                 local remainder = minimum_clips - floor(tonumber(inventory[gun["Name"]]["Value"])/gun["MaxAmmo"]["Value"])
 
                 if remainder >= 0 then
