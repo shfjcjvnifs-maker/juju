@@ -8884,6 +8884,20 @@ local local_gun = nil
 local local_following = false
 
 local purchasing = nil
+
+-- Armor a shop has refused, as the buys report it: the name, how many times
+-- in a row it was refused, and when. The armor loop reads this so a shop
+-- that keeps taking the click and charging nothing is not asked again.
+local armor_refused = {}
+
+-- A shop that took the click and charged nothing is passed over for a
+-- while: asking every second only fills the screen with failures.
+local function armor_refused_now(name, tick)
+    local refused = armor_refused[name]
+
+    return refused ~= nil and refused[1] >= 2 and tick - refused[2] < 60
+end
+
 local vehicle_data = {}
 local vehicle = nil
 
@@ -9897,9 +9911,10 @@ do
     local detector = nil
     local is_ammo = false
 
-    -- Set once the armor buy has been clicked, so the loop below stops
-    -- clicking it: the shop charges for armor on every click it takes.
-    local armor_clicked = false
+    -- When the armor buy's one click was sent, if it was: the shop charges
+    -- for armor on every click it takes, and it takes the click a round trip
+    -- after it is sent.
+    local armor_click_time = nil
 
     local purchase_function = nil; purchase_function = LPH_JIT_MAX(function(dt, hrp)
         local stop = false
@@ -9941,8 +9956,16 @@ do
         -- one click and what it did is read off the cash a moment later.
         -- Everything else is clicked again until the window closes.
         local armor_item = purchasing and purchasing[6]:find("armor") or false
+
+        -- While that click is in the air the purchase stays open: the
+        -- character has to still be at the shop when the shop takes it, so it
+        -- is not handed back to the void hide, and a second click would be
+        -- charged for a second armor.
+        if armor_item and armor_click_time and didnt_buy and not stop and clock() - armor_click_time < local_ping/1000 + 0.05 then
+            return
+        end
         
-        if not stop and (didnt_buy and hrp and clock() - start_time < (local_reloading and 2 + ping * 2 or ping*2 + purchase_count*0.36) and (not is_ammo or not local_reloading) and not (armor_item and armor_clicked)) then
+        if not stop and (didnt_buy and hrp and clock() - start_time < (local_reloading and 2 + ping * 2 or ping*2 + purchase_count*0.36) and (not is_ammo or not local_reloading) and not (armor_item and armor_click_time)) then
             if not skip then
                 for gun, data in local_guns do
                     local gun = gun["Parent"]
@@ -9953,26 +9976,50 @@ do
                 end
             end
 
-            fireclickdetector(detector)
             local old_cframe = hrp["CFrame"]
 
-            -- The click only counts from the shop, so the purchase takes the
-            -- character there whatever the void hide did with the frame, and
-            -- hands it back below.
+            -- The click only counts from the shop, so the character is taken
+            -- there before it is fired, whatever the void hide did with the
+            -- frame, and it is handed back below.
             hrp["CFrame"] = cframe_new(position - vector3_new(0,8.8,0))
 
+            fireclickdetector(detector)
+
             render_stepped_wait(render_stepped)
-            hrp["CFrame"] = old_cframe
 
             if armor_item then
-                armor_clicked = true
+                -- One click for the armor: the shop charges for every click it
+                -- takes, and it takes this one a round trip after it is sent,
+                -- so the character is held at the shop until then. Handed back
+                -- any sooner, the click counts for nothing and no armor is
+                -- bought.
+                armor_click_time = clock()
+                wait(local_ping/1000 + 0.05)
             end
+
+            hrp["CFrame"] = old_cframe
         else
             local old_purchasing = purchasing
 
             spawn(function()
                 wait(local_ping/250)
                 if local_bought_count < new_bought_count then
+                    -- What the shop did not sell is remembered where the armor
+                    -- loop can read it: armor refused twice is passed over for
+                    -- a while instead of being asked for again and again.
+                    local refused_name = old_purchasing[6]
+
+                    if refused_name:find("armor") then
+                        local refused = armor_refused[refused_name]
+
+                        if refused then
+                            refused[1] = refused[1] + 1
+                            refused[2] = clock()
+                        else
+                            armor_refused[refused_name] = {1, clock()}
+                        end
+                    end
+
                     new_notification(
                         stop and "failed to purchase "..old_purchasing[6].." (due to safe purchasing)" or "failed to purchase "..old_purchasing[6],
                         3
@@ -10027,7 +10074,7 @@ do
             start_time = clock()
 
             -- Every purchase starts with its click still owed.
-            armor_clicked = false
+            armor_click_time = nil
 
             local found = false
 
@@ -23724,6 +23771,12 @@ local backtrack_data = {}
     local last_attempt = clock()
     local cooldown = 0.05
 
+    -- The armor the loop goes for. The shop is still the authority on what it
+    -- sells and what it charges, so a shop without this armor, or one asking
+    -- more for it than the character has, falls back to the best armor it does
+    -- sell at a price that can be paid.
+    local armor_wanted = "high-medium armor"
+
     -- The shop charges for armor a moment after it is clicked, so until that
     -- charge is seen the armor still reads low and the cash still reads whole.
     -- A buy made in that moment is charged for a second armor, so the last
@@ -23746,20 +23799,25 @@ local backtrack_data = {}
         if local_armor < threshold and not local_knocked and not purchasing and (tick-last_attempt > cooldown) then
             last_attempt = tick
 
-            -- The shop is the authority on what it sells and what it charges, so
-            -- the armor is looked up there, and out of what is on sale the best
-            -- the character can pay for is taken. Picking by name alone either
-            -- sends the buy at something the shop does not have, or buys whichever
-            -- armor the table happened to be walked first.
+            -- The armor that is wanted is bought when the shop sells it and the
+            -- character can pay. Otherwise the shop is still the authority on
+            -- what it sells and what it charges: out of what is on sale the best
+            -- that can be paid for is taken, and armor the shop has refused is
+            -- passed over rather than asked for again and again.
             local armor_item = nil
-            local armor_price = nil
 
-            for name, data in shops do
-                local price = data[2]
+            if shops[armor_wanted] and (shops[armor_wanted][2] or 0) <= local_cash and not armor_refused_now(armor_wanted, tick) then
+                armor_item = armor_wanted
+            else
+                local armor_price = nil
 
-                if name:find("armor") and price and price <= local_cash and (not armor_item or price > armor_price or (price == armor_price and name < armor_item)) then
-                    armor_item = name
-                    armor_price = price
+                for name, data in shops do
+                    local price = data[2]
+
+                    if name:find("armor") and price and price <= local_cash and not armor_refused_now(name, tick) and (not armor_item or price > armor_price or (price == armor_price and name < armor_item)) then
+                        armor_item = name
+                        armor_price = price
+                    end
                 end
             end
 
