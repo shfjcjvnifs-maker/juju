@@ -8518,9 +8518,10 @@ local local_knocked = false
 local ragebot_force_position = nil
 local in_void = false
 local stomping = false
--- The bait: after a target is set, go to the void for a moment, then surface far
--- out and wait for the target to chase. "baiting" is the wait in the void;
--- "baited" is the window surfaced and visible, when the shot is taken.
+-- The bait: after a target is set, hand the character out past the map the way
+-- the built in void hands its own over, and let the target chase the point it is
+-- given. "baiting" is the phase counted as in the void; "baited" is the phase
+-- counted out of it, when the shot is taken.
 local baiting = false
 local baited = false
 
@@ -23102,43 +23103,31 @@ local backtrack_data = {}
 
     -- >> ( bait )
 
-    -- With a ragebot target set, the bait runs a two-phase cycle and works from a
-    -- point rolled around the target, the same way follow target rolls its own.
-    -- That point is in the map and a few studs off the target, so the target
-    -- chasing it and strafing on it is in view, and the ragebot firing from it
-    -- is firing at something it can reach.
+    -- With a ragebot target set, the bait runs a two-phase cycle and hands the
+    -- character over the way the built in void hands its own over: out past
+    -- anything on the map, one frame waited on, and back to where the character
+    -- really is before the frame ends. The server holds the character out there
+    -- for that frame while the client sits at home, so the character is never
+    -- standing anywhere a target can reach it, and no health is written to keep
+    -- it alive.
     --
     -- For "void time" the character is given the void point and counted as in the
     -- void. For "bait time" it is given the bait point and counted out of it, so
-    -- the ragebot fires at the chaser for that phase. Both points are handed over
-    -- the way follow target and void hide hand theirs over: out to the point,
-    -- wait the frame, back to where the character really is. The position is on
-    -- the wire for that frame and the server keeps it, while the client goes
-    -- straight back.
-    --
-    -- The point is rolled level with the target or above it, never under the
-    -- ground the target is standing on, and any health the character is missing
-    -- is put back every frame: the server is the one standing at the point for
-    -- that frame, so a void hit there cannot end the bait with a dead character.
+    -- the target has a point to chase and strafe on for that phase. Neither point
+    -- is rolled again while the target stays set, so what is being chased does
+    -- not move under the chaser every time the cycle comes round.
     do
-        local rad = math["rad"]
-        local cframe_angles = CFrame["Angles"]
         local cycle_start = clock()
-        -- The bait point and the void point. Neither is rolled again while the
-        -- target stays set, so what is being chased does not move under the
-        -- chaser every time the cycle comes round.
+        -- The bait point and the void point.
         local bait_position = nil
         local void_point = nil
         local phase = nil
 
-        -- Rolled off the target's aim position, at the follow target distance, so
-        -- the point is always somewhere on the map next to the target. The height
-        -- offset is taken upwards only, so the point lands level with the target
-        -- or above it and never under the ground the target is standing on.
+        -- Rolled the way the built in void rolls its own point: out past
+        -- everything on the map, where nothing can reach the character while the
+        -- server holds it there for the frame that is waited on.
         local function roll_point()
-            local radius = flags["follow_target_distance"] or 15
-
-            return cframe_new(ragebot_aim_position + vector3_new(math_random(-radius, radius), math_random(0, radius), math_random(-radius, radius)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
+            return cframe_new(vector3_new(math_random(-2147483647, 2147483647), math_random(-400, 2147483647), math_random(-2147483647, 2147483647)))
         end
 
         -- One frame on the point, the rest of the frame where the character
@@ -23160,7 +23149,7 @@ local backtrack_data = {}
             hrp["Velocity"] = old_velocity
         end
 
-        -- Every way out of the cycle comes through here. The spoof leaves the
+        -- Every way out of the cycle comes through here. The desync leaves the
         -- character where it found it, so there is nothing to put back; this only
         -- drops the cycle so the next one starts clean.
         local function stop()
@@ -23184,25 +23173,6 @@ local backtrack_data = {}
             if not ragebot_target then
                 stop()
                 return
-            end
-
-            -- The points are rolled around the target's aim position, so there
-            -- is nothing to roll until the ragebot has one for this frame.
-            if not ragebot_aim_position then
-                baiting = false
-                baited = false
-                return
-            end
-
-            -- Anti void: the server holds the character out at the point for a
-            -- frame every frame, so the void's damage lands there while the
-            -- client shows the character safe at home. Put any health the
-            -- character is missing back, so a void hit cannot end the cycle
-            -- with a dead character.
-            local humanoid = local_parts["Humanoid"]
-
-            if humanoid and humanoid["Health"] < humanoid["MaxHealth"] then
-                humanoid["Health"] = humanoid["MaxHealth"]
             end
 
             local void_time = flags["bait_void_time"] or 0.5
@@ -23229,8 +23199,8 @@ local backtrack_data = {}
                 local_server_position = void_point
             else
                 -- Baited: the bait point is the position the target is given to
-                -- strafe on and be shot on. in_void is cleared, which lets the
-                -- ragebot fire at the chaser from the point the server has.
+                -- strafe on. in_void is cleared, which lets the ragebot fire for
+                -- that phase, from the point the server has.
                 baiting = false
                 baited = true
                 in_void = false
