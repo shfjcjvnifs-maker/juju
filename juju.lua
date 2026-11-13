@@ -8927,10 +8927,30 @@ do
 
         local new = {
             ["__index"] = newcclosure(LPH_NO_VIRTUALIZE(function(self, index)
-                if not checkcaller() and self and index == "CFrame" and (#anti_aim ~= 0 or purchasing) and not vehicle then
-                    return local_client_position
+                local value = nil
+
+                if old_index then
+                    value = old_index(self, index)
                 end
-                return old_index(self, index)
+
+                if not checkcaller() and self and index == "CFrame" and value and (#anti_aim ~= 0 or purchasing) and not vehicle then
+                    -- Only while the part has really been sent somewhere else. Told
+                    -- on every read, this pinned the character: the game read last
+                    -- frame's position back every frame and its own controller could
+                    -- not move it, so it stood there stuck and could not strafe. A
+                    -- desync puts the part millions of studs away. Normal play, a
+                    -- buy and an aim step all leave it within a stud of what the
+                    -- game last saw.
+                    local dx = value["X"] - local_client_position["X"]
+                    local dy = value["Y"] - local_client_position["Y"]
+                    local dz = value["Z"] - local_client_position["Z"]
+
+                    if dx*dx + dy*dy + dz*dz > 1 then
+                        return local_client_position
+                    end
+                end
+
+                return value
             end))
         }
 
@@ -8955,7 +8975,13 @@ do
 
         local new = {
             ["__index"] = newcclosure(LPH_NO_VIRTUALIZE(function(self, index)
-                if not checkcaller() and self and index == "WalkSpeed" or index == "JumpPower" then
+                -- Both keys, and only for a caller that is not ours. The old form
+                -- read as (not checkcaller() and self and index == "WalkSpeed") or
+                -- (index == "JumpPower"), because and binds tighter than or, so every
+                -- read of JumpPower came back as the cached copy - the game's own
+                -- reads included - and whatever changed it behind the cache was
+                -- invisible to everyone.
+                if not checkcaller() and self and (index == "WalkSpeed" or index == "JumpPower") then
                     return s[index]
                 end
                 return old_index(self, index)
