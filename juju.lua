@@ -28461,9 +28461,11 @@ local localPlayer = Players.LocalPlayer
 
 render_stepped_wait(render_stepped)
 
--- Auto walk, as given: while the character stands with no input, a small
--- sideways velocity is written every heartbeat, and the fall speed is kept.
-RunService.Heartbeat:Connect(function()
+-- Auto walk, as given, executed again every second: the old connection is
+-- disconnected and the snippet connected fresh, so only one ever runs. Both the
+-- walk and the 1 second timer keep a fixed slot in early_connections, so unload
+-- stops them and the list does not grow.
+local function auto_walk_step()
     local character = localPlayer.Character
     local rootPart = character and character:FindFirstChild("HumanoidRootPart")
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -28472,6 +28474,29 @@ RunService.Heartbeat:Connect(function()
         local currentYVelocity = rootPart.AssemblyLinearVelocity.Y
         rootPart.AssemblyLinearVelocity = Vector3.new(0.1, currentYVelocity, 0.1)
     end
+end
+
+local auto_walk_slot = #early_connections + 1
+early_connections[auto_walk_slot] = RunService.Heartbeat:Connect(auto_walk_step)
+
+local auto_walk_last = clock()
+
+early_connections[#early_connections + 1] = RunService.Heartbeat:Connect(function()
+    local now = clock()
+
+    if now - auto_walk_last < 1 then
+        return
+    end
+
+    auto_walk_last = now
+
+    local old_connection = early_connections[auto_walk_slot]
+
+    if old_connection then
+        old_connection:Disconnect()
+    end
+
+    early_connections[auto_walk_slot] = RunService.Heartbeat:Connect(auto_walk_step)
 end)
 
 end, function(err)
