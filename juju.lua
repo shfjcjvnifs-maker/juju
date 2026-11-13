@@ -17766,7 +17766,9 @@ end
 
     -- >> ( esp core )
 
+    local esp_frame_parity = false
     local do_esp = LPH_NO_VIRTUALIZE(function()
+        esp_frame_parity = not esp_frame_parity
         for player, data in player_data do
             local parts = data[4]
             local upper_torso = parts["UpperTorso"]
@@ -17824,6 +17826,7 @@ end
                     end
                 end
 
+                if not esp_frame_parity then continue end
                 local offset_pos = world_to_viewport_point(camera, position - offset)
 
                 local difference = offset_pos["Y"]-screen_pos["Y"]
