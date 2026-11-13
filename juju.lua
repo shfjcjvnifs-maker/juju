@@ -27267,7 +27267,9 @@ do
         end
 
         if hrp then
-            spawn(update_server_position, hrp)
+            -- Called, not spawned. It is one assignment, and a coroutine every
+            -- frame to run it costs more than the assignment does.
+            update_server_position(hrp)
         end
     end))
 
