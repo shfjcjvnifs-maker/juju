@@ -7855,7 +7855,7 @@ local menu = {
                 misc:create_tab("configs")
                 misc:create_tab("addons")
                 misc:create_tab("shop")
-                misc:create_tab("anti ban")
+                misc:create_tab("antiban")
                 misc:create_tab("main")
             menu.create_group("addons")
             menu["groups"]["addons"]:hide()
@@ -7865,7 +7865,7 @@ local menu = {
         menu_references["addon_panel"] = menu["groups"]["misc."]:create_section("addons", "addon panel", 2, 1, 0)
 
         local anti_ban_action = "notify"
-        local anti_ban_section = menu["groups"]["misc."]:create_section("anti ban", "anti ban", 1, 1, 0)
+        local anti_ban_section = menu["groups"]["misc."]:create_section("antiban", "antiban", 1, 1, 0)
 
         menu_references["anti_ban_action"] = anti_ban_section:create_element({["name"] = "action on report"}, {
             ["dropdown"] = {
