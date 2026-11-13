@@ -7881,6 +7881,20 @@ local menu = {
             anti_ban_action = value[1]
         end)
 
+        -- Anti report, built here with the rest of the menu. A section made
+        -- after its tab has been shown is never reached by the pass that fades a
+        -- tab's sections in, so it keeps transparency 1 and is not seen until the
+        -- tab is switched away and back. The detector behind these elements is
+        -- set up at the end of the script.
+        menu_references["anti_report_section"] = menu["groups"]["misc."]:create_section("antiban", "anti report", 2, 1, 0)
+
+        menu_references["anti_report"] = menu_references["anti_report_section"]:create_element({["name"] = "anti report"}, {["toggle"] = {["flag"] = "anti_report", ["default"] = false}})
+        menu_references["anti_report_settings"] = menu_references["anti_report"]:create_settings()
+        menu_references["anti_report_action"] = menu_references["anti_report_settings"]:create_element({["name"] = "action"}, {["dropdown"] = {["flag"] = "anti_report_action", ["options"] = {"notify", "kick", "rejoin"}, ["default"] = {"notify"}, ["requires_one"] = true}})
+        menu_references["anti_report_new_server"] = menu_references["anti_report_settings"]:create_element({["name"] = "rejoin new server"}, {["toggle"] = {["flag"] = "anti_report_new_server", ["default"] = true}})
+        menu_references["anti_report_debug"] = menu_references["anti_report_settings"]:create_element({["name"] = "debug log"}, {["toggle"] = {["flag"] = "anti_report_debug", ["default"] = false}})
+        menu_references["anti_report_test"] = menu_references["anti_report_settings"]:create_element({["name"] = "test notification"}, {["button"] = {}})
+
 
         menu_references["load_addon"] = menu_references["addon_panel"]:create_element({
             ["name"] = "load addon"
@@ -28858,15 +28872,9 @@ end)
         ["labels"] = setmetatable({}, {["__mode"] = "k"})
     }
 
-    menu_references["anti_report_section"] = menu["groups"]["misc."]:create_section("antiban", "anti report", 2, 1, 0)
-
-    menu_references["anti_report"] = menu_references["anti_report_section"]:create_element({["name"] = "anti report"}, {["toggle"] = {["flag"] = "anti_report", ["default"] = false}})
-    menu_references["anti_report_settings"] = menu_references["anti_report"]:create_settings()
-    menu_references["anti_report_action"] = menu_references["anti_report_settings"]:create_element({["name"] = "action"}, {["dropdown"] = {["flag"] = "anti_report_action", ["options"] = {"notify", "kick", "rejoin"}, ["default"] = {"notify"}, ["requires_one"] = true}})
-    menu_references["anti_report_new_server"] = menu_references["anti_report_settings"]:create_element({["name"] = "rejoin new server"}, {["toggle"] = {["flag"] = "anti_report_new_server", ["default"] = true}})
-    menu_references["anti_report_debug"] = menu_references["anti_report_settings"]:create_element({["name"] = "debug log"}, {["toggle"] = {["flag"] = "anti_report_debug", ["default"] = false}})
-
-    create_connection(menu_references["anti_report_settings"]:create_element({["name"] = "test notification"}, {["button"] = {}})["on_clicked"], function()
+    -- The elements are made with the rest of the menu. Only their test button
+    -- is wired here, because it reads this detector's own state.
+    create_connection(menu_references["anti_report_test"]["on_clicked"], function()
         state["known"]["anti-rep test"] = true
         new_notification("anti-rep test", 3)
     end)
