@@ -13234,8 +13234,8 @@ do
                 NumberSequenceKeypoint.new(1, 0)
             },
             ["Texture"] = "rbxasset://textures/particles/sparkles_main.dds",
-            ["Speed"] = NumberRange.new(30, 50),
-            ["Lifetime"] = NumberRange.new(9, 9),
+            ["Speed"] = NumberRange.new(40, 40),
+            ["Lifetime"] = NumberRange.new(2.4, 2.4),
             ["LightEmission"] = 0.5,
             ["Brightness"] = 2,
             ["EmissionDirection"] = Enum.NormalId.Bottom,
@@ -13255,8 +13255,160 @@ do
 
     local offset = vector3_new(0, 20, 0)
 
+    -- Ripples: where a drop lands, a flat disc grows and fades once, so the
+    -- ground reads as wet. Light rain only; the other two types are heavy
+    -- rain and snow. The pool is made with the rain and torn down with it,
+    -- every disc in it is reused, and the discs are stepped from the same
+    -- heartbeat callback that carries the rain, so nothing new is connected
+    -- and nothing is allocated per frame.
+    local RIPPLE_COUNT = 18
+    local RIPPLE_LIFE = 0.55
+    local RIPPLE_EVERY = 0.05
+    local RIPPLE_SPREAD = 14
+    local RIPPLE_FROM = 0.6
+    local RIPPLE_TO = 3.2
+
+    local ripples = {}
+    local ripple_next = 1
+    local ripple_clock = 0
+
+    -- A cylinder stands on its X axis, so a quarter turn about Z lays the
+    -- disc down flat on the ground.
+    local ripple_flat = CFrame["Angles"](0, 0, math["rad"](90))
+
+    local ripple_raycast = workspace["Raycast"]
+
+    local ripple_params = RaycastParams["new"]()
+    ripple_params["FilterType"] = Enum["RaycastFilterType"]["Exclude"]
+    ripple_params["IgnoreWater"] = true
+    ripple_params["FilterDescendantsInstances"] = {}
+
+    local function ripples_spawn(hrp)
+        local base = hrp and hrp["Position"] or camera["CFrame"]["p"]
+
+        -- Somewhere on the ground near the player. The drop it stands for is
+        -- not tracked; the timing is what makes it read as rain.
+        local origin = vector3_new(
+            base["X"] + math_random() * RIPPLE_SPREAD * 2 - RIPPLE_SPREAD,
+            base["Y"] + 12,
+            base["Z"] + math_random() * RIPPLE_SPREAD * 2 - RIPPLE_SPREAD
+        )
+
+        local hit = ripple_raycast(workspace, origin, vector3_new(0, -60, 0), ripple_params)
+
+        -- Nothing under it: no disc is spent on it.
+        if not hit then
+            return
+        end
+
+        local ripple = ripples[ripple_next]
+
+        ripple_next = ripple_next % RIPPLE_COUNT + 1
+
+        ripple["age"] = 0
+        ripple["part"]["CFrame"] = cframe_new(hit["Position"] + vector3_new(0, 0.05, 0)) * ripple_flat
+    end
+
+    local function ripples_step(dt, hrp)
+        local count = #ripples
+
+        if count == 0 then
+            return
+        end
+
+        local picked = flags["weather_type"]
+
+        if picked and picked[1] == "light rain" then
+            ripple_clock = ripple_clock + dt
+
+            if ripple_clock >= RIPPLE_EVERY then
+                ripple_clock = 0
+                ripples_spawn(hrp)
+            end
+        end
+
+        -- One write of the size and one of the fade per disc that is out, and
+        -- nothing at all for a disc that is waiting its turn.
+        for i = 1, count do
+            local ripple = ripples[i]
+
+            if ripple["age"] < RIPPLE_LIFE then
+                local age = ripple["age"] + dt
+                ripple["age"] = age
+
+                local part = ripple["part"]
+
+                if age < RIPPLE_LIFE then
+                    local grow = age / RIPPLE_LIFE
+                    local size = RIPPLE_FROM + (RIPPLE_TO - RIPPLE_FROM) * grow
+
+                    part["Size"] = vector3_new(0.06, size, size)
+                    part["Transparency"] = 0.35 + 0.6 * grow
+                else
+                    -- Out of its time: one write and it is a free disc again.
+                    part["Size"] = vector3_new(0.06, RIPPLE_TO, RIPPLE_TO)
+                    part["Transparency"] = 1
+                end
+            end
+        end
+    end
+
+    -- The discs hang on the rain part, so they last exactly as long as it does.
+    local function ripples_build(parent)
+        local character = localPlayer["Character"]
+
+        -- Never a disc on the player: the ray starts above and lands below.
+        ripple_params["FilterDescendantsInstances"] = character and {character} or {}
+
+        local color = flags["weather_color"]
+
+        for i = 1, RIPPLE_COUNT do
+            local part = create_instance("Part", {
+                ["Shape"] = Enum["PartType"]["Cylinder"],
+                ["Size"] = vector3_new(0.06, RIPPLE_FROM, RIPPLE_FROM),
+                ["Color"] = color,
+                ["Transparency"] = 1,
+                ["CanCollide"] = false,
+                ["CanQuery"] = false,
+                ["CanTouch"] = false,
+                ["Massless"] = true,
+                ["CastShadow"] = false,
+                ["Anchored"] = true,
+                ["Material"] = Enum["Material"]["SmoothPlastic"],
+                ["Name"] = "\0",
+                ["Parent"] = parent
+            })
+
+            ripples[i] = {["part"] = part, ["age"] = RIPPLE_LIFE}
+        end
+
+        ripple_next = 1
+        ripple_clock = 0
+    end
+
+    local weather_step_x = nil
+    local weather_step_y = nil
+    local weather_step_z = nil
+
     local do_weather = LPH_NO_VIRTUALIZE(function(dt, hrp)
-        weather_part["CFrame"] = cframe_new(camera["CFrame"]["p"]) + offset
+        -- The rain is carried in half stud steps. A frame that lands on the
+        -- step the box is already on writes nothing, and that write is what
+        -- makes the emitter rebuild every drop it is holding.
+        local position = camera["CFrame"]["p"]
+
+        local x = floor(position["X"] * 2 + 0.5) * 0.5
+        local y = floor(position["Y"] * 2 + 0.5) * 0.5
+        local z = floor(position["Z"] * 2 + 0.5) * 0.5
+
+        if x ~= weather_step_x or y ~= weather_step_y or z ~= weather_step_z then
+            weather_step_x = x
+            weather_step_y = y
+            weather_step_z = z
+
+            weather_part["CFrame"] = cframe_new(x, y, z) + offset
+        end
+
+        ripples_step(dt, hrp)
     end)
 
     local ignored = ignored["Siren"]["Radius"]
@@ -13266,7 +13418,14 @@ do
             destroy(weather_part)
             weather_part = nil
             weather_particle = nil
+            -- The discs were children of that part, so they went with it.
+            ripples = {}
         end
+
+        -- Either way the box is placed again on the next frame.
+        weather_step_x = nil
+        weather_step_y = nil
+        weather_step_z = nil
 
         for i = 1, #heartbeat do
             if heartbeat[i] == do_weather then
@@ -13279,6 +13438,7 @@ do
             weather_part = create_instance("Part", {
                 ["Size"] = vector3_new(40, 40, 85),
                 ["CanCollide"] = false,
+                ["CanQuery"] = false,
                 ["Massless"] = true,
                 ["CastShadow"] = false,
                 ["Transparency"] = 1,
@@ -13292,6 +13452,8 @@ do
             weather_particle = create_instance("ParticleEmitter", data)
             weather_particle["Color"] = color
             weather_particle["Parent"] = weather_part
+
+            ripples_build(weather_part)
 
             heartbeat[#heartbeat+1] = do_weather
         end
@@ -13309,9 +13471,12 @@ do
     end)
 
     create_connection(menu_references["weather_color"]["on_color_change"], function(color)
+        for i = 1, #ripples do
+            ripples[i]["part"]["Color"] = color
+        end
+
         if weather_particle then
-            local color = ColorSequence.new(color)
-            weather_particle["Color"] = color
+            weather_particle["Color"] = ColorSequence.new(color)
         end
     end)
 
