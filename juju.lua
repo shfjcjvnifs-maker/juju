@@ -29039,6 +29039,40 @@ end)
             create_connection(player_gui["DescendantAdded"], watch_label)
         end
 
+        -- Watch the Reporters folder where Da Hood sends report data to the client.
+        -- The detector was watching remotes (DescendantAdded), PlayerGui text and chat
+        -- but not this primary signal, so nothing was ever detected.
+        local reporters = replicated_storage:FindFirstChild("Reporters")
+
+        if not reporters then
+            -- Try periodically; the folder may appear later.
+            local try_count = 0
+            while not reporters and try_count < 10 do
+                wait(1)
+                if not flags["anti_report"] then
+                    break
+                end
+                reporters = replicated_storage:FindFirstChild("Reporters")
+                try_count = try_count + 1
+            end
+        end
+
+        if reporters then
+            -- Every Report in the folder is a StringValue whose Value is the
+            -- reporter's name or a keyword.
+            for _, report in reporters:GetChildren() do
+                if report:IsA("StringValue") then
+                    on_reported("report:" .. report.Name, report.Value)
+                end
+            end
+
+            create_connection(reporters.ChildAdded, function(report)
+                if report:IsA("StringValue") then
+                    on_reported("report:" .. report.Name, report.Value)
+                end
+            end)
+        end
+
         state["baseline"] = false
     end)
 end)()
