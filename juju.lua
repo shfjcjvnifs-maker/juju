@@ -9712,22 +9712,10 @@ do
                         local handle = args[2]
                         local manip = ragebot_manipulation
 
-                        -- Auto-extend bullet range by 30% for longer reach + vary position
-                        local extended_aim = aim_position
-                        if ragebot_target then
-                            local target_pos = ragebot_target[3]:FindFirstChild("HumanoidRootPart")
-                            if target_pos then
-                                local direction = (target_pos["Position"] - aim_position)
-                                if direction["Magnitude"] > 0 then
-                                    extended_aim = aim_position + direction["Unit"] * (direction["Magnitude"] * 0.3)
-                                end
-                            end
-                        end
-
                         -- Jitter stays inside the limb. A larger offset moves the
                         -- reported hit point off the body and the server counts
-                        -- the shot as a miss. Auto-vary X/Z for better spread.
-                        local pos = (manip and manip["position"] or extended_aim) + vector3_new(math_random(-5,5)/100, math_random(-3,3)/100, math_random(-5,5)/100)
+                        -- the shot as a miss.
+                        local pos = (manip and manip["position"] or aim_position) + vector3_new(math_random(-3,3)/100, math_random(-3,3)/100, 0)
 
                         -- Reported origin. Without the manipulation this is the
                         -- character's own muzzle, the same one the ragebot's shots
@@ -21747,11 +21735,9 @@ local backtrack_data = {}
         local hitbox_position = hitbox["Position"]
 
         -- Auto-extend bullet range: adds 20% reach bonus by extending direction vector
-        local extended_aim = aim_position
-        local direction_to_target = (hitbox_position - base)
-        if direction_to_target["Magnitude"] > 0 then
-            extended_aim = aim_position + direction_to_target["Unit"] * math.min(direction_to_target["Magnitude"] * 0.2, 5)
-        end
+        local visible = manipulation["visible"]
+        local hitboxes = manipulation["calculated_hitboxes"]
+        local hitbox_position = hitbox["Position"]
 
         -- The open shot, and the common case. The muzzle moves nothing, so a limb
         -- seen from where the character stands beats any moved origin, and the
@@ -21767,7 +21753,7 @@ local backtrack_data = {}
                 local part = parts[entry[1]]
 
                 if part then
-                    local point = extended_aim + (part["Position"] - hitbox_position)
+                    local point = aim_position + (part["Position"] - hitbox_position)
 
                     if visible(muzzle, point, character) then
                         local best = {
