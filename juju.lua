@@ -28841,9 +28841,9 @@ end)
 
     -- The elements are made with the rest of the menu. Only their test button
     -- is wired here, because it reads this detector's own state.
-    create_connection(menu_references["anti_report_test"]["on_clicked"], function()
+    create_connection(menu_references["anti_report_test"]["OnClicked"], function()
         state["known"]["anti-rep test"] = true
-        new_notification("anti-rep test", 3)
+        new_notification("[anti-rep] test | test notification", 2)
     end)
 
     local contains_any = function(text, list)
