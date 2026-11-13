@@ -24,11 +24,6 @@ getgenv()["juju"] = {}
 -- the only per-frame loop the script never disconnected.
 local early_connections = {}
 
--- Optimization: pre-allocate locals for hot-loop reads to avoid repeated
--- table lookups and flag accesses.
-local _opt_anti_aim_len = 0
-local _opt_heartbeat_len = 0
-
 -- Lists filled later in the chunk that unload has to empty. They cannot be
 -- referenced directly: a local declared after the unload closure is a global
 -- inside it, and indexing that raises and aborts the whole unload.
@@ -21356,7 +21351,7 @@ local backtrack_data = {}
         menu_references["void_hide"] = menu_references["anti_section"]:create_element({["name"] = "void hide"}, {["toggle"] = {["flag"] = "void_hide"}})
         menu_references["void_hide_settings"] = menu_references["void_hide"]:create_settings()
         menu_references["void_hide_type"] = menu_references["void_hide_settings"]:create_element({["name"] = "type"}, {["dropdown"] = {["options"] = game["PlaceId"] == 7213786345 and {"vc server"} or {"random"}, ["flag"] = "void_hide_type", ["requires_one"] = true, ["default"] = game["PlaceId"] == 7213786345 and {"vc server"} or {"random"}}})
-        menu_references["void_hide_bait_distance"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait distance"}, {["slider"] = {["min"] = 200, ["max"] = 2500, ["decimals"] = 0, ["default"] = 250, ["flag"] = "void_hide_bait_distance", ["suffix"] = " studs"}})
+        menu_references["void_hide_bait_distance"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait distance"}, {["slider"] = {["min"] = 200, ["max"] = 9000, ["decimals"] = 0, ["default"] = 250, ["flag"] = "void_hide_bait_distance", ["suffix"] = " studs"}})
         menu_references["void_hide_bait_cooldown"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait cooldown"}, {["slider"] = {["min"] = 0.01, ["max"] = 1.5, ["decimals"] = 2, ["default"] = 0.5, ["flag"] = "void_hide_bait_cooldown", ["suffix"] = "s"}})
         menu_references["void_hide_bait_time"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait time"}, {["slider"] = {["min"] = 0.01, ["max"] = 0.3, ["decimals"] = 2, ["default"] = 0.03, ["flag"] = "void_hide_bait_time", ["suffix"] = "s"}})
         menu_references["void_hide_disable_when"] = menu_references["void_hide_settings"]:create_element({["name"] = "disable when"}, {["dropdown"] = {["options"] = {"target selected", "following target", "target knocked", "purchasing"}, ["flag"] = "void_hide_disable_when", ["multi"] = true, ["requires_one"] = false}})
@@ -27446,8 +27441,7 @@ do
 
         local hrp = vehicle or local_parts["HumanoidRootPart"]
 
-        _opt_heartbeat_len = #heartbeat
-        for i = 1, _opt_heartbeat_len do
+        for i = 1, #heartbeat do
             spawn(heartbeat[i], dt, hrp)
         end
 
@@ -27455,8 +27449,7 @@ do
             local_client_position = hrp["CFrame"]
         end
 
-        _opt_anti_aim_len = #anti_aim
-        for i = 1, _opt_anti_aim_len do
+        for i = 1, #anti_aim do
             local func = anti_aim[i]
             if func then
                 spawn(func, dt, hrp)
@@ -28932,7 +28925,7 @@ end)
 
         -- One alert per report, in the hub's own notifications rather than in
         -- the console, and it says where the string came from.
-        new_notification("[anti-rep] "..source.." | "..text, 2)
+        new_notification("[anti-rep] "..source.." | "..text, 3)
 
         if action == "kick" then
             local ok = pcall(function()
@@ -28946,14 +28939,6 @@ end)
             end
         elseif action == "rejoin" then
             pcall(function()
-                -- Auto-execute juju after rejoin.
-                local script_code = getgenv()["juju_source"]
-                if script_code then
-                    task.delay(0.5, function()
-                        loadstring(script_code)()
-                    end)
-                end
-
                 if flags["anti_report_new_server"] then
                     teleport_service:Teleport(game["PlaceId"], player)
                 else
