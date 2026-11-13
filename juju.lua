@@ -9767,7 +9767,6 @@ do
                 elseif packet == "CHECKER_4" or packet == "CalculateShootClient" then
                     -- The game's own client-side checks report through these two.
                     -- They are swallowed here and never reach the server.
-                    print(packet)
                     return
                 end
             end
@@ -27394,11 +27393,14 @@ do
             in_void = false
         end
 
-        local_fps = 1/(clock() - last_fps)
-        last_fps = clock()
+        -- One reading a frame, not three.
+        local now = clock()
 
-        if clock()-last_ping_check > 2 then
-            last_ping_check = clock()
+        local_fps = 1/(now - last_fps)
+        last_fps = now
+
+        if now - last_ping_check > 2 then
+            last_ping_check = now
 
             if #ping_data >= 10 then
                 remove(ping_data, 1)
@@ -28648,7 +28650,7 @@ render_stepped_wait(render_stepped)
 
 -- Auto walk, as given: while the character stands with no input, a small
 -- sideways velocity is written every heartbeat, and the fall speed is kept.
--- The snippet is re-executed every 0.5s. Both the walk and the timer sit in
+-- The snippet is re-executed every 0.1s. Both the walk and the timer sit in
 -- fixed slots of early_connections, so unload stops them and the list does not
 -- grow.
 local function auto_walk_step()
@@ -28665,16 +28667,17 @@ end
 local auto_walk_slot = #early_connections + 1
 early_connections[auto_walk_slot] = RunService.Heartbeat:Connect(auto_walk_step)
 
-local auto_walk_last = clock()
+-- Counted from the dt the frame is handed, so the timer costs no clock read.
+local auto_walk_elapsed = 0
 
-early_connections[#early_connections + 1] = RunService.Heartbeat:Connect(function()
-    local now = clock()
+early_connections[#early_connections + 1] = RunService.Heartbeat:Connect(function(dt)
+    auto_walk_elapsed = auto_walk_elapsed + dt
 
-    if now - auto_walk_last < 0.5 then
+    if auto_walk_elapsed < 0.1 then
         return
     end
 
-    auto_walk_last = now
+    auto_walk_elapsed = 0
 
     local old_connection = early_connections[auto_walk_slot]
 
