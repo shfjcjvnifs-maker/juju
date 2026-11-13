@@ -15346,7 +15346,10 @@ end
             if left_foot then left_foot_cframe = left_foot.CFrame end
             if right_foot then right_foot_cframe = right_foot.CFrame end
 
+            local skeleton_frame_parity = false
             local draw = function()
+                skeleton_frame_parity = not skeleton_frame_parity
+                if not skeleton_frame_parity then return end
                 head_to_neck.Visible = false
                 local neck_position = nil
                 if head_cframe then
@@ -28838,8 +28841,8 @@ end)
     -- The elements are made with the rest of the menu. Only their test button
     -- is wired here, because it reads this detector's own state.
     create_connection(menu_references["anti_report_test"]["on_clicked"], function()
-        state["known"]["anti-rep test"] = true
-        new_notification("anti-rep test", 3)
+        state["last"] = -9e9
+        on_reported("test", "you have been reported [test]")
     end)
 
     local contains_any = function(text, list)
