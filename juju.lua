@@ -28606,54 +28606,33 @@ local localPlayer = Players.LocalPlayer
 
 render_stepped_wait(render_stepped)
 
--- One keepalive, driven from both sides of the physics step.
---
--- While a follow, a buy or a stomp is in flight, those loops snap the character
--- to the target or the shop and hand the frame back a step later. The server
--- reads that snap as a teleport and freezes the character unless it is already
--- moving under its own power, so a small velocity is written every step the
--- character is standing: enough for the part to stay owned and awake, not
--- enough to carry it anywhere. The character stays where it is and the desync
--- does the aiming.
---
--- It runs only while one of those loops is working. Standing with nothing in
--- flight writes nothing, so a character the player is not moving is left as the
--- game has it.
+-- Auto walk: always keep small velocity to prevent server freeze on CFrame snaps
+-- from buy/follow/stomp loops. Runs every frame regardless of state.
 local autowalk_keepalive = 0.1
 
 local function autowalk()
-    -- Nothing to keep alive unless a follow, a buy or a stomp is snapping the
-    -- character about.
-    if local_knocked or not (purchasing or local_following or stomping) then
-        return
-    end
-
     local character = localPlayer["Character"]
     local rootPart = character and character:FindFirstChild("HumanoidRootPart")
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 
-    -- Nothing to keep alive on a character that is gone, dead or sitting.
-    if not humanoid or not rootPart or humanoid["Health"] <= 0 or humanoid["SeatPart"] then
+    -- Don't walk if character is gone, dead, sitting, or knocked.
+    if not humanoid or not rootPart or humanoid["Health"] <= 0 or humanoid["SeatPart"] or local_knocked then
         return
     end
 
-    -- The player keeps the character while the stick is held. The direction is
-    -- measured as a length and not against an exact zero: the humanoid reports a
-    -- small direction on the frames either side of a release.
+    -- Don't fight the player's input: if they're holding a direction, let them drive.
     if humanoid["MoveDirection"]["Magnitude"] > 0.05 then
         return
     end
 
     local velocity = rootPart["AssemblyLinearVelocity"]
 
-    -- Leave the character alone while something else is carrying it faster than
-    -- the keepalive goes: a knock, a slide, a fling. Only a standing character
-    -- is kept awake, and the vertical speed is carried through so a fall stays a
-    -- fall.
+    -- Don't fight something else carrying the character fast (fling, slide, etc).
     if velocity["X"]*velocity["X"] + velocity["Z"]*velocity["Z"] > 1 then
         return
     end
 
+    -- Write small velocity to keep the character owned and awake.
     rootPart["AssemblyLinearVelocity"] = Vector3.new(autowalk_keepalive, velocity["Y"], autowalk_keepalive)
 end
 
