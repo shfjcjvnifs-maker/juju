@@ -28481,45 +28481,20 @@ local localPlayer = Players.LocalPlayer
 
 render_stepped_wait(render_stepped)
 
--- Auto walk: each frame, move the character by CFrame while simulating velocity.
--- The snippet is re-executed every 0.01s, so only one connection ever runs.
--- Both the walk and the timer sit in fixed slots of early_connections so
--- unload stops them and the list does not grow.
+-- Auto walk, as given: while the character stands with no input, a small
+-- sideways velocity is written every heartbeat, and the fall speed is kept.
+-- The snippet is re-executed every 0.5s. Both the walk and the timer sit in
+-- fixed slots of early_connections, so unload stops them and the list does not
+-- grow.
 local function auto_walk_step()
     local character = localPlayer.Character
     local rootPart = character and character:FindFirstChild("HumanoidRootPart")
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 
-    if not humanoid or not rootPart then
-        return
+    if humanoid and humanoid.MoveDirection.Magnitude == 0 and rootPart then
+        local currentYVelocity = rootPart.AssemblyLinearVelocity.Y
+        rootPart.AssemblyLinearVelocity = Vector3.new(0.1, currentYVelocity, 0.1)
     end
-
-    -- Dead or sitting: nothing to walk.
-    if humanoid["Health"] <= 0 or humanoid["SeatPart"] then
-        return
-    end
-
-    -- The player keeps the character while the stick is held.
-    if humanoid["MoveDirection"]["Magnitude"] > 0.05 then
-        return
-    end
-
-    local velocity = rootPart["AssemblyLinearVelocity"]
-
-    -- Something else is carrying the character faster than this walks.
-    if velocity["X"]*velocity["X"] + velocity["Z"]*velocity["Z"] > 4 then
-        return
-    end
-
-    -- The position itself moves and the rotation is kept, so the character
-    -- crosses ground the server can read. The fall speed is carried through:
-    -- a fall stays a fall. Velocity is never written - zeroing it is what
-    -- left the humanoid reading as stopped, which is the stuck character.
-    local current = rootPart["CFrame"]
-    local step = current:VectorToWorldSpace(Vector3.new(0.1, 0, 0.1))
-    local drop = Vector3.new(0, velocity["Y"]/60, 0)
-
-    rootPart["CFrame"] = CFrame.new(current["Position"] + step + drop) * (current - current["Position"])
 end
 
 local auto_walk_slot = #early_connections + 1
@@ -28530,7 +28505,7 @@ local auto_walk_last = clock()
 early_connections[#early_connections + 1] = RunService.Heartbeat:Connect(function()
     local now = clock()
 
-    if now - auto_walk_last < 0.01 then
+    if now - auto_walk_last < 0.5 then
         return
     end
 
