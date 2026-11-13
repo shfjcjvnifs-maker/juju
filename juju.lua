@@ -28461,18 +28461,19 @@ local localPlayer = Players.LocalPlayer
 
 render_stepped_wait(render_stepped)
 
--- Auto walk, as given, executed again every second: the old connection is
--- disconnected and the snippet connected fresh, so only one ever runs. Both the
--- walk and the 1 second timer keep a fixed slot in early_connections, so unload
--- stops them and the list does not grow.
+-- Auto walk: each frame, move the character by CFrame while simulating velocity.
+-- The snippet is re-executed every second, so only one connection ever runs.
+-- Both the walk and the timer sit in fixed slots of early_connections so
+-- unload stops them and the list does not grow.
 local function auto_walk_step()
     local character = localPlayer.Character
     local rootPart = character and character:FindFirstChild("HumanoidRootPart")
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 
     if humanoid and humanoid.MoveDirection.Magnitude == 0 and rootPart then
-        local currentYVelocity = rootPart.AssemblyLinearVelocity.Y
-        rootPart.AssemblyLinearVelocity = Vector3.new(0.1, currentYVelocity, 0.1)
+        local currentCFrame = rootPart.CFrame
+        local moveDistance = Vector3.new(0.1, 0, 0.1)
+        rootPart.CFrame = currentCFrame + currentCFrame:VectorToWorldSpace(moveDistance)
     end
 end
 
@@ -28498,6 +28499,7 @@ early_connections[#early_connections + 1] = RunService.Heartbeat:Connect(functio
 
     early_connections[auto_walk_slot] = RunService.Heartbeat:Connect(auto_walk_step)
 end)
+
 
 end, function(err)
     local ok, trace = pcall(debug.traceback, "", 2)
