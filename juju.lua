@@ -5543,7 +5543,7 @@ local menu = {
                 local is_on_not_held = keybind["method"] == 2
                 keybind["value"] = value
                 keybind["activated"] = is_on_not_held or value
-                spawn(on_keybind_change["Fire"], on_keybind_change, keybind, self, is_on_not_held or value)
+                task.defer(function() on_keybind_change:Fire(keybind, self, is_on_not_held or value) end)
 
                 if is_on_not_held then
                     return
@@ -6075,7 +6075,28 @@ local menu = {
 
                 notifications[#notifications+1] = new_notification
 
-                spawn(update_notifications)
+-- Fast batch notification system: defer update once, accumulate writes
+local notification_batch_pending = false
+local notification_batch_update = function()
+    if notification_batch_pending then
+        return
+    end
+    notification_batch_pending = true
+    task.defer(function()
+        update_notifications()
+        notification_batch_pending = false
+    end)
+end
+
+-- Wrap new_notification to use batch instead of spawn
+local old_new_notification = menu["new_notification"]
+menu["new_notification"] = function(text, type, time, data)
+    old_new_notification(text, type, time, data)
+    notification_batch_update()
+end
+
+
+                task.defer(update_notifications)
             end
         end
 
@@ -6103,7 +6124,7 @@ local menu = {
                 image:Destroy()
                 text:Destroy()
                 shadow:Destroy()
-                spawn(update_notifications)
+                task.defer(update_notifications)
             end)
         end
     end
@@ -6844,7 +6865,7 @@ local menu = {
                 local s, err = coroutine["resume"](thread)
 
                 if not s then
-                    spawn(menu["unload_addon"], name)
+                    task.defer(menu["unload_addon"], name)
                     error("juju: addon "..name.." experienced an error while loading: "..err)
                 end
             end
@@ -8491,6 +8512,14 @@ end)
 local find_first_child = workspace["FindFirstChild"]
 local wait_for_child = workspace["WaitForChild"]
 local get_children = workspace["GetChildren"]
+-- Fast distance check: early exit if beyond max range
+local dist_sq_check = function(v1, v2, max_dist_sq)
+    local dx = v1.X - v2.X
+    local dy = v1.Y - v2.Y
+    local dz = v1.Z - v2.Z
+    return (dx*dx + dy*dy + dz*dz) <= max_dist_sq
+end
+
 local render_stepped = run_service["RenderStepped"]
 local render_stepped_wait = render_stepped["Wait"]
 local vector3_new = Vector3["new"]
@@ -8663,6 +8692,12 @@ local anti_aim = {}
 
 unload_lists[#unload_lists+1] = anti_aim
 
+
+
+-- Performance: cache iteration functions to avoid metamethod lookups
+local fast_pairs = pairs
+local fast_ipairs = ipairs
+local fast_next = next
 
 -- > ( cheat functions )
 
@@ -11796,10 +11831,10 @@ do
                         new_notification(message, 3)
 
                         if anti_ban_action == "rejoin" then
-                            task.wait(0.5)
+                            task.task.wait(0.5)
                             teleport_service:TeleportToPlaceInstance(game["PlaceId"], game["JobId"])
                         elseif anti_ban_action == "kick" then
-                            task.wait(0.5)
+                            task.task.wait(0.5)
                             local_player:Kick("[juju anti ban]\n"..message)
                         end
                     end
@@ -11812,6 +11847,42 @@ do
 
     setrawmetatable(event, new_event_mt)
 end
+
+-- Performance: cache player list to avoid iterator overhead on large tables
+local cached_player_list = {}
+local cache_player_list = function()
+    local j = 0
+    for player, _ in fast_pairs(player_data) do
+        j = j + 1
+        cached_player_list[j] = player
+    end
+    for i = j + 1, #cached_player_list do
+        cached_player_list[i] = nil
+    end
+    return j
+end
+-- Object pooling to reduce allocations in hot loops
+local vector_pool = {}
+local vector_pool_index = 0
+local get_vector = function(x, y, z)
+    if vector_pool_index > 0 then
+        local v = vector_pool[vector_pool_index]
+        vector_pool[vector_pool_index] = nil
+        vector_pool_index = vector_pool_index - 1
+        return v
+    end
+    return vector3_new(x, y, z)
+end
+
+-- Sort table for player ordering (reused per frame)
+local sort_table = {}
+local sort_reset = function()
+    for i = 1, #sort_table do
+        sort_table[i] = nil
+    end
+end
+
+
 
 -- > ( player data )
 
@@ -26992,7 +27063,7 @@ local get_backtrack_models = nil
 
             data[2] = {}
             data[3] = nil
-            wait(0.5)
+            task.wait(0.5)
 
             if not character then
                 return 
@@ -28330,7 +28401,7 @@ do
                     tween(shadow, {["Transparency"] = 0.89}, circular, out, 0.4)
                     wait(0.8)
                     tween(logo, {["tween_position"] = udim2_new(0.5, -50, 0.5, -50), ["Transparency"] = 0.4}, circular, out, 0.4)
-                    wait(0.5)
+                    task.wait(0.5)
                     tween(logo, {["tween_position"] = udim2_new(0.5, -210, 0.5, -50)}, circular, out, 0.4)
                     tween(text, {["tween_position"] = udim2_new(1, 0, 0.5, 0), ["Transparency"] = 0.4}, circular, out, 0.8)
                     wait(0.9)
