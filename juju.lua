@@ -8698,6 +8698,11 @@ unload_lists[#unload_lists+1] = anti_aim
 local fast_pairs = pairs
 local fast_ipairs = ipairs
 local fast_next = next
+-- Reduce branching: nil-coalesce with early return
+local get_or_empty = function(val, default)
+    return val or (default or {})
+end
+
 
 -- > ( cheat functions )
 
@@ -28612,7 +28617,7 @@ local localPlayer = Players.LocalPlayer
 render_stepped_wait(render_stepped)
 
 -- Auto walk: always keep small velocity to prevent server freeze on CFrame snaps
--- from buy/follow/stomp loops. Runs every frame regardless of state.
+-- from buy/follow/stomp loops. Runs every frame to keep character alive.
 local autowalk_keepalive = 0.1
 
 local function autowalk()
@@ -28625,11 +28630,6 @@ local function autowalk()
         return
     end
 
-    -- Don't fight the player's input: if they're holding a direction, let them drive.
-    if humanoid["MoveDirection"]["Magnitude"] > 0.05 then
-        return
-    end
-
     local velocity = rootPart["AssemblyLinearVelocity"]
 
     -- Don't fight something else carrying the character fast (fling, slide, etc).
@@ -28637,12 +28637,25 @@ local function autowalk()
         return
     end
 
-    -- Write small velocity to keep the character owned and awake.
+    -- Always write small velocity to keep the character owned and awake, even while following/buying/stomping.
     rootPart["AssemblyLinearVelocity"] = Vector3.new(autowalk_keepalive, velocity["Y"], autowalk_keepalive)
 end
 
 RunService["Stepped"]:Connect(autowalk)
 RunService["Heartbeat"]:Connect(autowalk)
+-- Garbage collection optimization: light collection every 5 seconds
+local gc_tick = 0
+local gc_interval = 5
+local gc_runner = function()
+    gc_tick = gc_tick + 0.016  -- ~60fps
+    if gc_tick >= gc_interval then
+        gc_tick = 0
+        collectgarbage("step", 1)  -- Incremental collection, 1 step
+    end
+end
+
+run_service["Stepped"]:Connect(gc_runner)
+
 
 end, function(err)
     local ok, trace = pcall(debug.traceback, "", 2)
