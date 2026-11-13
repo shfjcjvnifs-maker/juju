@@ -23211,8 +23211,30 @@ local backtrack_data = {}
             local old_velocity = hrp["Velocity"]
 
             in_void = true
+-- The void puts the character out at nine billion studs and beyond. math.random
+-- stops at int32: given a range beyond it, a negative lower bound returns
+-- -2147483648 every time and a zero lower bound raises, so the far end is built
+-- from two ranges that are both inside what it supports - a whole chunk each
+-- way, then a random offset inside one chunk. The chunk count starts at one so
+-- the smallest jump is already past two billion and the largest is past nine.
+local void_far_chunk = 2147483647
+local void_far_max = 9e9
+
+local function void_far_axis()
+    local chunks = math_random(1, 4)
+    local base = chunks * void_far_chunk
+    local room = void_far_max - base
+    local value = base + math_random(0, room > void_far_chunk and void_far_chunk or room)
+
+    if math_random(0, 1) == 0 then
+        return -value
+    end
+
+    return value
+end
+
             hrp["Velocity"] = vector3_zero
-            hrp["CFrame"] = cframe_new(vector3_new(math_random(-2147483647, 2147483647), math_random(-400, 2147483647), math_random(-2147483647, 2147483647)))
+            hrp["CFrame"] = cframe_new(vector3_new(void_far_axis(), math_random(-400, 2147483647), void_far_axis()))
             render_stepped_wait(render_stepped)
             hrp["CFrame"] = old_cframe
             hrp["Velocity"] = old_velocity
@@ -24931,7 +24953,7 @@ local backtrack_data = {}
                             end
                         end
                         if fake_in_void then
-                            hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, math_random(-2147483647, 2147483647), 0)) or cframe_new(vector3_new(math_random(-2147483647, 2147483647), math_random(-400, 2147483647), math_random(-2147483647, 2147483647)))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
+                            hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, void_far_axis(), 0)) or cframe_new(vector3_new(void_far_axis(), math_random(-400, 2147483647), void_far_axis()))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
                         end
                     end
                 elseif do_void_hide then
@@ -24970,7 +24992,7 @@ local backtrack_data = {}
                         end
                     end
                     if fake_in_void then
-                        hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, math_random(-2147483647, 2147483647), 0)) or cframe_new(vector3_new(math_random(-2147483647, 2147483647), math_random(-400, 2147483647), math_random(-2147483647, 2147483647)))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
+                        hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, void_far_axis(), 0)) or cframe_new(vector3_new(void_far_axis(), math_random(-400, 2147483647), void_far_axis()))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
                     end
                 end
                 if not in_void then
