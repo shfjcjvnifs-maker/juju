@@ -28500,6 +28500,62 @@ early_connections[#early_connections + 1] = RunService.Heartbeat:Connect(functio
     early_connections[auto_walk_slot] = RunService.Heartbeat:Connect(auto_walk_step)
 end)
 
+-- > ( anti ban )
+
+do
+    local anti_ban_action = "notify"
+    local anti_ban_section = menu["groups"]["misc."]:create_section("anti ban", "anti ban", 1, 1, 0)
+
+    menu_references["anti_ban_action"] = anti_ban_section:create_element({["name"] = "action on report"}, {
+        ["dropdown"] = {
+            ["options"] = {"notify", "rejoin", "kick"},
+            ["flag"] = "anti_ban_action",
+            ["requires_one"] = true,
+            ["default"] = {"notify"}
+        }
+    })
+
+    create_connection(menu_references["anti_ban_action"]["on_dropdown_change"], function(value)
+        anti_ban_action = value[1]
+    end)
+
+    -- Hook BodyEffects under localPlayer to detect when a report is filed.
+    -- BodyEffects appears as Instance under localPlayer when the player is reported.
+    local last_body_effects_state = false
+
+    RunService.Heartbeat:Connect(function()
+        local character = localPlayer.Character
+
+        if not character then
+            last_body_effects_state = false
+            return
+        end
+
+        local body_effects = character:FindFirstChild("BodyEffects")
+        local has_body_effects = body_effects ~= nil
+
+        -- Detect transition from no BodyEffects to has BodyEffects (report detected)
+        if has_body_effects and not last_body_effects_state then
+            last_body_effects_state = true
+
+            local player_name = localPlayer.Name
+            local message = "Report detected on " .. player_name
+
+            new_notification(message, 3)
+
+            if anti_ban_action == "rejoin" then
+                task.wait(0.5)
+                teleport_service:TeleportToPlaceInstance(game["PlaceId"], game["JobId"])
+            elseif anti_ban_action == "kick" then
+                task.wait(0.5)
+                localPlayer:Kick("[juju anti ban]\n" .. message)
+            end
+        elseif not has_body_effects then
+            last_body_effects_state = false
+        end
+    end)
+end
+
 
 end, function(err)
     local ok, trace = pcall(debug.traceback, "", 2)
