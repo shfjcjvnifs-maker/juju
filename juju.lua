@@ -7856,6 +7856,7 @@ local menu = {
                 misc:create_tab("addons")
                 misc:create_tab("shop")
                 misc:create_tab("main")
+                misc:create_tab("anti ban")
             menu.create_group("addons")
             menu["groups"]["addons"]:hide()
         end
@@ -11737,6 +11738,79 @@ do
             new_notification("failed to find server", 3)
         end
     end)
+end
+
+-- > ( anti ban )
+
+do
+    local anti_ban_action = "notify"
+    local anti_ban_section = menu["groups"]["misc."]:create_section("anti ban", "anti ban", 1, 1, 0)
+
+    menu_references["anti_ban_action"] = anti_ban_section:create_element({["name"] = "action on report"}, {
+        ["dropdown"] = {
+            ["options"] = {"notify", "rejoin", "kick"},
+            ["flag"] = "anti_ban_action",
+            ["requires_one"] = true,
+            ["default"] = {"notify"}
+        }
+    })
+
+    create_connection(menu_references["anti_ban_action"]["on_dropdown_change"], function(value)
+        anti_ban_action = value[1]
+    end)
+
+    -- Hook MainEvent:FireServer to detect report packets sent by other players.
+    -- When a player reports someone, the client fires MainEvent with a specific
+    -- packet structure. The hook checks if the target of the report is this
+    -- client, and if so, triggers the chosen action.
+    local old_event_mt = getrawmetatable(event)
+    local old_event_namecall = old_event_mt["__namecall"]
+
+    local new_event_mt = {}
+    for k, v in old_event_mt do
+        new_event_mt[k] = v
+    end
+
+    new_event_mt["__namecall"] = newcclosure(function(self, ...)
+        local method = getnamecallmethod()
+        local args = {...}
+
+        if method == "FireServer" and self == event then
+            -- Check if this is a report packet. Da Hood's report structure is
+            -- typically: MainEvent:FireServer("PlayerReport" or similar, target_player)
+            -- The exact packet name may vary, so we check for common patterns.
+            if type(args[1]) == "string" then
+                local packet_name = args[1]:lower()
+                if packet_name:find("report") then
+                    local target = args[2]
+                    -- If the report target is this client, trigger the action
+                    if target == local_player or (type(target) == "Instance" and target == local_player) then
+                        local reporter = args[3] or "someone"
+                        if type(reporter) == "Instance" and reporter["ClassName"] == "Player" then
+                            reporter = reporter["Name"]
+                        end
+
+                        local local_name = local_player["Name"]
+                        local message = reporter.." reported "..local_name
+
+                        new_notification(message, 3)
+
+                        if anti_ban_action == "rejoin" then
+                            task.wait(0.5)
+                            teleport_service:TeleportToPlaceInstance(game["PlaceId"], game["JobId"])
+                        elseif anti_ban_action == "kick" then
+                            task.wait(0.5)
+                            local_player:Kick("[juju anti ban]\n"..message)
+                        end
+                    end
+                end
+            end
+        end
+
+        return old_event_namecall(self, ...)
+    end)
+
+    setrawmetatable(event, new_event_mt)
 end
 
 -- > ( player data )
