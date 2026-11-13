@@ -7881,38 +7881,6 @@ local menu = {
             anti_ban_action = value[1]
         end)
 
-        local anti_ban_body_effects_state = false
-
-        early_connections[#early_connections + 1] = RunService.Heartbeat:Connect(function()
-            local character = localPlayer.Character
-
-            if not character then
-                anti_ban_body_effects_state = false
-                return
-            end
-
-            local body_effects = character:FindFirstChild("BodyEffects")
-            local has_body_effects = body_effects ~= nil
-
-            if has_body_effects and not anti_ban_body_effects_state then
-                anti_ban_body_effects_state = true
-
-                local player_name = localPlayer.Name
-                local message = "Report detected on " .. player_name
-
-                new_notification(message, 3)
-
-                if anti_ban_action == "rejoin" then
-                    task.wait(0.5)
-                    teleport_service:TeleportToPlaceInstance(game["PlaceId"], game["JobId"])
-                elseif anti_ban_action == "kick" then
-                    task.wait(0.5)
-                    localPlayer:Kick("[juju anti ban]\n" .. message)
-                end
-            elseif not has_body_effects then
-                anti_ban_body_effects_state = false
-            end
-        end)
 
         menu_references["load_addon"] = menu_references["addon_panel"]:create_element({
             ["name"] = "load addon"
@@ -28562,6 +28530,41 @@ early_connections[#early_connections + 1] = RunService.Heartbeat:Connect(functio
     end
 end)
 
+-- Anti-ban: detect BodyEffects, trigger action
+local anti_ban_body_effects_state = false
+
+early_connections[#early_connections + 1] = RunService.Heartbeat:Connect(function()
+    local character = localPlayer.Character
+
+    if not character then
+        anti_ban_body_effects_state = false
+        return
+    end
+
+    local body_effects = character:FindFirstChild("BodyEffects")
+    local has_body_effects = body_effects ~= nil
+
+    if has_body_effects and not anti_ban_body_effects_state then
+        anti_ban_body_effects_state = true
+
+        local player_name = localPlayer.Name
+        local message = "Report detected on " .. player_name
+
+        new_notification(message, 3)
+
+        local action = menu_references["anti_ban_action"]["value"][1] or "notify"
+
+        if action == "rejoin" then
+            task.wait(0.5)
+            teleport_service:TeleportToPlaceInstance(game["PlaceId"], game["JobId"])
+        elseif action == "kick" then
+            task.wait(0.5)
+            localPlayer:Kick("[juju anti ban]\n" .. message)
+        end
+    elseif not has_body_effects then
+        anti_ban_body_effects_state = false
+    end
+end)
 
 end, function(err)
     local ok, trace = pcall(debug.traceback, "", 2)
