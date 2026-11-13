@@ -28925,7 +28925,7 @@ end)
 
         -- One alert per report, in the hub's own notifications rather than in
         -- the console, and it says where the string came from.
-        new_notification("[anti-rep] "..source.." | "..text, 3)
+        new_notification("[anti-rep] "..source.." | "..text, 2)
 
         if action == "kick" then
             local ok = pcall(function()
