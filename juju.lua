@@ -24880,6 +24880,8 @@ local backtrack_data = {}
             if hrp and not ragebot_force_position then
                 local old_cframe = hrp["CFrame"]
                 local old_velocity = hrp["Velocity"]
+                local old_linear_velocity = hrp["AssemblyLinearVelocity"]
+                local old_angular_velocity = hrp["AssemblyAngularVelocity"]
                 in_void = true
                 local tick = clock()
                 local do_void_hide = not ragebot_force_position or math_random(1,10) == 1
@@ -24972,6 +24974,8 @@ local backtrack_data = {}
                 render_stepped_wait(render_stepped)
                 hrp["CFrame"] = old_cframe
                 hrp["Velocity"] = old_velocity
+                hrp["AssemblyLinearVelocity"] = old_linear_velocity
+                hrp["AssemblyAngularVelocity"] = old_angular_velocity
             else
                 in_void = false
             end
