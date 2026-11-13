@@ -28755,7 +28755,20 @@ local function auto_walk_step()
     local rootPart = character and character:FindFirstChild("HumanoidRootPart")
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 
-    if humanoid and humanoid.MoveDirection.Magnitude == 0 and rootPart then
+    if not rootPart or not humanoid then
+        return
+    end
+
+    -- Seated, knocked, held or in a vehicle: the character is not standing
+    -- under its own control, so something else is driving it and a velocity
+    -- written over the top is fought every physics step. That fight is what
+    -- reads as being stuck. The nudge stays out of those states and runs only
+    -- on a character standing free.
+    if local_knocked or local_parts["GRABBING_CONSTRAINT"] or vehicle or humanoid["SeatPart"] then
+        return
+    end
+
+    if humanoid.MoveDirection.Magnitude == 0 then
         local currentYVelocity = rootPart.AssemblyLinearVelocity.Y
         rootPart.AssemblyLinearVelocity = Vector3.new(0.1, currentYVelocity, 0.1)
     end
