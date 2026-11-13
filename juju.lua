@@ -5543,7 +5543,7 @@ local menu = {
                 local is_on_not_held = keybind["method"] == 2
                 keybind["value"] = value
                 keybind["activated"] = is_on_not_held or value
-                task.defer(function() on_keybind_change:Fire(keybind, self, is_on_not_held or value) end)
+                spawn(on_keybind_change["Fire"], on_keybind_change, keybind, self, is_on_not_held or value)
 
                 if is_on_not_held then
                     return
@@ -6075,28 +6075,7 @@ local menu = {
 
                 notifications[#notifications+1] = new_notification
 
--- Fast batch notification system: defer update once, accumulate writes
-local notification_batch_pending = false
-local notification_batch_update = function()
-    if notification_batch_pending then
-        return
-    end
-    notification_batch_pending = true
-    task.defer(function()
-        update_notifications()
-        notification_batch_pending = false
-    end)
-end
-
--- Wrap new_notification to use batch instead of spawn
-local old_new_notification = menu["new_notification"]
-menu["new_notification"] = function(text, type, time, data)
-    old_new_notification(text, type, time, data)
-    notification_batch_update()
-end
-
-
-                task.defer(update_notifications)
+                spawn(update_notifications)
             end
         end
 
@@ -6124,7 +6103,7 @@ end
                 image:Destroy()
                 text:Destroy()
                 shadow:Destroy()
-                task.defer(update_notifications)
+                spawn(update_notifications)
             end)
         end
     end
@@ -6865,7 +6844,7 @@ end
                 local s, err = coroutine["resume"](thread)
 
                 if not s then
-                    task.defer(menu["unload_addon"], name)
+                    spawn(menu["unload_addon"], name)
                     error("juju: addon "..name.." experienced an error while loading: "..err)
                 end
             end
@@ -7877,7 +7856,6 @@ end
                 misc:create_tab("addons")
                 misc:create_tab("shop")
                 misc:create_tab("main")
-                misc:create_tab("anti ban")
             menu.create_group("addons")
             menu["groups"]["addons"]:hide()
         end
@@ -8512,14 +8490,6 @@ end)
 local find_first_child = workspace["FindFirstChild"]
 local wait_for_child = workspace["WaitForChild"]
 local get_children = workspace["GetChildren"]
--- Fast distance check: early exit if beyond max range
-local dist_sq_check = function(v1, v2, max_dist_sq)
-    local dx = v1.X - v2.X
-    local dy = v1.Y - v2.Y
-    local dz = v1.Z - v2.Z
-    return (dx*dx + dy*dy + dz*dz) <= max_dist_sq
-end
-
 local render_stepped = run_service["RenderStepped"]
 local render_stepped_wait = render_stepped["Wait"]
 local vector3_new = Vector3["new"]
@@ -8691,17 +8661,6 @@ local local_guns = {}
 local anti_aim = {}
 
 unload_lists[#unload_lists+1] = anti_aim
-
-
-
--- Performance: cache iteration functions to avoid metamethod lookups
-local fast_pairs = pairs
-local fast_ipairs = ipairs
-local fast_next = next
--- Reduce branching: nil-coalesce with early return
-local get_or_empty = function(val, default)
-    return val or (default or {})
-end
 
 
 -- > ( cheat functions )
@@ -11779,115 +11738,6 @@ do
         end
     end)
 end
-
--- > ( anti ban )
-
-do
-    local anti_ban_action = "notify"
-    local anti_ban_section = menu["groups"]["misc."]:create_section("anti ban", "anti ban", 1, 1, 0)
-
-    menu_references["anti_ban_action"] = anti_ban_section:create_element({["name"] = "action on report"}, {
-        ["dropdown"] = {
-            ["options"] = {"notify", "rejoin", "kick"},
-            ["flag"] = "anti_ban_action",
-            ["requires_one"] = true,
-            ["default"] = {"notify"}
-        }
-    })
-
-    create_connection(menu_references["anti_ban_action"]["on_dropdown_change"], function(value)
-        anti_ban_action = value[1]
-    end)
-
-    -- Hook MainEvent:FireServer to detect report packets sent by other players.
-    -- When a player reports someone, the client fires MainEvent with a specific
-    -- packet structure. The hook checks if the target of the report is this
-    -- client, and if so, triggers the chosen action.
-    local old_event_mt = getrawmetatable(event)
-    local old_event_namecall = old_event_mt["__namecall"]
-
-    local new_event_mt = {}
-    for k, v in old_event_mt do
-        new_event_mt[k] = v
-    end
-
-    new_event_mt["__namecall"] = newcclosure(function(self, ...)
-        local method = getnamecallmethod()
-        local args = {...}
-
-        if method == "FireServer" and self == event then
-            -- Check if this is a report packet. Da Hood's report structure is
-            -- typically: MainEvent:FireServer("PlayerReport" or similar, target_player)
-            -- The exact packet name may vary, so we check for common patterns.
-            if type(args[1]) == "string" then
-                local packet_name = args[1]:lower()
-                if packet_name:find("report") then
-                    local target = args[2]
-                    -- If the report target is this client, trigger the action
-                    if target == local_player or (type(target) == "Instance" and target == local_player) then
-                        local reporter = args[3] or "someone"
-                        if type(reporter) == "Instance" and reporter["ClassName"] == "Player" then
-                            reporter = reporter["Name"]
-                        end
-
-                        local local_name = local_player["Name"]
-                        local message = reporter.." reported "..local_name
-
-                        new_notification(message, 3)
-
-                        if anti_ban_action == "rejoin" then
-                            task.task.wait(0.5)
-                            teleport_service:TeleportToPlaceInstance(game["PlaceId"], game["JobId"])
-                        elseif anti_ban_action == "kick" then
-                            task.task.wait(0.5)
-                            local_player:Kick("[juju anti ban]\n"..message)
-                        end
-                    end
-                end
-            end
-        end
-
-        return old_event_namecall(self, ...)
-    end)
-
-    setrawmetatable(event, new_event_mt)
-end
-
--- Performance: cache player list to avoid iterator overhead on large tables
-local cached_player_list = {}
-local cache_player_list = function()
-    local j = 0
-    for player, _ in fast_pairs(player_data) do
-        j = j + 1
-        cached_player_list[j] = player
-    end
-    for i = j + 1, #cached_player_list do
-        cached_player_list[i] = nil
-    end
-    return j
-end
--- Object pooling to reduce allocations in hot loops
-local vector_pool = {}
-local vector_pool_index = 0
-local get_vector = function(x, y, z)
-    if vector_pool_index > 0 then
-        local v = vector_pool[vector_pool_index]
-        vector_pool[vector_pool_index] = nil
-        vector_pool_index = vector_pool_index - 1
-        return v
-    end
-    return vector3_new(x, y, z)
-end
-
--- Sort table for player ordering (reused per frame)
-local sort_table = {}
-local sort_reset = function()
-    for i = 1, #sort_table do
-        sort_table[i] = nil
-    end
-end
-
-
 
 -- > ( player data )
 
@@ -21739,11 +21589,6 @@ local backtrack_data = {}
         local hitboxes = manipulation["calculated_hitboxes"]
         local hitbox_position = hitbox["Position"]
 
-        -- Auto-extend bullet range: adds 20% reach bonus by extending direction vector
-        local visible = manipulation["visible"]
-        local hitboxes = manipulation["calculated_hitboxes"]
-        local hitbox_position = hitbox["Position"]
-
         -- The open shot, and the common case. The muzzle moves nothing, so a limb
         -- seen from where the character stands beats any moved origin, and the
         -- limbs are heaviest first, so the first one seen is the answer. A target
@@ -27073,7 +26918,7 @@ local get_backtrack_models = nil
 
             data[2] = {}
             data[3] = nil
-            task.wait(0.5)
+            wait(0.5)
 
             if not character then
                 return 
@@ -28411,7 +28256,7 @@ do
                     tween(shadow, {["Transparency"] = 0.89}, circular, out, 0.4)
                     wait(0.8)
                     tween(logo, {["tween_position"] = udim2_new(0.5, -50, 0.5, -50), ["Transparency"] = 0.4}, circular, out, 0.4)
-                    task.wait(0.5)
+                    wait(0.5)
                     tween(logo, {["tween_position"] = udim2_new(0.5, -210, 0.5, -50)}, circular, out, 0.4)
                     tween(text, {["tween_position"] = udim2_new(1, 0, 0.5, 0), ["Transparency"] = 0.4}, circular, out, 0.8)
                     wait(0.9)
@@ -28616,46 +28461,18 @@ local localPlayer = Players.LocalPlayer
 
 render_stepped_wait(render_stepped)
 
--- Auto walk: always keep small velocity to prevent server freeze on CFrame snaps
--- from buy/follow/stomp loops. Runs every frame to keep character alive.
-local autowalk_keepalive = 0.1
-
-local function autowalk()
-    local character = localPlayer["Character"]
+-- Auto walk, as given: while the character stands with no input, a small
+-- sideways velocity is written every heartbeat, and the fall speed is kept.
+RunService.Heartbeat:Connect(function()
+    local character = localPlayer.Character
     local rootPart = character and character:FindFirstChild("HumanoidRootPart")
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 
-    -- Don't walk if character is gone, dead, sitting, or knocked.
-    if not humanoid or not rootPart or humanoid["Health"] <= 0 or humanoid["SeatPart"] or local_knocked then
-        return
+    if humanoid and humanoid.MoveDirection.Magnitude == 0 and rootPart then
+        local currentYVelocity = rootPart.AssemblyLinearVelocity.Y
+        rootPart.AssemblyLinearVelocity = Vector3.new(0.1, currentYVelocity, 0.1)
     end
-
-    local velocity = rootPart["AssemblyLinearVelocity"]
-
-    -- Don't fight something else carrying the character fast (fling, slide, etc).
-    if velocity["X"]*velocity["X"] + velocity["Z"]*velocity["Z"] > 1 then
-        return
-    end
-
-    -- Always write small velocity to keep the character owned and awake, even while following/buying/stomping.
-    rootPart["AssemblyLinearVelocity"] = Vector3.new(autowalk_keepalive, velocity["Y"], autowalk_keepalive)
-end
-
-RunService["Stepped"]:Connect(autowalk)
-RunService["Heartbeat"]:Connect(autowalk)
--- Garbage collection optimization: light collection every 5 seconds
-local gc_tick = 0
-local gc_interval = 5
-local gc_runner = function()
-    gc_tick = gc_tick + 0.016  -- ~60fps
-    if gc_tick >= gc_interval then
-        gc_tick = 0
-        collectgarbage("step", 1)  -- Incremental collection, 1 step
-    end
-end
-
-run_service["Stepped"]:Connect(gc_runner)
-
+end)
 
 end, function(err)
     local ok, trace = pcall(debug.traceback, "", 2)
