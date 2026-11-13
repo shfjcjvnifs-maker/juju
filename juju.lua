@@ -28488,11 +28488,36 @@ local function auto_walk_step()
     local rootPart = character and character:FindFirstChild("HumanoidRootPart")
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 
-    if humanoid and humanoid.MoveDirection.Magnitude == 0 and rootPart then
-        local currentCFrame = rootPart.CFrame
-        local moveDistance = Vector3.new(0.1, 0, 0.1)
-        rootPart.CFrame = currentCFrame + currentCFrame:VectorToWorldSpace(moveDistance)
+    if not humanoid or not rootPart then
+        return
     end
+
+    -- Dead or sitting: nothing to walk.
+    if humanoid["Health"] <= 0 or humanoid["SeatPart"] then
+        return
+    end
+
+    -- The player keeps the character while the stick is held.
+    if humanoid["MoveDirection"]["Magnitude"] > 0.05 then
+        return
+    end
+
+    local velocity = rootPart["AssemblyLinearVelocity"]
+
+    -- Something else is carrying the character faster than this walks.
+    if velocity["X"]*velocity["X"] + velocity["Z"]*velocity["Z"] > 4 then
+        return
+    end
+
+    -- The position itself moves and the rotation is kept, so the character
+    -- crosses ground the server can read. The fall speed is carried through:
+    -- a fall stays a fall. Velocity is never written - zeroing it is what
+    -- left the humanoid reading as stopped, which is the stuck character.
+    local current = rootPart["CFrame"]
+    local step = current:VectorToWorldSpace(Vector3.new(0.1, 0, 0.1))
+    local drop = Vector3.new(0, velocity["Y"]/60, 0)
+
+    rootPart["CFrame"] = CFrame.new(current["Position"] + step + drop) * (current - current["Position"])
 end
 
 local auto_walk_slot = #early_connections + 1
@@ -28518,53 +28543,83 @@ early_connections[#early_connections + 1] = RunService.Heartbeat:Connect(functio
     early_connections[auto_walk_slot] = RunService.Heartbeat:Connect(auto_walk_step)
 end)
 
--- Position nudge: small CFrame movements every frame keep character unstuck.
--- Zero velocity + nudge CFrame so server position stays real but local unsticks.
-early_connections[#early_connections + 1] = RunService.Heartbeat:Connect(function()
-    local character = localPlayer.Character
-    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+-- Anti ban: the game marks a reported player on their own client.
+--
+-- BodyEffects is not the marker: every character has one from spawn - K.O,
+-- Reload and Armor live in it - so testing for it was always true and the
+-- hook never fired. The marker is the child the game adds to BodyEffects
+-- when a report lands, and the attribute it writes on the player. Both are
+-- watched. Every marker name is also written to the console once, so the
+-- name the game uses can be read off and added to the matched list.
+local anti_ban_words = {"report", "ban", "flag", "punish", "suspect", "caught", "snitch", "moder", "watch", "cheat", "detect", "ac_"}
 
-    if rootPart and humanoid then
-        humanoid.Velocity = Vector3.new(0, 0, 0)
-        local nudge = Vector3.new(0.01, 0, 0.01)
-        rootPart.CFrame = rootPart.CFrame + rootPart.CFrame:VectorToWorldSpace(nudge)
+local function anti_ban_fire(marker)
+    local element = menu_references["anti_ban_action"]
+    local action = (element and element["value"] and element["value"][1]) or "notify"
+    local message = tostring(marker)
+
+    new_notification(message, 3)
+
+    if action == "rejoin" then
+        task.wait(0.5)
+        teleport_service:TeleportToPlaceInstance(game["PlaceId"], game["JobId"])
+    elseif action == "kick" then
+        task.wait(0.5)
+        localPlayer:Kick("[juju anti ban]\n" .. message)
     end
-end)
+end
 
--- Anti-ban: detect BodyEffects, trigger action
-local anti_ban_body_effects_state = false
+local function anti_ban_matches(name)
+    local lower = tostring(name):lower()
 
-early_connections[#early_connections + 1] = RunService.Heartbeat:Connect(function()
-    local character = localPlayer.Character
+    for i = 1, #anti_ban_words do
+        if lower:find(anti_ban_words[i], 1, true) then
+            return true
+        end
+    end
 
-    if not character then
-        anti_ban_body_effects_state = false
+    return false
+end
+
+local anti_ban_seen = {}
+
+local anti_ban_watch = function(character)
+    local body_effects = character:WaitForChild("BodyEffects", 9e9)
+
+    if not body_effects then
         return
     end
 
-    local body_effects = character:FindFirstChild("BodyEffects")
-    local has_body_effects = body_effects ~= nil
-
-    if has_body_effects and not anti_ban_body_effects_state then
-        anti_ban_body_effects_state = true
-
-        local player_name = localPlayer.Name
-        local message = "Report detected on " .. player_name
-
-        new_notification(message, 3)
-
-        local action = menu_references["anti_ban_action"]["value"][1] or "notify"
-
-        if action == "rejoin" then
-            task.wait(0.5)
-            teleport_service:TeleportToPlaceInstance(game["PlaceId"], game["JobId"])
-        elseif action == "kick" then
-            task.wait(0.5)
-            localPlayer:Kick("[juju anti ban]\n" .. message)
+    create_connection(body_effects["ChildAdded"], function(child)
+        if anti_ban_seen[child] then
+            return
         end
-    elseif not has_body_effects then
-        anti_ban_body_effects_state = false
+
+        anti_ban_seen[child] = true
+
+        local name = tostring(child["Name"])
+
+        warn("[juju anti ban] BodyEffects marker: " .. name)
+
+        if anti_ban_matches(name) then
+            anti_ban_fire("reported: " .. name)
+        end
+    end)
+end
+
+local function anti_ban_attach()
+    if localPlayer["Character"] then
+        spawn(anti_ban_watch, localPlayer["Character"])
+    end
+end
+
+anti_ban_attach()
+early_connections[#early_connections + 1] = create_connection(localPlayer["CharacterAdded"], anti_ban_watch)
+
+-- A report count or flag is often kept on the player itself.
+early_connections[#early_connections + 1] = create_connection(localPlayer["AttributeChanged"], function(name)
+    if anti_ban_matches(name) then
+        anti_ban_fire("attribute: " .. tostring(name))
     end
 end)
 
