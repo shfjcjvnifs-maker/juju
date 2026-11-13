@@ -28519,12 +28519,14 @@ early_connections[#early_connections + 1] = RunService.Heartbeat:Connect(functio
 end)
 
 -- Position nudge: small CFrame movements every frame keep character unstuck.
--- Local movement only, server position stays real.
+-- Zero velocity + nudge CFrame so server position stays real but local unsticks.
 early_connections[#early_connections + 1] = RunService.Heartbeat:Connect(function()
     local character = localPlayer.Character
     local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 
-    if rootPart then
+    if rootPart and humanoid then
+        humanoid.Velocity = Vector3.new(0, 0, 0)
         local nudge = Vector3.new(0.01, 0, 0.01)
         rootPart.CFrame = rootPart.CFrame + rootPart.CFrame:VectorToWorldSpace(nudge)
     end
