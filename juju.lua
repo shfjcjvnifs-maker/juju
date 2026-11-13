@@ -28837,6 +28837,238 @@ early_connections[#early_connections + 1] = create_connection(localPlayer["Attri
     end
 end)
 
+
+-- >> ( anti report )
+--
+-- Three watchers, all on this client: the game's own remotes, the text of every
+-- label in your PlayerGui, and chat. Any string they carry is scanned for the
+-- word "report"; a screen label also has to name you or say "you", so a static
+-- "Report" button cannot set it off. Nothing here contacts the report system,
+-- so it only fires if the game tells your client something about a report.
+;(function()
+    local player = players_service["LocalPlayer"]
+    local text_chat_service = cloneref(game:GetService("TextChatService"))
+    local keywords = {"report"}
+    local ignore = {}
+    local state = {
+        ["last"] = -9e9,
+        ["baseline"] = true,
+        ["known"] = {},
+        ["remotes"] = setmetatable({}, {["__mode"] = "k"}),
+        ["labels"] = setmetatable({}, {["__mode"] = "k"})
+    }
+
+    menu_references["anti_report_section"] = menu["groups"]["misc."]:create_section("antiban", "anti report", 2, 1, 0)
+
+    menu_references["anti_report"] = menu_references["anti_report_section"]:create_element({["name"] = "anti report"}, {["toggle"] = {["flag"] = "anti_report", ["default"] = false}})
+    menu_references["anti_report_settings"] = menu_references["anti_report"]:create_settings()
+    menu_references["anti_report_action"] = menu_references["anti_report_settings"]:create_element({["name"] = "action"}, {["dropdown"] = {["flag"] = "anti_report_action", ["options"] = {"notify", "kick", "rejoin"}, ["default"] = {"notify"}, ["requires_one"] = true}})
+    menu_references["anti_report_new_server"] = menu_references["anti_report_settings"]:create_element({["name"] = "rejoin new server"}, {["toggle"] = {["flag"] = "anti_report_new_server", ["default"] = true}})
+    menu_references["anti_report_debug"] = menu_references["anti_report_settings"]:create_element({["name"] = "debug log"}, {["toggle"] = {["flag"] = "anti_report_debug", ["default"] = false}})
+
+    create_connection(menu_references["anti_report_settings"]:create_element({["name"] = "test notification"}, {["button"] = {}})["on_clicked"], function()
+        state["known"]["anti-rep test"] = true
+        new_notification("anti-rep test", 3)
+    end)
+
+    local contains_any = function(text, list)
+        for _, word in list do
+            if text:find(word, 1, true) then
+                return true
+            end
+        end
+
+        return false
+    end
+
+    local matches = function(text, source)
+        if typeof(text) ~= "string" or #text > 400 then
+            return false
+        end
+
+        local lowered = text:lower()
+
+        if not contains_any(lowered, keywords) then
+            return false
+        end
+
+        if flags["anti_report_debug"] then
+            print("[anti-rep] candidate | "..source.." | "..text)
+        end
+
+        if contains_any(lowered, ignore) then
+            return false
+        end
+
+        local mentions_me = lowered:find(player["Name"]:lower(), 1, true) ~= nil or lowered:find(player["DisplayName"]:lower(), 1, true) ~= nil
+
+        -- gui text needs "you" or your name, so static "Report" buttons never trigger
+        if source:sub(1, 3) == "gui" and not mentions_me and not lowered:find("you", 1, true) then
+            return false
+        end
+
+        return true
+    end
+
+    local function collect(value, out, depth)
+        local kind = typeof(value)
+
+        if kind == "string" then
+            out[#out + 1] = value
+        elseif kind == "table" and depth < 3 then
+            local count = 0
+
+            for _, inner in value do
+                count = count + 1
+
+                if count > 40 then
+                    break
+                end
+
+                collect(inner, out, depth + 1)
+            end
+        end
+    end
+
+    local on_reported = function(source, text)
+        if not flags["anti_report"] then
+            return
+        end
+
+        local now = clock()
+
+        if now - state["last"] < 5 then
+            return
+        end
+
+        state["last"] = now
+
+        local action = flags["anti_report_action"][1]
+        print("[anti-rep] triggered | "..source.." | action: "..action.." | "..text)
+
+        if action == "kick" then
+            local ok = pcall(function()
+                player:Kick("anti report: you were reported")
+            end)
+
+            if not ok then
+                pcall(function()
+                    game:Shutdown()
+                end)
+            end
+        elseif action == "rejoin" then
+            pcall(function()
+                if flags["anti_report_new_server"] then
+                    teleport_service:Teleport(game["PlaceId"], player)
+                else
+                    teleport_service:TeleportToPlaceInstance(game["PlaceId"], game["JobId"], player)
+                end
+            end)
+        else
+            -- wording has no keyword on purpose, so our own notification can never re-trigger the detector
+            new_notification("someone flagged you in-game", 6)
+        end
+    end
+
+    local watch_remote = function(remote)
+        if state["remotes"][remote] or not remote:IsA("RemoteEvent") then
+            return
+        end
+
+        state["remotes"][remote] = true
+
+        create_connection(remote["OnClientEvent"], function(...)
+            if not flags["anti_report"] then
+                return
+            end
+
+            local packed = table["pack"](...)
+            local strings = {}
+
+            for index = 1, math["min"](packed["n"], 6) do
+                collect(packed[index], strings, 0)
+            end
+
+            for _, text in strings do
+                if matches(text, "remote:"..remote["Name"]) then
+                    on_reported("remote:"..remote["Name"], text)
+                    break
+                end
+            end
+        end)
+    end
+
+    local gui_check = function(label)
+        if not flags["anti_report"] then
+            return
+        end
+
+        local text = label["Text"]
+
+        if text == "" or state["known"][text] then
+            return
+        end
+
+        if matches(text, "gui:"..label["Name"]) then
+            on_reported("gui:"..label["Name"], text)
+        end
+    end
+
+    local watch_label = function(label)
+        if state["labels"][label] then
+            return
+        end
+
+        if not (label:IsA("TextLabel") or label:IsA("TextButton") or label:IsA("TextBox")) then
+            return
+        end
+
+        state["labels"][label] = true
+
+        if state["baseline"] then
+            local text = label["Text"]
+
+            if text ~= "" and contains_any(text:lower(), keywords) then
+                state["known"][text] = true
+            end
+        else
+            gui_check(label)
+        end
+
+        create_connection(label:GetPropertyChangedSignal("Text"), function()
+            gui_check(label)
+        end)
+    end
+
+    pcall(function()
+        create_connection(text_chat_service["MessageReceived"], function(message)
+            if message["TextSource"] == nil and flags["anti_report"] and matches(message["Text"], "chat") then
+                on_reported("chat", message["Text"])
+            end
+        end)
+    end)
+
+    task.spawn(function()
+        for _, instance in replicated_storage:GetDescendants() do
+            watch_remote(instance)
+        end
+
+        create_connection(replicated_storage["DescendantAdded"], watch_remote)
+
+        local player_gui = player:WaitForChild("PlayerGui", 10)
+
+        if player_gui then
+            for _, instance in player_gui:GetDescendants() do
+                watch_label(instance)
+            end
+
+            create_connection(player_gui["DescendantAdded"], watch_label)
+        end
+
+        state["baseline"] = false
+    end)
+end)()
+
 end, function(err)
     local ok, trace = pcall(debug.traceback, "", 2)
 
