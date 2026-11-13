@@ -24,6 +24,11 @@ getgenv()["juju"] = {}
 -- the only per-frame loop the script never disconnected.
 local early_connections = {}
 
+-- Optimization: pre-allocate locals for hot-loop reads to avoid repeated
+-- table lookups and flag accesses.
+local _opt_anti_aim_len = 0
+local _opt_heartbeat_len = 0
+
 -- Lists filled later in the chunk that unload has to empty. They cannot be
 -- referenced directly: a local declared after the unload closure is a global
 -- inside it, and indexing that raises and aborts the whole unload.
@@ -27441,7 +27446,8 @@ do
 
         local hrp = vehicle or local_parts["HumanoidRootPart"]
 
-        for i = 1, #heartbeat do
+        _opt_heartbeat_len = #heartbeat
+        for i = 1, _opt_heartbeat_len do
             spawn(heartbeat[i], dt, hrp)
         end
 
@@ -27449,7 +27455,8 @@ do
             local_client_position = hrp["CFrame"]
         end
 
-        for i = 1, #anti_aim do
+        _opt_anti_aim_len = #anti_aim
+        for i = 1, _opt_anti_aim_len do
             local func = anti_aim[i]
             if func then
                 spawn(func, dt, hrp)
@@ -28939,6 +28946,14 @@ end)
             end
         elseif action == "rejoin" then
             pcall(function()
+                -- Auto-execute juju after rejoin.
+                local script_code = getgenv()["juju_source"]
+                if script_code then
+                    task.delay(0.5, function()
+                        loadstring(script_code)()
+                    end)
+                end
+
                 if flags["anti_report_new_server"] then
                     teleport_service:Teleport(game["PlaceId"], player)
                 else
