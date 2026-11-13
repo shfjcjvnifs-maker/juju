@@ -13299,137 +13299,6 @@ do
 
     local offset = vector3_new(0, 20, 0)
 
-    -- Ripples: where a drop lands, a flat disc grows and fades once, so the
-    -- ground reads as wet. Light rain only; the other two types are heavy
-    -- rain and snow. The pool is made with the rain and torn down with it,
-    -- every disc in it is reused, and the discs are stepped from the same
-    -- heartbeat callback that carries the rain, so nothing new is connected
-    -- and nothing is allocated per frame.
-    local RIPPLE_COUNT = 18
-    local RIPPLE_LIFE = 0.55
-    local RIPPLE_EVERY = 0.05
-    local RIPPLE_SPREAD = 14
-    local RIPPLE_FROM = 0.6
-    local RIPPLE_TO = 3.2
-
-    local ripples = {}
-    local ripple_next = 1
-    local ripple_clock = 0
-
-    -- A cylinder stands on its X axis, so a quarter turn about Z lays the
-    -- disc down flat on the ground.
-    local ripple_flat = CFrame["Angles"](0, 0, math["rad"](90))
-
-    local ripple_raycast = workspace["Raycast"]
-
-    local ripple_params = RaycastParams["new"]()
-    ripple_params["FilterType"] = Enum["RaycastFilterType"]["Exclude"]
-    ripple_params["IgnoreWater"] = true
-    ripple_params["FilterDescendantsInstances"] = {}
-
-    local function ripples_spawn(hrp)
-        local base = hrp and hrp["Position"] or camera["CFrame"]["p"]
-
-        -- Somewhere on the ground near the player. The drop it stands for is
-        -- not tracked; the timing is what makes it read as rain.
-        local origin = vector3_new(
-            base["X"] + math_random() * RIPPLE_SPREAD * 2 - RIPPLE_SPREAD,
-            base["Y"] + 12,
-            base["Z"] + math_random() * RIPPLE_SPREAD * 2 - RIPPLE_SPREAD
-        )
-
-        local hit = ripple_raycast(workspace, origin, vector3_new(0, -60, 0), ripple_params)
-
-        -- Nothing under it: no disc is spent on it.
-        if not hit then
-            return
-        end
-
-        local ripple = ripples[ripple_next]
-
-        ripple_next = ripple_next % RIPPLE_COUNT + 1
-
-        ripple["age"] = 0
-        ripple["part"]["CFrame"] = cframe_new(hit["Position"] + vector3_new(0, 0.05, 0)) * ripple_flat
-    end
-
-    local function ripples_step(dt, hrp)
-        local count = #ripples
-
-        if count == 0 then
-            return
-        end
-
-        local picked = flags["weather_type"]
-
-        if picked and picked[1] == "light rain" then
-            ripple_clock = ripple_clock + dt
-
-            if ripple_clock >= RIPPLE_EVERY then
-                ripple_clock = 0
-                ripples_spawn(hrp)
-            end
-        end
-
-        -- One write of the size and one of the fade per disc that is out, and
-        -- nothing at all for a disc that is waiting its turn.
-        for i = 1, count do
-            local ripple = ripples[i]
-
-            if ripple["age"] < RIPPLE_LIFE then
-                local age = ripple["age"] + dt
-                ripple["age"] = age
-
-                local part = ripple["part"]
-
-                if age < RIPPLE_LIFE then
-                    local grow = age / RIPPLE_LIFE
-                    local size = RIPPLE_FROM + (RIPPLE_TO - RIPPLE_FROM) * grow
-
-                    part["Size"] = vector3_new(0.06, size, size)
-                    part["Transparency"] = 0.35 + 0.6 * grow
-                else
-                    -- Out of its time: one write and it is a free disc again.
-                    part["Size"] = vector3_new(0.06, RIPPLE_TO, RIPPLE_TO)
-                    part["Transparency"] = 1
-                end
-            end
-        end
-    end
-
-    -- The discs hang on the rain part, so they last exactly as long as it does.
-    local function ripples_build(parent)
-        local character = localPlayer["Character"]
-
-        -- Never a disc on the player: the ray starts above and lands below.
-        ripple_params["FilterDescendantsInstances"] = character and {character} or {}
-
-        local color = flags["weather_color"]
-
-        for i = 1, RIPPLE_COUNT do
-            local part = create_instance("Part", {
-                ["Shape"] = Enum["PartType"]["Cylinder"],
-                ["Size"] = vector3_new(0.06, RIPPLE_FROM, RIPPLE_FROM),
-                ["Color"] = color,
-                ["Transparency"] = 1,
-                ["CanCollide"] = false,
-                ["CanQuery"] = false,
-                ["CanTouch"] = false,
-                ["Massless"] = true,
-                ["CastShadow"] = false,
-                ["Anchored"] = true,
-                ["Material"] = Enum["Material"]["SmoothPlastic"],
-                ["Name"] = "\0",
-                ["Parent"] = parent
-            })
-
-            ripples[i] = {["part"] = part, ["age"] = RIPPLE_LIFE}
-        end
-
-        ripple_next = 1
-        ripple_clock = 0
-    end
-
     local weather_step_x = nil
     local weather_step_y = nil
     local weather_step_z = nil
@@ -13451,8 +13320,6 @@ do
 
             weather_part["CFrame"] = cframe_new(x, y, z) + offset
         end
-
-        ripples_step(dt, hrp)
     end)
 
     local ignored = ignored["Siren"]["Radius"]
@@ -13462,8 +13329,6 @@ do
             destroy(weather_part)
             weather_part = nil
             weather_particle = nil
-            -- The discs were children of that part, so they went with it.
-            ripples = {}
         end
 
         -- Either way the box is placed again on the next frame.
@@ -13497,8 +13362,6 @@ do
             weather_particle["Color"] = color
             weather_particle["Parent"] = weather_part
 
-            ripples_build(weather_part)
-
             heartbeat[#heartbeat+1] = do_weather
         end
     end)
@@ -13515,10 +13378,6 @@ do
     end)
 
     create_connection(menu_references["weather_color"]["on_color_change"], function(color)
-        for i = 1, #ripples do
-            ripples[i]["part"]["Color"] = color
-        end
-
         if weather_particle then
             weather_particle["Color"] = ColorSequence.new(color)
         end
@@ -24512,14 +24371,50 @@ local backtrack_data = {}
         local auto_loadout_disable_below_health = nil
         local auto_loadout_disable_forcefield = nil
 
-        local do_auto_loadout = LPH_JIT_MAX(function()
+        local do_auto_loadout = nil
+        local auto_loadout_retry = false
+
+        -- The loadout is called when the character loads and when the armor
+        -- changes, and nowhere else. That is why nothing was bought after a
+        -- respawn: the call that arrives on load comes while the spawn
+        -- protection is still up, and with "forcefield" picked the whole
+        -- loadout returned on it and was never asked again. A guard that
+        -- clears on its own now asks for another call instead of giving up.
+        local auto_loadout_call_later = function()
+            if auto_loadout_retry then
+                return
+            end
+
+            auto_loadout_retry = true
+
+            delay(1, function()
+                auto_loadout_retry = false
+
+                if flags["auto_loadout"] then
+                    do_auto_loadout()
+                end
+            end)
+        end
+
+        do_auto_loadout = LPH_JIT_MAX(function()
             local old_hrp = local_parts["HumanoidRootPart"]
 
-            if not old_hrp or local_cash < 10000 or (purchasing and purchasing[6]:find("armor")) then
+            if not old_hrp then
+                auto_loadout_call_later()
+                return
+            end
+
+            if local_cash < 10000 then
+                return
+            end
+
+            if purchasing and purchasing[6]:find("armor") then
+                auto_loadout_call_later()
                 return
             end
 
             if auto_loadout_disable_forcefield and (local_parts["ForceField"] or local_parts["FORCEFIELD"]) then
+                auto_loadout_call_later()
                 return
             end
 
@@ -24527,6 +24422,7 @@ local backtrack_data = {}
                 local humanoid = local_parts["Humanoid"]
 
                 if humanoid and humanoid["Health"]/humanoid["MaxHealth"] < auto_loadout_disable_below_health then
+                    auto_loadout_call_later()
                     return
                 end
             end
@@ -28954,6 +28850,14 @@ end)
             return false
         end
 
+        -- Anything this detector posted itself. The alert carries the game's
+        -- own string, keyword and all, so it is turned away by its tag rather
+        -- than by hoping the wording misses the keyword. This holds whichever
+        -- of the three watchers the string comes back through.
+        if text:sub(1, 10) == "[anti-rep]" then
+            return false
+        end
+
         local lowered = text:lower()
 
         if not contains_any(lowered, keywords) then
@@ -28961,7 +28865,9 @@ end)
         end
 
         if flags["anti_report_debug"] then
-            print("[anti-rep] candidate | "..source.." | "..text)
+            -- On screen, not in the console: this is the line that says a
+            -- string got as far as the keyword and what it came from.
+            new_notification("[anti-rep] candidate | "..source.." | "..text, 2)
         end
 
         if contains_any(lowered, ignore) then
@@ -29012,7 +28918,10 @@ end)
         state["last"] = now
 
         local action = flags["anti_report_action"][1]
-        print("[anti-rep] triggered | "..source.." | action: "..action.." | "..text)
+
+        -- One alert per report, in the hub's own notifications rather than in
+        -- the console, and it says where the string came from.
+        new_notification("[anti-rep] "..source.." | "..text, 3)
 
         if action == "kick" then
             local ok = pcall(function()
@@ -29032,9 +28941,6 @@ end)
                     teleport_service:TeleportToPlaceInstance(game["PlaceId"], game["JobId"], player)
                 end
             end)
-        else
-            -- wording has no keyword on purpose, so our own notification can never re-trigger the detector
-            new_notification("someone flagged you in-game", 6)
         end
     end
 
