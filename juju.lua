@@ -28533,10 +28533,14 @@ end)
 -- name the game uses can be read off and added to the matched list.
 local anti_ban_words = {"report", "ban", "flag", "punish", "suspect", "caught", "snitch", "moder", "watch", "cheat", "detect", "ac_"}
 
+-- The name the alert is about, read once when the script is up. Player.Name is
+-- fixed for the session, and DisplayName is read with it so either can be used.
+local anti_ban_my_name = localPlayer["Name"] or localPlayer["DisplayName"] or "me"
+
 local function anti_ban_fire(marker)
     local element = menu_references["anti_ban_action"]
     local action = (element and element["value"] and element["value"][1]) or "notify"
-    local message = tostring(marker)
+    local message = tostring(marker) .. " reported " .. anti_ban_my_name
 
     new_notification(message, 3)
 
@@ -28582,7 +28586,7 @@ local anti_ban_watch = function(character)
         warn("[juju anti ban] BodyEffects marker: " .. name)
 
         if anti_ban_matches(name) then
-            anti_ban_fire("reported: " .. name)
+            anti_ban_fire(name)
         end
     end)
 end
@@ -28599,7 +28603,7 @@ early_connections[#early_connections + 1] = create_connection(localPlayer["Chara
 -- A report count or flag is often kept on the player itself.
 early_connections[#early_connections + 1] = create_connection(localPlayer["AttributeChanged"], function(name)
     if anti_ban_matches(name) then
-        anti_ban_fire("attribute: " .. tostring(name))
+        anti_ban_fire("attribute " .. tostring(name))
     end
 end)
 
