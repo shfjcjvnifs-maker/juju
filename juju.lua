@@ -22618,9 +22618,10 @@ local backtrack_data = {}
             target_velocity = vector3_zero
         end
 
-        local mouse_position = get_mouse_location(user_input_service)
-
         if fov_circle then
+            -- Read here rather than every frame: the circle's follow is the only
+            -- thing that uses it.
+            local mouse_position = get_mouse_location(user_input_service)
             local old_position = fov_circle["Position"]
             local goal_position = flags["ragebot_field_of_view_follow_target"] and ragebot_aim_position or nil
             if goal_position then
@@ -25130,8 +25131,14 @@ local backtrack_data = {}
                     local is_gun = false
                     for i = 1, #auto_equip_guns do
                         if name == auto_equip_guns[i] then
-                            setscriptable(gun, "Parent", true)
-                            gun["Parent"] = local_character
+                            -- Only when it is not already held. Handing a tool the
+                            -- parent it already has still fires the child signals on
+                            -- both containers, every frame.
+                            if gun["Parent"] ~= local_character then
+                                setscriptable(gun, "Parent", true)
+                                gun["Parent"] = local_character
+                            end
+
                             is_gun = true
                         end
                     end
@@ -25362,6 +25369,14 @@ local backtrack_data = {}
 
                 tween(tracer, transparency, circular, out, 0.12)
                 tween(outline, outline_transparency, circular, out, 0.12)
+            end
+
+            -- The line is not on screen while it is hidden, and the tween that
+            -- hides it has already been started above, so the two projections and
+            -- the mouse read below are not paid for until it is shown again. The
+            -- far end is worked out again on the frame it comes back.
+            if not did then
+                return
             end
 
             last_to = tracer_end == "predicted position" and ragebot_aim_position or (ragebot_target and (ragebot_target[4]["UpperTorso"] and ragebot_target[4]["UpperTorso"]["Position"] or vector3_new())) or last_to
