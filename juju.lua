@@ -24612,17 +24612,36 @@ local backtrack_data = {}
                 return
             end
 
-            for gun, data in local_guns do
-                local gun = gun["Parent"]
+            local amount = flags["auto_ammo_purchase_amount"]
+
+            for _, data in local_guns do
+                local gun = data[5]
 
                 if not gun then
                     continue
                 end
 
-                local remainder = minimum_clips - floor(tonumber(inventory[gun["Name"]]["Value"])/gun["MaxAmmo"]["Value"])
+                -- The clip size the gun was bound with, not the MaxAmmo child.
+                -- Not every Da Hood gun carries a child by that name - some have
+                -- MagSize or an attribute instead - and reading the child straight
+                -- is what stranded them: the missing child errored the frame, and
+                -- every gun queued behind that one went unread with it. A gun that
+                -- cannot be measured is skipped instead of stopping the rest.
+                local max_ammo = data[6]
 
-                if remainder >= 0 then
-                    purchase_item(gun["Name"]:sub(2, -2):lower().." ammo", flags["auto_ammo_purchase_amount"])
+                if not max_ammo or max_ammo <= 0 then
+                    continue
+                end
+
+                local reserve = inventory[gun["Name"]]
+                local rounds = reserve and tonumber(reserve["Value"])
+
+                if not rounds then
+                    continue
+                end
+
+                if minimum_clips - floor(rounds/max_ammo) >= 0 then
+                    purchase_item(gun["Name"]:sub(2, -2):lower().." ammo", amount)
                 end
             end
         end)
