@@ -9664,10 +9664,15 @@ do
         ["__namecall"] = newcclosure(LPH_JIT_MAX(function(self, ...)
             setthreadidentity(4)
             if getnamecallmethod() == "FireServer" then
-                local args = {...}
-                local packet = args[1]
+                -- The packet name is the first argument and nothing else is needed
+                -- to decide what to do with the call, so the argument table is
+                -- only built in the branches that read it. Building it here
+                -- charged every FireServer in the game for it, including the ones
+                -- this hook passes straight through.
+                local packet = ...
                 
                 if packet == "ShootGun" then
+                    local args = {...}
                     local aim_position = nil
                     local is_ragebot_shot = ragebot_firing_shot
                     local shoot_arg_count = select("#", ...)
@@ -9761,7 +9766,7 @@ do
                         end
                     end
                 elseif packet == "UpdateCursorImage" and flags["unlock_custom_crosshair"] then
-                    local value = args[2]
+                    local value = select(2, ...)
                     inventory["Parent"]["CursorImage"]["Value"] = value
                     return
                 elseif packet == "CHECKER_4" or packet == "CalculateShootClient" then
@@ -14205,10 +14210,12 @@ end
             local gap = current_gap
             local len = current_len
     
-            local angles = {rot_rad, pi / 2 + rot_rad, pi + rot_rad, 3 * pi / 2 + rot_rad}
     
             for i = 1, 4 do
-                local angle = angles[i]
+                -- A quarter turn per arm off the same rotation. The table this
+                -- used to read from was rebuilt every drawn frame for four values
+                -- that are one multiply apart.
+                local angle = (i - 1) * (pi / 2) + rot_rad
                 local idx_base = (i - 1) * 2 + 1
                 local idx_outline = idx_base + 1
     
@@ -23565,13 +23572,26 @@ local backtrack_data = {}
     do
         local old = getfflag("S2PhysicsSenderRate")
 
+        -- The last value this step wrote. A frame spends a string and a native
+        -- setfflag on a number that only moves in tenths, so it writes only when
+        -- the rounded rate is not the one already in place. Anything else that
+        -- writes the flag clears this, so a value set from the menu is never
+        -- mistaken for one this step applied.
+        local last_sender_rate = nil
+
         local do_automatic = LPH_NO_VIRTUALIZE(function()
-            setfflag("S2PhysicsSenderRate", tostring(round(local_fps, 1)))
+            local rate = tostring(round(local_fps, 1))
+
+            if rate ~= last_sender_rate then
+                last_sender_rate = rate
+                setfflag("S2PhysicsSenderRate", rate)
+            end
         end)
 
         create_connection(menu_references["sender_rate_value"]["on_toggle_change"], function(value)
             local rate = flags["sender_rate_value_type"][1]
 
+            last_sender_rate = nil
             setfflag("S2PhysicsSenderRate", value and (rate == "custom" and tostring(flags["sender_rate_value_rate"])) or old)
         
             for i = 1, #anti_aim do
@@ -23602,12 +23622,14 @@ local backtrack_data = {}
                 if rate == "automatic" then
                     anti_aim[#anti_aim+1] = do_automatic
                 end
+                last_sender_rate = nil
                 setfflag("S2PhysicsSenderRate", rate == "custom" and tostring(flags["sender_rate_value_rate"]) or "15")
             end
         end)
 
         create_connection(menu_references["sender_rate_value_rate"]["on_slider_change"], function(value)
             if flags["sender_rate_value"] and flags["sender_rate_value_type"][1] == "custom" then
+                last_sender_rate = nil
                 setfflag("S2PhysicsSenderRate", tostring(value))
             end
         end)
@@ -24133,12 +24155,16 @@ local backtrack_data = {}
             local offset = (clock() * 4) % (pi * 2)
             local radius = data[11]
 
+            -- The end of one segment is the start of the next, so the ring is 33
+            -- projections a frame and not 64. Each pass projects only the far end
+            -- of its segment and carries it into the pass after it.
+            local angle_step = 0.12566370614359174
+            local pos1, on_screen = world_to_viewport_point(camera, position + vector3_new(cos(offset) * radius, 0, sin(offset) * radius))
+
             for i = 1, 32 do
                 local line = lines[i]
-                local angle1 = 0.12566370614359174 * (i - 1) + offset
-                local angle2 = 0.12566370614359174 * i + offset
+                local angle2 = angle_step * i + offset
 
-                local pos1, on_screen = world_to_viewport_point(camera, position + vector3_new(cos(angle1) * radius, 0, sin(angle1) * radius))
                 local pos2, on_screen2 = world_to_viewport_point(camera, position + vector3_new(cos(angle2) * radius, 0, sin(angle2) * radius))
 
                 local visible = (i + 32) % 32
@@ -24157,6 +24183,10 @@ local backtrack_data = {}
                 else
                     line["Visible"] = false
                 end
+
+                -- This segment's far end is the next one's near end.
+                pos1 = pos2
+                on_screen = on_screen2
             end
         elseif rendering then
             old_radius = 0
@@ -25235,7 +25265,14 @@ local backtrack_data = {}
             local humanoid = local_parts["Humanoid"]
 
             if humanoid then
-                humanoid["AutoRotate"] = ragebot_target == nil
+                -- Read against the live value rather than a memo of what this
+                -- wrote: the game sets this too, and a write that changes nothing
+                -- still goes through the property setter.
+                local wanted = ragebot_target == nil
+
+                if humanoid["AutoRotate"] ~= wanted then
+                    humanoid["AutoRotate"] = wanted
+                end
             end
 
             if ragebot_target and hrp then
@@ -25814,16 +25851,22 @@ local get_backtrack_models = nil
         
         local new = {
             ["__index"] = newcclosure(LPH_JIT_MAX(function(self, index)
-                local force = getthreadidentity() == 5
-                if (force or not checkcaller()) and self and index == "Hit" then
-                    if silent_aim_position or ragebot_aim_position then
-                        local calling_script = not force and getcallingscript()
-                        if force or (calling_script and calling_script["Name"]:find("Gun")) then
-                            if ragebot_aim_position then
-                                return cframe_new(ragebot_aim_position)
-                            end
-                            if math_random(1,100) > silent_aim_redirect_chance then
-                                return cframe_new(silent_aim_position)
+                -- The two native calls below only decide anything for the one key
+                -- this hook has a say in. Every other read of the mouse falls
+                -- straight through to the real index without paying for them.
+                if self and index == "Hit" then
+                    local force = getthreadidentity() == 5
+
+                    if force or not checkcaller() then
+                        if silent_aim_position or ragebot_aim_position then
+                            local calling_script = not force and getcallingscript()
+                            if force or (calling_script and calling_script["Name"]:find("Gun")) then
+                                if ragebot_aim_position then
+                                    return cframe_new(ragebot_aim_position)
+                                end
+                                if math_random(1,100) > silent_aim_redirect_chance then
+                                    return cframe_new(silent_aim_position)
+                                end
                             end
                         end
                     end
@@ -27481,9 +27524,9 @@ do
                     return old_index(self, index)
                 end)),
                 ["__newindex"] = newcclosure(LPH_NO_VIRTUALIZE(function(self, index, value)
-                    if checkcaller() and self and index == "CFrame" and (#anti_aim ~= 0 or purchasing) then
-                        return old_new_index(self, index, value)
-                    end
+                    -- Both arms of the test that used to be here ran this same call,
+                    -- so every write to the vehicle paid for the test and it decided
+                    -- nothing.
                     return old_new_index(self, index, value)
                 end))
             }
