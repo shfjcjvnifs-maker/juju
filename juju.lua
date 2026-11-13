@@ -24,11 +24,6 @@ getgenv()["juju"] = {}
 -- the only per-frame loop the script never disconnected.
 local early_connections = {}
 
--- Optimization: pre-allocate locals for hot-loop reads to avoid repeated
--- table lookups and flag accesses.
-local _opt_anti_aim_len = 0
-local _opt_heartbeat_len = 0
-
 -- Lists filled later in the chunk that unload has to empty. They cannot be
 -- referenced directly: a local declared after the unload closure is a global
 -- inside it, and indexing that raises and aborts the whole unload.
@@ -23211,30 +23206,8 @@ local backtrack_data = {}
             local old_velocity = hrp["Velocity"]
 
             in_void = true
--- The void puts the character out at nine billion studs and beyond. math.random
--- stops at int32: given a range beyond it, a negative lower bound returns
--- -2147483648 every time and a zero lower bound raises, so the far end is built
--- from two ranges that are both inside what it supports - a whole chunk each
--- way, then a random offset inside one chunk. The chunk count starts at one so
--- the smallest jump is already past two billion and the largest is past nine.
-local void_far_chunk = 2147483647
-local void_far_max = 9e9
-
-local function void_far_axis()
-    local chunks = math_random(1, 4)
-    local base = chunks * void_far_chunk
-    local room = void_far_max - base
-    local value = base + math_random(0, room > void_far_chunk and void_far_chunk or room)
-
-    if math_random(0, 1) == 0 then
-        return -value
-    end
-
-    return value
-end
-
             hrp["Velocity"] = vector3_zero
-            hrp["CFrame"] = cframe_new(vector3_new(void_far_axis(), math_random(-400, 2147483647), void_far_axis()))
+            hrp["CFrame"] = cframe_new(vector3_new(math_random(-2147483647, 2147483647), math_random(-400, 2147483647), math_random(-2147483647, 2147483647)))
             render_stepped_wait(render_stepped)
             hrp["CFrame"] = old_cframe
             hrp["Velocity"] = old_velocity
@@ -24953,7 +24926,7 @@ end
                             end
                         end
                         if fake_in_void then
-                            hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, void_far_axis(), 0)) or cframe_new(vector3_new(void_far_axis(), math_random(-400, 2147483647), void_far_axis()))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
+                            hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, math_random(-2147483647, 2147483647), 0)) or cframe_new(vector3_new(math_random(-2147483647, 2147483647), math_random(-400, 2147483647), math_random(-2147483647, 2147483647)))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
                         end
                     end
                 elseif do_void_hide then
@@ -24992,7 +24965,7 @@ end
                         end
                     end
                     if fake_in_void then
-                        hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, void_far_axis(), 0)) or cframe_new(vector3_new(void_far_axis(), math_random(-400, 2147483647), void_far_axis()))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
+                        hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, math_random(-2147483647, 2147483647), 0)) or cframe_new(vector3_new(math_random(-2147483647, 2147483647), math_random(-400, 2147483647), math_random(-2147483647, 2147483647)))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
                     end
                 end
                 if not in_void then
@@ -27430,20 +27403,13 @@ do
     local last_ping_check = clock()
     local ping_data = {}
 
-    -- Cached once here rather than read by name every frame: this block runs
-    -- about sixty times a second and each name is a table lookup.
-    local _opt_floor = math.floor
-    local _opt_hrp_cframe = "CFrame"
-    local _opt_hrp_root = "HumanoidRootPart"
-
     local update_server_position = LPH_NO_VIRTUALIZE(function(hrp)
         local_server_position = hrp["CFrame"]
     end)
 
     local last_fps = clock()
 
-    local _rs_heartbeat = game:GetService("RunService")["Heartbeat"]
-    create_connection(_rs_heartbeat, LPH_NO_VIRTUALIZE(function(dt)
+    create_connection(game:GetService("RunService")["Heartbeat"], LPH_NO_VIRTUALIZE(function(dt)
         if in_void then
             in_void = nil
         else
@@ -27470,18 +27436,20 @@ do
             for _, ping in ping_data do
                 total+=ping
             end
-            local_ping = 3 + _opt_floor(total/#ping_data)
+            local_ping = 3 + floor(total/#ping_data)
         end
 
-        local hrp = vehicle or local_parts[_opt_hrp_root]
+        local hrp = vehicle or local_parts["HumanoidRootPart"]
 
-        _opt_heartbeat_len = #heartbeat
-        for i = 1, _opt_heartbeat_len do
+        for i = 1, #heartbeat do
             spawn(heartbeat[i], dt, hrp)
         end
 
-        _opt_anti_aim_len = #anti_aim
-        for i = 1, _opt_anti_aim_len do
+        if hrp then
+            local_client_position = hrp["CFrame"]
+        end
+
+        for i = 1, #anti_aim do
             local func = anti_aim[i]
             if func then
                 spawn(func, dt, hrp)
@@ -27489,7 +27457,6 @@ do
         end
 
         if hrp then
-            local_client_position = hrp[_opt_hrp_cframe]
             -- Called, not spawned. It is one assignment, and a coroutine every
             -- frame to run it costs more than the assignment does.
             update_server_position(hrp)
@@ -28867,9 +28834,9 @@ end)
 
     -- The elements are made with the rest of the menu. Only their test button
     -- is wired here, because it reads this detector's own state.
-    create_connection(menu_references["anti_report_test"]["OnClicked"], function()
+    create_connection(menu_references["anti_report_test"]["on_clicked"], function()
         state["known"]["anti-rep test"] = true
-        new_notification("[anti-rep] test | test notification", 2)
+        new_notification("anti-rep test", 3)
     end)
 
     local contains_any = function(text, list)
@@ -28958,7 +28925,7 @@ end)
 
         -- One alert per report, in the hub's own notifications rather than in
         -- the console, and it says where the string came from.
-        new_notification("[anti-rep] "..source.." | "..text, 2)
+        new_notification("[anti-rep] "..source.." | "..text, 3)
 
         if action == "kick" then
             local ok = pcall(function()
@@ -28972,14 +28939,6 @@ end)
             end
         elseif action == "rejoin" then
             pcall(function()
-                -- Auto-execute juju after rejoin.
-                local script_code = getgenv()["juju_source"]
-                if script_code then
-                    task.delay(0.5, function()
-                        loadstring(script_code)()
-                    end)
-                end
-
                 if flags["anti_report_new_server"] then
                     teleport_service:Teleport(game["PlaceId"], player)
                 else
