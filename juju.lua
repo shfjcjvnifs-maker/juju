@@ -20660,9 +20660,16 @@ do
     -- self highlight was never created on load. This guard builds it from the
     -- flag, re-adorns it after a respawn and lifts the render quality that the
     -- Highlight pass needs, once a second.
-    local character_highlight_guard = {
-        ["tick"] = 0,
-        ["run"] = LPH_NO_VIRTUALIZE(function()
+    -- The table is declared before its fields rather than in one constructor,
+    -- because a closure written inside the constructor cannot see the local it
+    -- is being assigned to: it resolves to a global, which is nil, and the read
+    -- below raises instead of returning. A local is only in scope once its
+    -- declaration statement has ended.
+    local character_highlight_guard = {}
+
+    character_highlight_guard["tick"] = 0
+
+    character_highlight_guard["run"] = LPH_NO_VIRTUALIZE(function()
             local tick = clock()
 
             if tick - character_highlight_guard["tick"] < 1 then
@@ -20694,8 +20701,7 @@ do
             if local_character and character_highlight["Adornee"] ~= local_character then
                 apply_character_highlight()
             end
-        end)
-    }
+    end)
 
     heartbeat[#heartbeat+1] = character_highlight_guard["run"]
 
