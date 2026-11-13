@@ -27408,13 +27408,20 @@ do
     local last_ping_check = clock()
     local ping_data = {}
 
+    -- Cached once here rather than read by name every frame: this block runs
+    -- about sixty times a second and each name is a table lookup.
+    local _opt_floor = math.floor
+    local _opt_hrp_cframe = "CFrame"
+    local _opt_hrp_root = "HumanoidRootPart"
+
     local update_server_position = LPH_NO_VIRTUALIZE(function(hrp)
         local_server_position = hrp["CFrame"]
     end)
 
     local last_fps = clock()
 
-    create_connection(game:GetService("RunService")["Heartbeat"], LPH_NO_VIRTUALIZE(function(dt)
+    local _rs_heartbeat = game:GetService("RunService")["Heartbeat"]
+    create_connection(_rs_heartbeat, LPH_NO_VIRTUALIZE(function(dt)
         if in_void then
             in_void = nil
         else
@@ -27441,18 +27448,14 @@ do
             for _, ping in ping_data do
                 total+=ping
             end
-            local_ping = 3 + floor(total/#ping_data)
+            local_ping = 3 + _opt_floor(total/#ping_data)
         end
 
-        local hrp = vehicle or local_parts["HumanoidRootPart"]
+        local hrp = vehicle or local_parts[_opt_hrp_root]
 
         _opt_heartbeat_len = #heartbeat
         for i = 1, _opt_heartbeat_len do
             spawn(heartbeat[i], dt, hrp)
-        end
-
-        if hrp then
-            local_client_position = hrp["CFrame"]
         end
 
         _opt_anti_aim_len = #anti_aim
@@ -27464,6 +27467,7 @@ do
         end
 
         if hrp then
+            local_client_position = hrp[_opt_hrp_cframe]
             -- Called, not spawned. It is one assignment, and a coroutine every
             -- frame to run it costs more than the assignment does.
             update_server_position(hrp)
