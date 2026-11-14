@@ -276,6 +276,22 @@ do
     tween = LPH_NO_VIRTUALIZE(function(object, properties, easing_style, _, tween_duration)
         local start_time = clock()
 
+        -- Easing picked once per tween, not once per property per frame. The
+        -- per-frame body used to run the same enum compares and the same divide
+        -- again for every value it advanced.
+        local inv_duration = 1 / tween_duration
+        local ease
+
+        if easing_style == exponential then
+            ease = function(t) return t == 1 and 1 or 1 - 2 ^ (-10 * t) end
+        elseif easing_style == quad then
+            ease = function(t) return t * t end
+        else
+            ease = function(t) return sqrt(1 - (t - 1) ^ 2) end
+        end
+
+        local is_sine = easing_style == "sine"
+
         local tween_functions = {}
 
         for property, value in properties do
@@ -295,13 +311,12 @@ do
 
             if property == "Color" or property == "Color3" or property == "FillColor" or property == "OutlineColor" then
                 tween_functions[property] = function()
-                    local t = ((clock() - start_time)/tween_duration)
-                    object[property] = color3_lerp(old_value, value, easing_style == exponential and (t == 1 and 1 or 1 - 2 ^ (-10 * t)) or easing_style == quad and t^2 or sqrt(1 - (t - 1) ^ 2)) or easing_style == "sine" and t < 0.5 and 0.5 * math.sin(clamp(t, 0, 1) * 355/113) or 0.5 + 0.5 * (1 - math.cos((clamp(t, 0, 1) - 0.5) * 355/113))
+                    local t = (clock() - start_time) * inv_duration
+                    object[property] = color3_lerp(old_value, value, ease(t)) or is_sine and t < 0.5 and 0.5 * math.sin(clamp(t, 0, 1) * 355/113) or 0.5 + 0.5 * (1 - math.cos((clamp(t, 0, 1) - 0.5) * 355/113))
                 end
             elseif property == "tween_position" or property == "tween_size" then
                 tween_functions[property] = function()
-                    local t = ((clock() - start_time)/tween_duration)
-                    local tween_value = easing_style == exponential and (t == 1 and 1 or 1 - 2 ^ (-10 * t)) or easing_style == quad and t^2 or sqrt(1 - (t - 1) ^ 2)
+                    local tween_value = ease((clock() - start_time) * inv_duration)
 
                     local new = (value - old_value)
                     new = udim2_new(new["X"]["Scale"] * tween_value, new["X"]["Offset"] * tween_value, new["Y"]["Scale"] * tween_value, new["Y"]["Offset"] * tween_value)
@@ -310,9 +325,9 @@ do
                 end
             else
                 tween_functions[property] = function()
-                    local t = ((clock() - start_time)/tween_duration)
+                    local t = (clock() - start_time) * inv_duration
 
-                    object[property] = old_value + (value - old_value) * (easing_style == exponential and (t == 1 and 1 or 1 - 2 ^ (-10 * t)) or easing_style == quad and t^2 or sqrt(1 - (t - 1) ^ 2))
+                    object[property] = old_value + (value - old_value) * ease(t)
                 end
             end
         end
@@ -15585,6 +15600,7 @@ end
             end
 
             heartbeat[#heartbeat+1] = draw
+            heartbeat_inline[draw] = true
 
             wait(hit_skeleton_lifetime)
 
@@ -17820,11 +17836,26 @@ end
                 local box_x = offset_pos["X"] - half_x
                 local box_y = offset_pos["Y"] - y_size * 0.5
 
-                -- Every write below is a pure function of the box rect and the
-                -- player values folded into the signature. When both match the
-                -- last frame there is nothing new to send to the drawings.
+                -- Bar lengths, quantised to the pixel they are drawn at. Raw
+                -- health is a float that drifts every frame, so keying the cache
+                -- on it meant a miss for every player on screen every frame. At
+                -- pixel resolution the picture cannot differ.
+                local bar_h = y_size + 2
+                local max_health = data[10]
+                local health_ratio = max_health and max_health > 0 and clamp((data[11] or 0)/max_health, 0, 1) or 0
+                local health_size = floor(health_ratio * (bar_h - 2) * 2) * 0.5
+                local armor = data[15]
+                local armor_size = floor(clamp(armor/130, 0, 1) * (bar_h - 2) * 2) * 0.5
+
+                -- Every write below is a pure function of the box rect, the bar
+                -- lengths and the player values folded into the signature. When
+                -- all match the last frame there is nothing new to send.
                 local cache = data[20]
                 local has_tool = data[13] ~= nil
+                -- The health text hugs the bar, so its width moves it. It is
+                -- written by the health signal, not here, and would otherwise go
+                -- stale on a hit while the cache still matches.
+                local text_w = do_health_text and floor(drawings[7]["TextBounds"]["X"]) or 0
                 local pixel_x = floor(box_x)
                 local pixel_y = floor(box_y)
                 local pixel_width = floor(x_size)
@@ -17833,28 +17864,27 @@ end
                 if not cache then
                     data[20] = {
                         pixel_width, pixel_height, pixel_x, pixel_y,
-                        data[11], data[9], data[10], data[15], has_tool,
+                        health_size, armor_size, has_tool, text_w,
                         hide_armor_bar_if_empty, hide_health_text_if_full
                     }
                 elseif cache[1] == pixel_width and cache[2] == pixel_height
                     and cache[3] == pixel_x and cache[4] == pixel_y
-                    and cache[5] == data[11] and cache[6] == data[9]
-                    and cache[7] == data[10] and cache[8] == data[15]
-                    and cache[9] == has_tool and cache[10] == hide_armor_bar_if_empty
-                    and cache[11] == hide_health_text_if_full then
+                    and cache[5] == health_size and cache[6] == armor_size
+                    and cache[7] == has_tool and cache[8] == text_w
+                    and cache[9] == hide_armor_bar_if_empty
+                    and cache[10] == hide_health_text_if_full then
                     continue
                 else
                     cache[1] = pixel_width
                     cache[2] = pixel_height
                     cache[3] = pixel_x
                     cache[4] = pixel_y
-                    cache[5] = data[11]
-                    cache[6] = data[9]
-                    cache[7] = data[10]
-                    cache[8] = data[15]
-                    cache[9] = has_tool
-                    cache[10] = hide_armor_bar_if_empty
-                    cache[11] = hide_health_text_if_full
+                    cache[5] = health_size
+                    cache[6] = armor_size
+                    cache[7] = has_tool
+                    cache[8] = text_w
+                    cache[9] = hide_armor_bar_if_empty
+                    cache[10] = hide_health_text_if_full
                 end
 
                 local size = vector2_new(x_size, y_size)
@@ -17877,55 +17907,45 @@ end
                 end
 
                 if do_name then
-                    drawings[3]["Position"] = position + vector2_new(half_x, -15)
+                    drawings[3]["Position"] = vector2_new(box_x + half_x, box_y - 15)
                 end
 
                 if do_health_bar then
-                    local y_size = y_size + 2
                     local outline = drawings[5]
-                    outline["Position"] = position - health_bar_offset
-                    outline["Size"] = vector2_new(4, y_size)
+                    outline["Position"] = vector2_new(box_x - health_bar_offset["X"], box_y - health_bar_offset["Y"])
+                    outline["Size"] = vector2_new(4, bar_h)
 
-                    local max_health = data[10]
-                    local health_ratio = max_health and max_health > 0 and clamp((data[11] or 0)/max_health, 0, 1) or 0
-                    local health_size = health_ratio * (y_size-2)
-                    local bar_position = position + vector2_new(-5, y_size - health_size - 2)
-                    local bar_size = vector2_new(2, health_size)
-
+                    local bar_x = box_x - 5
+                    local bar_y = box_y + bar_h - health_size - 2
                     local bar = drawings[4]
-                    bar["Position"] = bar_position
-                    bar["Size"] = bar_size
+                    bar["Position"] = vector2_new(bar_x, bar_y)
+                    bar["Size"] = vector2_new(2, health_size)
 
                     if do_health_bar_gradient then
                         local gradient = drawings[6]
-                        gradient["Position"] = bar_position - bar_offset
-                        gradient["Size"] = bar_size + bar_offset
+                        gradient["Position"] = vector2_new(bar_x, bar_y - 1)
+                        gradient["Size"] = vector2_new(2, health_size + 1)
                     end
                 end
 
                 local armor_ignored = false
 
                 if do_armor_bar then
-                    local armor = data[15]
                     if not hide_armor_bar_if_empty or armor ~= 0 then
-                        local y_size = y_size + 2
                         local outline = drawings[11]
-                        outline["Position"] = position - armor_bar_offset
-                        outline["Size"] = vector2_new(4, y_size)
+                        outline["Position"] = vector2_new(box_x - armor_bar_offset["X"], box_y - armor_bar_offset["Y"])
+                        outline["Size"] = vector2_new(4, bar_h)
 
-                        local armor_size = (clamp(armor/130, 0, 1)) * (y_size-2)
-
-                        local bar_position = position + vector2_new((-armor_bar_offset["X"])+1, y_size - armor_size - 2)
-                        local bar_size = vector2_new(2, armor_size)
-
+                        local bar_x = box_x - armor_bar_offset["X"] + 1
+                        local bar_y = box_y + bar_h - armor_size - 2
                         local bar = drawings[10]
-                        bar["Position"] = bar_position
-                        bar["Size"] = bar_size
+                        bar["Position"] = vector2_new(bar_x, bar_y)
+                        bar["Size"] = vector2_new(2, armor_size)
 
                         if do_armor_bar_gradient then
                             local gradient = drawings[12]
-                            gradient["Position"] = bar_position - bar_offset
-                            gradient["Size"] = bar_size + bar_offset
+                            gradient["Position"] = vector2_new(bar_x, bar_y - 1)
+                            gradient["Size"] = vector2_new(2, armor_size + 1)
                         end
                     else
                         armor_ignored = true
@@ -17933,19 +17953,22 @@ end
                 end
 
                 if do_health_text then
-                    local health_text = drawings[7]
-                    drawings[7]["Position"] = position - (armor_ignored and normal_health_text_offset or health_text_offset) - vector2_new(health_text["TextBounds"]["X"], 0)
+                    local text_off = armor_ignored and normal_health_text_offset or health_text_offset
+                    drawings[7]["Position"] = vector2_new(
+                        box_x - text_off["X"] - text_w,
+                        box_y - text_off["Y"]
+                    )
                 end
 
                 if do_tool_text then
                     if data[13] then
-                        drawings[8]["Position"] = position + vector2_new(half_x, y_size + 2)
+                        drawings[8]["Position"] = vector2_new(box_x + half_x, box_y + y_size + 2)
                     end
                 end
 
                 if do_tool_icon then
                     if data[13] then
-                        drawings[9]["Position"] = position + vector2_new(half_x - 12, y_size + (do_tool_text and small_size or 0) + 2)
+                        drawings[9]["Position"] = vector2_new(box_x + half_x - 12, box_y + y_size + (do_tool_text and small_size or 0) + 2)
                     end
                 end
             elseif data[6] then
