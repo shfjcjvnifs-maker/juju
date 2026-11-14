@@ -17778,9 +17778,12 @@ end
 
             if not upper_torso or not data[3] or data[7] or not render_statuses[data[1]] then
                 if data[6] then
-                    for _, drawing in data[5] do
-                        drawing["Visible"] = false
+                    local hidden_drawings = data[5]
+
+                    for i = 1, #hidden_drawings do
+                        hidden_drawings[i]["Visible"] = false
                     end
+
                     data[6] = false
                 end
 
@@ -17799,9 +17802,12 @@ end
             -- the whole drawing write block. Only the hide pass runs.
             if not on_screen then
                 if data[6] then
-                    for _, drawing in data[5] do
-                        drawing["Visible"] = false
+                    local hidden_drawings = data[5]
+
+                    for i = 1, #hidden_drawings do
+                        hidden_drawings[i]["Visible"] = false
                     end
+
                     data[6] = false
 
                     local offscreen_highlight = data[8]
@@ -17817,8 +17823,8 @@ end
                 local drawings = data[5]
 
                 if not data[6] then
-                    for _, drawing in drawings do
-                        drawing["Visible"] = true
+                    for i = 1, #drawings do
+                        drawings[i]["Visible"] = true
                     end
                     data[6] = true
 
@@ -22751,6 +22757,11 @@ local backtrack_data = {}
                             fire_hitbox = ragebot_manipulation["part"]
                         end
 
+                        -- The guard is read once for every gun: the target cannot
+                        -- change between these shots, and the check walks the
+                        -- character tree.
+                        local target_guarded = spawn_guard["check"](target)
+
                         for i = 1, #new_local_guns do
                             local entry = new_local_guns[i]
                             local handle = entry[1]
@@ -22758,7 +22769,7 @@ local backtrack_data = {}
 
                             -- An unread ammo value is unknown, not empty: fire and
                             -- let the server reject the shot if the clip is dry.
-                            if (ammo == nil or ammo > 0) and handle and handle["Parent"] and not spawn_guard["check"](target) then
+                            if (ammo == nil or ammo > 0) and handle and handle["Parent"] and not target_guarded then
                                 last_fire = clock()
 
                                 if shoot and not flags["auto_fire_dont_render"] then
@@ -25997,6 +26008,18 @@ local get_backtrack_models = nil
         local camera_pos = camera["CFrame"]["p"]
         local mouse_pos = get_mouse_location(user_input_service)
 
+        -- Rebuilt once per call, not once per cast: every ray below filters the
+        -- same backtrack list.
+        local backtrack_models = nil
+
+        local function backtrack_filter()
+            if not backtrack_models then
+                backtrack_models = get_backtrack_models()
+            end
+
+            return backtrack_models
+        end
+
         if not bypass then
             legitbot_dont_aim = false
 
@@ -26013,12 +26036,19 @@ local get_backtrack_models = nil
                         return
                     end
 
+                    -- One cast answers both visibility settings. With the default
+                    -- config both are on, and the old code cast the identical ray
+                    -- twice per frame to answer the same question.
+                    local target_hidden = nil
+
                     if legitbot_untarget_when_not_visible then
                         local distance = hrp_position-camera_pos
 
-                        params["FilterDescendantsInstances"] = {data[3], local_character, ignored, bush, vehicles, get_backtrack_models()}
+                        params["FilterDescendantsInstances"] = {data[3], local_character, ignored, bush, vehicles, backtrack_filter()}
 
-                        if raycast(workspace, camera_pos, distance.unit * distance.Magnitude, params) then
+                        target_hidden = raycast(workspace, camera_pos, distance.unit * distance.Magnitude, params) ~= nil
+
+                        if target_hidden then
                             set_legitbot_target(legitbot_automatic and get_legitbot_target(dt, true, true) or nil)
                             return
                         end
@@ -26049,10 +26079,14 @@ local get_backtrack_models = nil
                         end
 
                         if legitbot_ignore_if_not_visible then
-                            local distance = hrp_position-camera_pos
+                            if target_hidden == nil then
+                                local distance = hrp_position-camera_pos
 
-                            params["FilterDescendantsInstances"] = {data[3], local_character, ignored, bush, vehicles, get_backtrack_models()}
-                            if raycast(workspace, camera_pos, distance.unit * distance.Magnitude, params) then
+                                params["FilterDescendantsInstances"] = {data[3], local_character, ignored, bush, vehicles, backtrack_filter()}
+                                target_hidden = raycast(workspace, camera_pos, distance.unit * distance.Magnitude, params) ~= nil
+                            end
+
+                            if target_hidden then
                                 legitbot_dont_aim = true
                                 return
                             end
@@ -26075,8 +26109,7 @@ local get_backtrack_models = nil
         local targets = {}
 
         local local_client_position = local_client_position["p"]
-        local mouse_position = get_mouse_location(user_input_service)
-        
+
         local field_of_view = legitbot_field_of_view and (camera["ViewportSize"]["Magnitude"]/(pi/2))*legitbot_field_of_view or false
 
         for player, data in player_data do
@@ -26100,14 +26133,6 @@ local get_backtrack_models = nil
                             if field_of_view and distance > field_of_view then
                                 continue
                             end
-                            if legitbot_ignore_if_not_visible then
-                                local distance = hrp_position-camera_pos
-
-                                params["FilterDescendantsInstances"] = {data[3], local_character, ignored, bush, vehicles, get_backtrack_models()}
-                                if raycast(workspace, camera_pos, distance.unit * distance.Magnitude, params) then
-                                    continue
-                                end
-                            end
                             if legitbot_ignore_if_knocked and data[18] then
                                 continue
                             end
@@ -26119,14 +26144,51 @@ local get_backtrack_models = nil
             end
         end
 
-        local closest = math["huge"]
         local best = nil
-        for i = 1, #targets do
-            local target = targets[i]
-            local distance = target[3]
-            if distance < closest then
-                closest = distance
-                best = target
+
+        if legitbot_ignore_if_not_visible and #targets > 0 then
+            -- Cast nearest-first and stop at the first visible player. The result
+            -- is the same one a sweep of every candidate would pick, because the
+            -- winner is the closest visible target; the sweep just never gets
+            -- that far. Behind a wall with nobody visible it costs what the old
+            -- code did, and in every other case it costs one ray.
+            while #targets > 0 do
+                local closest = math["huge"]
+                local closest_index = nil
+
+                for i = 1, #targets do
+                    local candidate = targets[i]
+
+                    if candidate[3] < closest then
+                        closest = candidate[3]
+                        closest_index = i
+                    end
+                end
+
+                local candidate = targets[closest_index]
+                remove(targets, closest_index)
+
+                local hrp = candidate[2]
+                local distance = hrp["Position"] - camera_pos
+
+                params["FilterDescendantsInstances"] = {candidate[1][3], local_character, ignored, bush, vehicles, backtrack_filter()}
+
+                if not raycast(workspace, camera_pos, distance.unit * distance.Magnitude, params) then
+                    best = candidate
+                    break
+                end
+            end
+        else
+            local closest = math["huge"]
+
+            for i = 1, #targets do
+                local target = targets[i]
+                local distance = target[3]
+
+                if distance < closest then
+                    closest = distance
+                    best = target
+                end
             end
         end
 
@@ -28682,10 +28744,24 @@ render_stepped_wait(render_stepped)
 -- The snippet is re-executed every 0.1s. Both the walk and the timer sit in
 -- fixed slots of early_connections, so unload stops them and the list does not
 -- grow.
+-- The character's root and humanoid live as long as the character does, so the
+-- two FindFirstChild calls are paid on spawn, not on every heartbeat. This
+-- loop runs on every frame whether the feature is doing anything or not.
+local auto_walk_character = nil
+local auto_walk_root = nil
+local auto_walk_humanoid = nil
+
 local function auto_walk_step()
     local character = localPlayer.Character
-    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+    if character ~= auto_walk_character then
+        auto_walk_character = character
+        auto_walk_root = character and character:FindFirstChild("HumanoidRootPart")
+        auto_walk_humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    end
+
+    local rootPart = auto_walk_root
+    local humanoid = auto_walk_humanoid
 
     if not rootPart or not humanoid then
         return
