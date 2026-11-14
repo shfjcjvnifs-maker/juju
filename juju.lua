@@ -13822,8 +13822,8 @@ end
             if old ~= state then
                 text3["Text"] = state
             end
-            local tick = clock()
-            if tick - last_beat > 0.8 then
+            if frame_tick - last_beat > 0.8 then
+                local tick = frame_tick
                 last_beat = tick
                 local heart_position = heart["Position"]
 
@@ -14021,6 +14021,7 @@ end
         local last_drawn_x = nil
         local last_drawn_y = nil
 
+        local crosshair_parity = false
         local do_drawing_crosshair = LPH_JIT_MAX(function(dt)
             local new_position = nil
             
@@ -14108,8 +14109,11 @@ end
             local rot_rad = rot * rad
             local gap = current_gap
             local len = current_len
-    
-    
+
+            crosshair_parity = not crosshair_parity
+            old_position = position
+            if not crosshair_parity then return end
+
             for i = 1, 4 do
                 -- A quarter turn per arm off the same rotation. The table this
                 -- used to read from was rebuilt every drawn frame for four values
@@ -14137,8 +14141,7 @@ end
                 lines[idx_outline]["From"] = vector2_new(osx, osy)
                 lines[idx_outline]["To"] = vector2_new(oex, oey)
             end
-    
-            old_position = position
+
         end)
 
         local update_fov_color = function()
@@ -15346,10 +15349,7 @@ end
             if left_foot then left_foot_cframe = left_foot.CFrame end
             if right_foot then right_foot_cframe = right_foot.CFrame end
 
-            local skeleton_frame_parity = false
             local draw = function()
-                skeleton_frame_parity = not skeleton_frame_parity
-                if not skeleton_frame_parity then return end
                 head_to_neck.Visible = false
                 local neck_position = nil
                 if head_cframe then
@@ -17769,9 +17769,7 @@ end
 
     -- >> ( esp core )
 
-    local esp_frame_parity = false
     local do_esp = LPH_NO_VIRTUALIZE(function()
-        esp_frame_parity = not esp_frame_parity
         for player, data in player_data do
             local parts = data[4]
             local upper_torso = parts["UpperTorso"]
@@ -17829,7 +17827,6 @@ end
                     end
                 end
 
-                if not esp_frame_parity then continue end
                 local offset_pos = world_to_viewport_point(camera, position - offset)
 
                 local difference = offset_pos["Y"]-screen_pos["Y"]
@@ -17892,8 +17889,10 @@ end
                     image["Position"] = position
                 end
 
+                local half_x = x_size * 0.5
+
                 if do_name then
-                    drawings[3]["Position"] = position + vector2_new(x_size/2, -15)
+                    drawings[3]["Position"] = position + vector2_new(half_x, -15)
                 end
 
                 if do_health_bar then
@@ -17955,13 +17954,13 @@ end
 
                 if do_tool_text then
                     if data[13] then
-                        drawings[8]["Position"] = position + vector2_new(x_size/2, y_size + 2)
+                        drawings[8]["Position"] = position + vector2_new(half_x, y_size + 2)
                     end
                 end
 
                 if do_tool_icon then
                     if data[13] then
-                        drawings[9]["Position"] = position + vector2_new((x_size-24)/2, y_size + (do_tool_text and small_size or 0) + 2)
+                        drawings[9]["Position"] = position + vector2_new(half_x - 12, y_size + (do_tool_text and small_size or 0) + 2)
                     end
                 end
             end
@@ -21356,8 +21355,8 @@ local backtrack_data = {}
         menu_references["velocity_desync_type"] = menu_references["velocity_desync_settings"]:create_element({["name"] = "type"}, {["dropdown"] = {["flag"] = "velocity_desync_type", ["options"] = {"limit", "high y", "high", "zero", "low"}, ["default"] = {"high"}, ["multi"] = false, ["requires_one"] = true}})
         menu_references["void_hide"] = menu_references["anti_section"]:create_element({["name"] = "void hide"}, {["toggle"] = {["flag"] = "void_hide"}})
         menu_references["void_hide_settings"] = menu_references["void_hide"]:create_settings()
-        menu_references["void_hide_type"] = menu_references["void_hide_settings"]:create_element({["name"] = "type"}, {["dropdown"] = {["options"] = game["PlaceId"] == 7213786345 and {"vc server", "bait"} or {"random", "bait"}, ["flag"] = "void_hide_type", ["requires_one"] = true, ["default"] = game["PlaceId"] == 7213786345 and {"vc server"} or {"random"}}})
-        menu_references["void_hide_bait_distance"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait distance"}, {["slider"] = {["min"] = 200, ["max"] = 9000000000, ["decimals"] = 0, ["default"] = 250, ["flag"] = "void_hide_bait_distance", ["suffix"] = " studs"}})
+        menu_references["void_hide_type"] = menu_references["void_hide_settings"]:create_element({["name"] = "type"}, {["dropdown"] = {["options"] = game["PlaceId"] == 7213786345 and {"vc server"} or {"random"}, ["flag"] = "void_hide_type", ["requires_one"] = true, ["default"] = game["PlaceId"] == 7213786345 and {"vc server"} or {"random"}}})
+        menu_references["void_hide_bait_distance"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait distance"}, {["slider"] = {["min"] = 200, ["max"] = 2500, ["decimals"] = 0, ["default"] = 250, ["flag"] = "void_hide_bait_distance", ["suffix"] = " studs"}})
         menu_references["void_hide_bait_cooldown"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait cooldown"}, {["slider"] = {["min"] = 0.01, ["max"] = 1.5, ["decimals"] = 2, ["default"] = 0.5, ["flag"] = "void_hide_bait_cooldown", ["suffix"] = "s"}})
         menu_references["void_hide_bait_time"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait time"}, {["slider"] = {["min"] = 0.01, ["max"] = 0.3, ["decimals"] = 2, ["default"] = 0.03, ["flag"] = "void_hide_bait_time", ["suffix"] = "s"}})
         menu_references["void_hide_disable_when"] = menu_references["void_hide_settings"]:create_element({["name"] = "disable when"}, {["dropdown"] = {["options"] = {"target selected", "following target", "target knocked", "purchasing"}, ["flag"] = "void_hide_disable_when", ["multi"] = true, ["requires_one"] = false}})
@@ -24932,7 +24931,7 @@ local backtrack_data = {}
                             end
                         end
                         if fake_in_void then
-                            hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, math_random() * 18000000000 - 9000000000, 0)) or cframe_new(vector3_new(math_random() * 18000000000 - 9000000000, math_random(-400, 2147483647), math_random() * 18000000000 - 9000000000))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
+                            hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, math_random(-2147483647, 2147483647), 0)) or cframe_new(vector3_new(math_random(-2147483647, 2147483647), math_random(-400, 2147483647), math_random(-2147483647, 2147483647)))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
                         end
                     end
                 elseif do_void_hide then
@@ -24971,7 +24970,7 @@ local backtrack_data = {}
                         end
                     end
                     if fake_in_void then
-                        hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, math_random() * 18000000000 - 9000000000, 0)) or cframe_new(vector3_new(math_random() * 18000000000 - 9000000000, math_random(-400, 2147483647), math_random() * 18000000000 - 9000000000))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
+                        hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, math_random(-2147483647, 2147483647), 0)) or cframe_new(vector3_new(math_random(-2147483647, 2147483647), math_random(-400, 2147483647), math_random(-2147483647, 2147483647)))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
                     end
                 end
                 if not in_void then
@@ -28841,8 +28840,8 @@ end)
     -- The elements are made with the rest of the menu. Only their test button
     -- is wired here, because it reads this detector's own state.
     create_connection(menu_references["anti_report_test"]["on_clicked"], function()
-        state["last"] = -9e9
-        on_reported("test", "you have been reported [test]")
+        state["known"]["anti-rep test"] = true
+        new_notification("anti-rep test", 3)
     end)
 
     local contains_any = function(text, list)
