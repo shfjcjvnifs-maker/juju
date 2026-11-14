@@ -276,6 +276,22 @@ do
     tween = LPH_NO_VIRTUALIZE(function(object, properties, easing_style, _, tween_duration)
         local start_time = clock()
 
+        -- Easing picked once per tween, not once per property per frame. The
+        -- per-frame body used to run the same enum compares and the same divide
+        -- again for every value it advanced.
+        local inv_duration = 1 / tween_duration
+        local ease
+
+        if easing_style == exponential then
+            ease = function(t) return t == 1 and 1 or 1 - 2 ^ (-10 * t) end
+        elseif easing_style == quad then
+            ease = function(t) return t * t end
+        else
+            ease = function(t) return sqrt(1 - (t - 1) ^ 2) end
+        end
+
+        local is_sine = easing_style == "sine"
+
         local tween_functions = {}
 
         for property, value in properties do
@@ -295,13 +311,12 @@ do
 
             if property == "Color" or property == "Color3" or property == "FillColor" or property == "OutlineColor" then
                 tween_functions[property] = function()
-                    local t = ((clock() - start_time)/tween_duration)
-                    object[property] = color3_lerp(old_value, value, easing_style == exponential and (t == 1 and 1 or 1 - 2 ^ (-10 * t)) or easing_style == quad and t^2 or sqrt(1 - (t - 1) ^ 2)) or easing_style == "sine" and t < 0.5 and 0.5 * math.sin(clamp(t, 0, 1) * 355/113) or 0.5 + 0.5 * (1 - math.cos((clamp(t, 0, 1) - 0.5) * 355/113))
+                    local t = (clock() - start_time) * inv_duration
+                    object[property] = color3_lerp(old_value, value, ease(t)) or is_sine and t < 0.5 and 0.5 * math.sin(clamp(t, 0, 1) * 355/113) or 0.5 + 0.5 * (1 - math.cos((clamp(t, 0, 1) - 0.5) * 355/113))
                 end
             elseif property == "tween_position" or property == "tween_size" then
                 tween_functions[property] = function()
-                    local t = ((clock() - start_time)/tween_duration)
-                    local tween_value = easing_style == exponential and (t == 1 and 1 or 1 - 2 ^ (-10 * t)) or easing_style == quad and t^2 or sqrt(1 - (t - 1) ^ 2)
+                    local tween_value = ease((clock() - start_time) * inv_duration)
 
                     local new = (value - old_value)
                     new = udim2_new(new["X"]["Scale"] * tween_value, new["X"]["Offset"] * tween_value, new["Y"]["Scale"] * tween_value, new["Y"]["Offset"] * tween_value)
@@ -310,9 +325,9 @@ do
                 end
             else
                 tween_functions[property] = function()
-                    local t = ((clock() - start_time)/tween_duration)
+                    local t = (clock() - start_time) * inv_duration
 
-                    object[property] = old_value + (value - old_value) * (easing_style == exponential and (t == 1 and 1 or 1 - 2 ^ (-10 * t)) or easing_style == quad and t^2 or sqrt(1 - (t - 1) ^ 2))
+                    object[property] = old_value + (value - old_value) * ease(t)
                 end
             end
         end
@@ -15585,6 +15600,7 @@ end
             end
 
             heartbeat[#heartbeat+1] = draw
+            heartbeat_inline[draw] = true
 
             wait(hit_skeleton_lifetime)
 
