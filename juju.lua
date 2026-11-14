@@ -13790,9 +13790,10 @@ end
         -- The state word last shown, kept apart from the text so the panel only
         -- flashes when the state itself changes.
         local center_panel_state = nil
+        -- The text last written to text3. Mirrored here so the frame never has
+        -- to read the drawing back.
+        local center_panel_text = nil
         local do_center_panel = LPH_JIT_MAX(function(dt)
-            local old = text3["Text"]
-
             local frame_tick = clock()
 
             if frame_tick - center_panel_waiting_tick > 0.1 then
@@ -13819,9 +13820,14 @@ end
                 end
             end
 
-            if old ~= state then
+            -- Compared against the last text written, not read back off the
+            -- drawing: a Drawing read every frame costs more than the string
+            -- compare. Reset to nil whenever the drawing is made.
+            if center_panel_text ~= state then
+                center_panel_text = state
                 text3["Text"] = state
             end
+
             if frame_tick - last_beat > 0.8 then
                 local tick = frame_tick
                 last_beat = tick
@@ -13892,6 +13898,9 @@ end
             end
 
             last_beat = clock()
+            -- text3 is rebuilt below with its own starting text, so the
+            -- mirrored copy is dropped and the first frame writes the state.
+            center_panel_text = nil
 
             if value then
                 heartbeat[#heartbeat+1] = do_center_panel
@@ -14021,7 +14030,6 @@ end
         local last_drawn_x = nil
         local last_drawn_y = nil
 
-        local crosshair_parity = false
         local do_drawing_crosshair = LPH_JIT_MAX(function(dt)
             local new_position = nil
             
@@ -14109,39 +14117,40 @@ end
             local rot_rad = rot * rad
             local gap = current_gap
             local len = current_len
+            local gap_len = gap + len
+            local gap_in = gap - 1
+            local gap_out = gap_len + 1
 
-            crosshair_parity = not crosshair_parity
-            old_position = position
-            if not crosshair_parity then return end
+            -- One sin and one cos for the whole crosshair. Each arm is a quarter
+            -- turn on from the last, and a quarter turn is (c, s) -> (-s, c), so
+            -- rotating the pair gives every arm exactly what cos(angle)/sin(angle)
+            -- gave before - same numbers, three fewer trig calls per frame.
+            local c = cos(rot_rad)
+            local s = sin(rot_rad)
 
             for i = 1, 4 do
-                -- A quarter turn per arm off the same rotation. The table this
-                -- used to read from was rebuilt every drawn frame for four values
-                -- that are one multiply apart.
-                local angle = (i - 1) * (pi / 2) + rot_rad
                 local idx_base = (i - 1) * 2 + 1
                 local idx_outline = idx_base + 1
-    
-                -- One sine and one cosine per arm instead of eight per arm.
-                local c = cos(angle)
-                local s = sin(angle)
 
-                local sx = px + gap * c
-                local sy = py + gap * s
-                local ex = px + (gap + len) * c
-                local ey = py + (gap + len) * s
-    
-                local osx = px + (gap - 1) * c
-                local osy = py + (gap - 1) * s
-                local oex = px + (gap + len + 1) * c
-                local oey = py + (gap + len + 1) * s
-    
-                lines[idx_base]["From"] = vector2_new(sx, sy)
+                local cx = px + gap * c
+                local cy = py + gap * s
+                local ex = px + gap_len * c
+                local ey = py + gap_len * s
+
+                local osx = px + gap_in * c
+                local osy = py + gap_in * s
+                local oex = px + gap_out * c
+                local oey = py + gap_out * s
+
+                lines[idx_base]["From"] = vector2_new(cx, cy)
                 lines[idx_base]["To"] = vector2_new(ex, ey)
                 lines[idx_outline]["From"] = vector2_new(osx, osy)
                 lines[idx_outline]["To"] = vector2_new(oex, oey)
+
+                c, s = -s, c
             end
 
+            old_position = position
         end)
 
         local update_fov_color = function()
@@ -17833,16 +17842,20 @@ end
                 local y_size = difference * 6
                 local x_size = difference * 4
 
-                local size = vector2_new(x_size, y_size)
-                local position = vector2_new(offset_pos["X"] - x_size/2, offset_pos["Y"] - y_size/2)
+                -- Scalar corners first. The two Vector2s the draw block needs
+                -- are made only after the cache misses, so a player whose rect
+                -- and values are unchanged costs no allocation this frame.
+                local half_x = x_size * 0.5
+                local box_x = offset_pos["X"] - half_x
+                local box_y = offset_pos["Y"] - y_size * 0.5
 
                 -- Every write below is a pure function of the box rect and the
                 -- player values folded into the signature. When both match the
                 -- last frame there is nothing new to send to the drawings.
                 local cache = data[20]
                 local has_tool = data[13] ~= nil
-                local pixel_x = floor(position.X)
-                local pixel_y = floor(position.Y)
+                local pixel_x = floor(box_x)
+                local pixel_y = floor(box_y)
                 local pixel_width = floor(x_size)
                 local pixel_height = floor(y_size)
 
@@ -17873,6 +17886,9 @@ end
                     cache[11] = hide_health_text_if_full
                 end
 
+                local size = vector2_new(x_size, y_size)
+                local position = vector2_new(box_x, box_y)
+
                 if do_box then
                     local box = drawings[1]
                     local outline = drawings[2]
@@ -17888,8 +17904,6 @@ end
                     image["Size"] = size
                     image["Position"] = position
                 end
-
-                local half_x = x_size * 0.5
 
                 if do_name then
                     drawings[3]["Position"] = position + vector2_new(half_x, -15)
@@ -21355,8 +21369,8 @@ local backtrack_data = {}
         menu_references["velocity_desync_type"] = menu_references["velocity_desync_settings"]:create_element({["name"] = "type"}, {["dropdown"] = {["flag"] = "velocity_desync_type", ["options"] = {"limit", "high y", "high", "zero", "low"}, ["default"] = {"high"}, ["multi"] = false, ["requires_one"] = true}})
         menu_references["void_hide"] = menu_references["anti_section"]:create_element({["name"] = "void hide"}, {["toggle"] = {["flag"] = "void_hide"}})
         menu_references["void_hide_settings"] = menu_references["void_hide"]:create_settings()
-        menu_references["void_hide_type"] = menu_references["void_hide_settings"]:create_element({["name"] = "type"}, {["dropdown"] = {["options"] = game["PlaceId"] == 7213786345 and {"vc server"} or {"random"}, ["flag"] = "void_hide_type", ["requires_one"] = true, ["default"] = game["PlaceId"] == 7213786345 and {"vc server"} or {"random"}}})
-        menu_references["void_hide_bait_distance"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait distance"}, {["slider"] = {["min"] = 200, ["max"] = 2500, ["decimals"] = 0, ["default"] = 250, ["flag"] = "void_hide_bait_distance", ["suffix"] = " studs"}})
+        menu_references["void_hide_type"] = menu_references["void_hide_settings"]:create_element({["name"] = "type"}, {["dropdown"] = {["options"] = game["PlaceId"] == 7213786345 and {"vc server", "bait"} or {"random", "bait"}, ["flag"] = "void_hide_type", ["requires_one"] = true, ["default"] = game["PlaceId"] == 7213786345 and {"vc server"} or {"random"}}})
+        menu_references["void_hide_bait_distance"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait distance"}, {["slider"] = {["min"] = 200, ["max"] = 9000000000, ["decimals"] = 0, ["default"] = 250, ["flag"] = "void_hide_bait_distance", ["suffix"] = " studs"}})
         menu_references["void_hide_bait_cooldown"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait cooldown"}, {["slider"] = {["min"] = 0.01, ["max"] = 1.5, ["decimals"] = 2, ["default"] = 0.5, ["flag"] = "void_hide_bait_cooldown", ["suffix"] = "s"}})
         menu_references["void_hide_bait_time"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait time"}, {["slider"] = {["min"] = 0.01, ["max"] = 0.3, ["decimals"] = 2, ["default"] = 0.03, ["flag"] = "void_hide_bait_time", ["suffix"] = "s"}})
         menu_references["void_hide_disable_when"] = menu_references["void_hide_settings"]:create_element({["name"] = "disable when"}, {["dropdown"] = {["options"] = {"target selected", "following target", "target knocked", "purchasing"}, ["flag"] = "void_hide_disable_when", ["multi"] = true, ["requires_one"] = false}})
@@ -23212,7 +23226,7 @@ local backtrack_data = {}
 
             in_void = true
             hrp["Velocity"] = vector3_zero
-            hrp["CFrame"] = cframe_new(vector3_new(math_random(-2147483647, 2147483647), math_random(-400, 2147483647), math_random(-2147483647, 2147483647)))
+            hrp["CFrame"] = cframe_new(vector3_new(math_random() * 18000000000 - 9000000000, math_random(-400, 2147483647), math_random() * 18000000000 - 9000000000))
             render_stepped_wait(render_stepped)
             hrp["CFrame"] = old_cframe
             hrp["Velocity"] = old_velocity
@@ -23255,7 +23269,7 @@ local backtrack_data = {}
                             follow_target_avoid_last_tick = tick
                         end
                     else
-                        new_cframe = cframe_new(math_random(-2147483647, 2147483647), math_random(-400, 2147483647), math_random(-2147483647, 2147483647))
+                        new_cframe = cframe_new(math_random() * 18000000000 - 9000000000, math_random(-400, 2147483647), math_random() * 18000000000 - 9000000000)
                     end
                     new_cframe*=cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
                 else
@@ -24931,7 +24945,7 @@ local backtrack_data = {}
                             end
                         end
                         if fake_in_void then
-                            hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, math_random(-2147483647, 2147483647), 0)) or cframe_new(vector3_new(math_random(-2147483647, 2147483647), math_random(-400, 2147483647), math_random(-2147483647, 2147483647)))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
+                            hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, math_random() * 18000000000 - 9000000000, 0)) or cframe_new(vector3_new(math_random() * 18000000000 - 9000000000, math_random(-400, 2147483647), math_random() * 18000000000 - 9000000000))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
                         end
                     end
                 elseif do_void_hide then
@@ -24970,7 +24984,7 @@ local backtrack_data = {}
                         end
                     end
                     if fake_in_void then
-                        hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, math_random(-2147483647, 2147483647), 0)) or cframe_new(vector3_new(math_random(-2147483647, 2147483647), math_random(-400, 2147483647), math_random(-2147483647, 2147483647)))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
+                        hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, math_random() * 18000000000 - 9000000000, 0)) or cframe_new(vector3_new(math_random() * 18000000000 - 9000000000, math_random(-400, 2147483647), math_random() * 18000000000 - 9000000000))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
                     end
                 end
                 if not in_void then
@@ -28829,6 +28843,7 @@ end)
     local text_chat_service = cloneref(game:GetService("TextChatService"))
     local keywords = {"report"}
     local ignore = {}
+    local on_reported  -- forward declaration so the test button can call it
     local state = {
         ["last"] = -9e9,
         ["baseline"] = true,
@@ -28840,8 +28855,8 @@ end)
     -- The elements are made with the rest of the menu. Only their test button
     -- is wired here, because it reads this detector's own state.
     create_connection(menu_references["anti_report_test"]["on_clicked"], function()
-        state["known"]["anti-rep test"] = true
-        new_notification("anti-rep test", 3)
+        state["last"] = -9e9
+        on_reported("test", "you have been reported [test]")
     end)
 
     local contains_any = function(text, list)
@@ -28913,7 +28928,7 @@ end)
         end
     end
 
-    local on_reported = function(source, text)
+    on_reported = function(source, text)
         if not flags["anti_report"] then
             return
         end
