@@ -148,6 +148,10 @@ local created_instances = setmetatable({}, {["__mode"] = "k"})
 
 local addon_data = {}
 local heartbeat = {}
+-- Functions that never yield, marked as they are registered. The frame calls
+-- them straight instead of starting a coroutine for each one every frame; the
+-- rest still go through spawn so a wait() inside them cannot stall the frame.
+local heartbeat_inline = setmetatable({}, {["__mode"] = "k"})
 local flags = {
     ["keybinds_position"] = {15, ((camera and camera["ViewportSize"]["Y"]) or 1080)/2 - 10},
     ["loaded_addons"] = {},
@@ -315,6 +319,7 @@ do
 
         for property, tween in tween_functions do
             heartbeat[#heartbeat+1] = tween
+            heartbeat_inline[tween] = true
             active_tweens[property][object] = tween
         end
 
@@ -14191,6 +14196,7 @@ end
                 end
 
                 heartbeat[#heartbeat+1] = do_drawing_crosshair
+                heartbeat_inline[do_drawing_crosshair] = true
             end
         end)
 
@@ -19294,6 +19300,7 @@ end
                 end
 
                 heartbeat[#heartbeat+1] = do_esp
+                heartbeat_inline[do_esp] = true
 
                 player_died_connection = create_connection(signals["on_player_died"], tween_esp)
                 player_added_connection = create_connection(signals["on_player_added"], create_esp_with_tween)
@@ -27434,7 +27441,14 @@ do
         local hrp = vehicle or local_parts["HumanoidRootPart"]
 
         for i = 1, #heartbeat do
-            spawn(heartbeat[i], dt, hrp)
+            local func = heartbeat[i]
+
+            if heartbeat_inline[func] then
+                -- Guarded: a throw must not stop the other functions this frame.
+                pcall(func, dt, hrp)
+            else
+                spawn(func, dt, hrp)
+            end
         end
 
         if hrp then
