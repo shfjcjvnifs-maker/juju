@@ -15346,10 +15346,7 @@ end
             if left_foot then left_foot_cframe = left_foot.CFrame end
             if right_foot then right_foot_cframe = right_foot.CFrame end
 
-            local skeleton_frame_parity = false
             local draw = function()
-                skeleton_frame_parity = not skeleton_frame_parity
-                if not skeleton_frame_parity then return end
                 head_to_neck.Visible = false
                 local neck_position = nil
                 if head_cframe then
@@ -17769,9 +17766,7 @@ end
 
     -- >> ( esp core )
 
-    local esp_frame_parity = false
     local do_esp = LPH_NO_VIRTUALIZE(function()
-        esp_frame_parity = not esp_frame_parity
         for player, data in player_data do
             local parts = data[4]
             local upper_torso = parts["UpperTorso"]
@@ -17829,7 +17824,6 @@ end
                     end
                 end
 
-                if not esp_frame_parity then continue end
                 local offset_pos = world_to_viewport_point(camera, position - offset)
 
                 local difference = offset_pos["Y"]-screen_pos["Y"]
@@ -21356,8 +21350,8 @@ local backtrack_data = {}
         menu_references["velocity_desync_type"] = menu_references["velocity_desync_settings"]:create_element({["name"] = "type"}, {["dropdown"] = {["flag"] = "velocity_desync_type", ["options"] = {"limit", "high y", "high", "zero", "low"}, ["default"] = {"high"}, ["multi"] = false, ["requires_one"] = true}})
         menu_references["void_hide"] = menu_references["anti_section"]:create_element({["name"] = "void hide"}, {["toggle"] = {["flag"] = "void_hide"}})
         menu_references["void_hide_settings"] = menu_references["void_hide"]:create_settings()
-        menu_references["void_hide_type"] = menu_references["void_hide_settings"]:create_element({["name"] = "type"}, {["dropdown"] = {["options"] = game["PlaceId"] == 7213786345 and {"vc server", "bait"} or {"random", "bait"}, ["flag"] = "void_hide_type", ["requires_one"] = true, ["default"] = game["PlaceId"] == 7213786345 and {"vc server"} or {"random"}}})
-        menu_references["void_hide_bait_distance"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait distance"}, {["slider"] = {["min"] = 200, ["max"] = 9000000000, ["decimals"] = 0, ["default"] = 250, ["flag"] = "void_hide_bait_distance", ["suffix"] = " studs"}})
+        menu_references["void_hide_type"] = menu_references["void_hide_settings"]:create_element({["name"] = "type"}, {["dropdown"] = {["options"] = game["PlaceId"] == 7213786345 and {"vc server"} or {"random"}, ["flag"] = "void_hide_type", ["requires_one"] = true, ["default"] = game["PlaceId"] == 7213786345 and {"vc server"} or {"random"}}})
+        menu_references["void_hide_bait_distance"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait distance"}, {["slider"] = {["min"] = 200, ["max"] = 2500, ["decimals"] = 0, ["default"] = 250, ["flag"] = "void_hide_bait_distance", ["suffix"] = " studs"}})
         menu_references["void_hide_bait_cooldown"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait cooldown"}, {["slider"] = {["min"] = 0.01, ["max"] = 1.5, ["decimals"] = 2, ["default"] = 0.5, ["flag"] = "void_hide_bait_cooldown", ["suffix"] = "s"}})
         menu_references["void_hide_bait_time"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait time"}, {["slider"] = {["min"] = 0.01, ["max"] = 0.3, ["decimals"] = 2, ["default"] = 0.03, ["flag"] = "void_hide_bait_time", ["suffix"] = "s"}})
         menu_references["void_hide_disable_when"] = menu_references["void_hide_settings"]:create_element({["name"] = "disable when"}, {["dropdown"] = {["options"] = {"target selected", "following target", "target knocked", "purchasing"}, ["flag"] = "void_hide_disable_when", ["multi"] = true, ["requires_one"] = false}})
@@ -21548,20 +21542,20 @@ local backtrack_data = {}
         ["params"] = RaycastParams["new"](),
         -- Every limb the shot may be reported on, heaviest first.
         ["calculated_hitboxes"] = {
-            {"Head", 5},
-            {"UpperTorso", 5},
-            {"LowerTorso", 5},
-            {"HumanoidRootPart", 5},
-            {"LeftUpperArm", 5},
-            {"RightUpperArm", 5},
-            {"LeftLowerArm", 5},
-            {"RightLowerArm", 5},
-            {"LeftHand", 5},
-            {"RightHand", 5},
-            {"LeftUpperLeg", 5},
-            {"RightUpperLeg", 5},
-            {"LeftLowerLeg", 5},
-            {"RightLowerLeg", 5}
+            {"Head", 4},
+            {"UpperTorso", 3},
+            {"LowerTorso", 2.4},
+            {"HumanoidRootPart", 2.2},
+            {"LeftUpperArm", 1.6},
+            {"RightUpperArm", 1.6},
+            {"LeftLowerArm", 1.4},
+            {"RightLowerArm", 1.4},
+            {"LeftHand", 1.3},
+            {"RightHand", 1.3},
+            {"LeftUpperLeg", 1.2},
+            {"RightUpperLeg", 1.2},
+            {"LeftLowerLeg", 1},
+            {"RightLowerLeg", 1}
         },
         ["radii"] = {0.25, 0.5, 0.75, 1},
         ["arc_radii"] = {0.5, 0.75, 0.25, 1},
@@ -21572,8 +21566,8 @@ local backtrack_data = {}
         -- The moved origin in use: for which target, on which limb, from which
         -- origin.
         ["hold_target"] = nil,
-        ["hold_limb"] = 1.5, 2.5,
-        ["hold_origin"] = 1.25, 1.5,
+        ["hold_limb"] = 1,
+        ["hold_origin"] = 1,
         -- Where the search stopped when it ran out of budget, and when a search
         -- for a heavier limb than the held one may start again.
         ["sweep_target"] = nil,
@@ -24932,7 +24926,7 @@ local backtrack_data = {}
                             end
                         end
                         if fake_in_void then
-                            hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, math_random() * 18000000000 - 9000000000, 0)) or cframe_new(vector3_new(math_random() * 18000000000 - 9000000000, math_random(-400, 2147483647), math_random() * 18000000000 - 9000000000))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
+                            hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, math_random(-2147483647, 2147483647), 0)) or cframe_new(vector3_new(math_random(-2147483647, 2147483647), math_random(-400, 2147483647), math_random(-2147483647, 2147483647)))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
                         end
                     end
                 elseif do_void_hide then
@@ -24971,7 +24965,7 @@ local backtrack_data = {}
                         end
                     end
                     if fake_in_void then
-                        hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, math_random() * 18000000000 - 9000000000, 0)) or cframe_new(vector3_new(math_random() * 18000000000 - 9000000000, math_random(-400, 2147483647), math_random() * 18000000000 - 9000000000))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
+                        hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, math_random(-2147483647, 2147483647), 0)) or cframe_new(vector3_new(math_random(-2147483647, 2147483647), math_random(-400, 2147483647), math_random(-2147483647, 2147483647)))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
                     end
                 end
                 if not in_void then
@@ -28841,8 +28835,8 @@ end)
     -- The elements are made with the rest of the menu. Only their test button
     -- is wired here, because it reads this detector's own state.
     create_connection(menu_references["anti_report_test"]["on_clicked"], function()
-        state["last"] = -9e9
-        on_reported("test", "you have been reported [test]")
+        state["known"]["anti-rep test"] = true
+        new_notification("anti-rep test", 3)
     end)
 
     local contains_any = function(text, list)
