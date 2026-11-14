@@ -17836,11 +17836,26 @@ end
                 local box_x = offset_pos["X"] - half_x
                 local box_y = offset_pos["Y"] - y_size * 0.5
 
-                -- Every write below is a pure function of the box rect and the
-                -- player values folded into the signature. When both match the
-                -- last frame there is nothing new to send to the drawings.
+                -- Bar lengths, quantised to the pixel they are drawn at. Raw
+                -- health is a float that drifts every frame, so keying the cache
+                -- on it meant a miss for every player on screen every frame. At
+                -- pixel resolution the picture cannot differ.
+                local bar_h = y_size + 2
+                local max_health = data[10]
+                local health_ratio = max_health and max_health > 0 and clamp((data[11] or 0)/max_health, 0, 1) or 0
+                local health_size = floor(health_ratio * (bar_h - 2) * 2) * 0.5
+                local armor = data[15]
+                local armor_size = floor(clamp(armor/130, 0, 1) * (bar_h - 2) * 2) * 0.5
+
+                -- Every write below is a pure function of the box rect, the bar
+                -- lengths and the player values folded into the signature. When
+                -- all match the last frame there is nothing new to send.
                 local cache = data[20]
                 local has_tool = data[13] ~= nil
+                -- The health text hugs the bar, so its width moves it. It is
+                -- written by the health signal, not here, and would otherwise go
+                -- stale on a hit while the cache still matches.
+                local text_w = do_health_text and floor(drawings[7]["TextBounds"]["X"]) or 0
                 local pixel_x = floor(box_x)
                 local pixel_y = floor(box_y)
                 local pixel_width = floor(x_size)
@@ -17849,28 +17864,27 @@ end
                 if not cache then
                     data[20] = {
                         pixel_width, pixel_height, pixel_x, pixel_y,
-                        data[11], data[9], data[10], data[15], has_tool,
+                        health_size, armor_size, has_tool, text_w,
                         hide_armor_bar_if_empty, hide_health_text_if_full
                     }
                 elseif cache[1] == pixel_width and cache[2] == pixel_height
                     and cache[3] == pixel_x and cache[4] == pixel_y
-                    and cache[5] == data[11] and cache[6] == data[9]
-                    and cache[7] == data[10] and cache[8] == data[15]
-                    and cache[9] == has_tool and cache[10] == hide_armor_bar_if_empty
-                    and cache[11] == hide_health_text_if_full then
+                    and cache[5] == health_size and cache[6] == armor_size
+                    and cache[7] == has_tool and cache[8] == text_w
+                    and cache[9] == hide_armor_bar_if_empty
+                    and cache[10] == hide_health_text_if_full then
                     continue
                 else
                     cache[1] = pixel_width
                     cache[2] = pixel_height
                     cache[3] = pixel_x
                     cache[4] = pixel_y
-                    cache[5] = data[11]
-                    cache[6] = data[9]
-                    cache[7] = data[10]
-                    cache[8] = data[15]
-                    cache[9] = has_tool
-                    cache[10] = hide_armor_bar_if_empty
-                    cache[11] = hide_health_text_if_full
+                    cache[5] = health_size
+                    cache[6] = armor_size
+                    cache[7] = has_tool
+                    cache[8] = text_w
+                    cache[9] = hide_armor_bar_if_empty
+                    cache[10] = hide_health_text_if_full
                 end
 
                 local size = vector2_new(x_size, y_size)
@@ -17897,14 +17911,9 @@ end
                 end
 
                 if do_health_bar then
-                    local bar_h = y_size + 2
                     local outline = drawings[5]
                     outline["Position"] = vector2_new(box_x - health_bar_offset["X"], box_y - health_bar_offset["Y"])
                     outline["Size"] = vector2_new(4, bar_h)
-
-                    local max_health = data[10]
-                    local health_ratio = max_health and max_health > 0 and clamp((data[11] or 0)/max_health, 0, 1) or 0
-                    local health_size = health_ratio * (bar_h - 2)
 
                     local bar_x = box_x - 5
                     local bar_y = box_y + bar_h - health_size - 2
@@ -17922,14 +17931,10 @@ end
                 local armor_ignored = false
 
                 if do_armor_bar then
-                    local armor = data[15]
                     if not hide_armor_bar_if_empty or armor ~= 0 then
-                        local bar_h = y_size + 2
                         local outline = drawings[11]
                         outline["Position"] = vector2_new(box_x - armor_bar_offset["X"], box_y - armor_bar_offset["Y"])
                         outline["Size"] = vector2_new(4, bar_h)
-
-                        local armor_size = (clamp(armor/130, 0, 1)) * (bar_h - 2)
 
                         local bar_x = box_x - armor_bar_offset["X"] + 1
                         local bar_y = box_y + bar_h - armor_size - 2
@@ -17950,7 +17955,7 @@ end
                 if do_health_text then
                     local text_off = armor_ignored and normal_health_text_offset or health_text_offset
                     drawings[7]["Position"] = vector2_new(
-                        box_x - text_off["X"] - drawings[7]["TextBounds"]["X"],
+                        box_x - text_off["X"] - text_w,
                         box_y - text_off["Y"]
                     )
                 end
