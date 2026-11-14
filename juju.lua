@@ -14111,43 +14111,34 @@ end
             end
     
             rot = (rot + dt * current_effective_rotation_speed) % 360
-    
+
             rot = rot + current_oscillation_offset
-    
+
             local rot_rad = rot * rad
             local gap = current_gap
             local len = current_len
-            local gap_len = gap + len
-            local gap_in = gap - 1
-            local gap_out = gap_len + 1
 
-            -- One sin and one cos for the whole crosshair. Each arm is a quarter
-            -- turn on from the last, and a quarter turn is (c, s) -> (-s, c), so
-            -- rotating the pair gives every arm exactly what cos(angle)/sin(angle)
-            -- gave before - same numbers, three fewer trig calls per frame.
-            local c = cos(rot_rad)
-            local s = sin(rot_rad)
+            local angles = {rot_rad, pi / 2 + rot_rad, pi + rot_rad, 3 * pi / 2 + rot_rad}
 
             for i = 1, 4 do
+                local angle = angles[i]
                 local idx_base = (i - 1) * 2 + 1
                 local idx_outline = idx_base + 1
 
-                local cx = px + gap * c
-                local cy = py + gap * s
-                local ex = px + gap_len * c
-                local ey = py + gap_len * s
+                local sx = px + gap * cos(angle)
+                local sy = py + gap * sin(angle)
+                local ex = px + (gap + len) * cos(angle)
+                local ey = py + (gap + len) * sin(angle)
 
-                local osx = px + gap_in * c
-                local osy = py + gap_in * s
-                local oex = px + gap_out * c
-                local oey = py + gap_out * s
+                local osx = px + (gap - 1) * cos(angle)
+                local osy = py + (gap - 1) * sin(angle)
+                local oex = px + (gap + len + 1) * cos(angle)
+                local oey = py + (gap + len + 1) * sin(angle)
 
-                lines[idx_base]["From"] = vector2_new(cx, cy)
+                lines[idx_base]["From"] = vector2_new(sx, sy)
                 lines[idx_base]["To"] = vector2_new(ex, ey)
                 lines[idx_outline]["From"] = vector2_new(osx, osy)
                 lines[idx_outline]["To"] = vector2_new(oex, oey)
-
-                c, s = -s, c
             end
 
             old_position = position
@@ -17789,12 +17780,8 @@ end
                         drawing["Visible"] = false
                     end
                     data[6] = false
-                end
-
-                local hidden_highlight = data[8]
-
-                if hidden_highlight and hidden_highlight["Enabled"] then
-                    hidden_highlight["Enabled"] = false
+                    local h = data[8]
+                    if h and h["Enabled"] then h["Enabled"] = false end
                 end
                 continue
             end
@@ -17802,25 +17789,7 @@ end
             local position = upper_torso["Position"]
             local screen_pos, on_screen = world_to_viewport_point(camera, position + offset)
 
-            -- Offscreen players skip the second projection, the size math and
-            -- the whole drawing write block. Only the hide pass runs.
-            if not on_screen then
-                if data[6] then
-                    for _, drawing in data[5] do
-                        drawing["Visible"] = false
-                    end
-                    data[6] = false
-
-                    local offscreen_highlight = data[8]
-
-                    if offscreen_highlight and offscreen_highlight["Enabled"] then
-                        offscreen_highlight["Enabled"] = false
-                    end
-                end
-                continue
-            end
-
-            do
+            if on_screen then
                 local drawings = data[5]
 
                 if not data[6] then
@@ -17828,12 +17797,8 @@ end
                         drawing["Visible"] = true
                     end
                     data[6] = true
-
-                    local shown_highlight = data[8]
-
-                    if shown_highlight and not shown_highlight["Enabled"] then
-                        shown_highlight["Enabled"] = true
-                    end
+                    local h = data[8]
+                    if h and not h["Enabled"] then h["Enabled"] = true end
                 end
 
                 local offset_pos = world_to_viewport_point(camera, position - offset)
@@ -17977,6 +17942,14 @@ end
                         drawings[9]["Position"] = position + vector2_new(half_x - 12, y_size + (do_tool_text and small_size or 0) + 2)
                     end
                 end
+            elseif data[6] then
+                local drawings = data[5]
+                for _, drawing in drawings do
+                    drawing["Visible"] = false
+                end
+                data[6] = false
+                local h = data[8]
+                if h and h["Enabled"] then h["Enabled"] = false end
             end
         end
     end) 
