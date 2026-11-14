@@ -17893,29 +17893,29 @@ end
                 end
 
                 if do_name then
-                    drawings[3]["Position"] = position + vector2_new(half_x, -15)
+                    drawings[3]["Position"] = vector2_new(box_x + half_x, box_y - 15)
                 end
 
                 if do_health_bar then
-                    local y_size = y_size + 2
+                    local bar_h = y_size + 2
                     local outline = drawings[5]
-                    outline["Position"] = position - health_bar_offset
-                    outline["Size"] = vector2_new(4, y_size)
+                    outline["Position"] = vector2_new(box_x - health_bar_offset["X"], box_y - health_bar_offset["Y"])
+                    outline["Size"] = vector2_new(4, bar_h)
 
                     local max_health = data[10]
                     local health_ratio = max_health and max_health > 0 and clamp((data[11] or 0)/max_health, 0, 1) or 0
-                    local health_size = health_ratio * (y_size-2)
-                    local bar_position = position + vector2_new(-5, y_size - health_size - 2)
-                    local bar_size = vector2_new(2, health_size)
+                    local health_size = health_ratio * (bar_h - 2)
 
+                    local bar_x = box_x - 5
+                    local bar_y = box_y + bar_h - health_size - 2
                     local bar = drawings[4]
-                    bar["Position"] = bar_position
-                    bar["Size"] = bar_size
+                    bar["Position"] = vector2_new(bar_x, bar_y)
+                    bar["Size"] = vector2_new(2, health_size)
 
                     if do_health_bar_gradient then
                         local gradient = drawings[6]
-                        gradient["Position"] = bar_position - bar_offset
-                        gradient["Size"] = bar_size + bar_offset
+                        gradient["Position"] = vector2_new(bar_x, bar_y - 1)
+                        gradient["Size"] = vector2_new(2, health_size + 1)
                     end
                 end
 
@@ -17924,24 +17924,23 @@ end
                 if do_armor_bar then
                     local armor = data[15]
                     if not hide_armor_bar_if_empty or armor ~= 0 then
-                        local y_size = y_size + 2
+                        local bar_h = y_size + 2
                         local outline = drawings[11]
-                        outline["Position"] = position - armor_bar_offset
-                        outline["Size"] = vector2_new(4, y_size)
+                        outline["Position"] = vector2_new(box_x - armor_bar_offset["X"], box_y - armor_bar_offset["Y"])
+                        outline["Size"] = vector2_new(4, bar_h)
 
-                        local armor_size = (clamp(armor/130, 0, 1)) * (y_size-2)
+                        local armor_size = (clamp(armor/130, 0, 1)) * (bar_h - 2)
 
-                        local bar_position = position + vector2_new((-armor_bar_offset["X"])+1, y_size - armor_size - 2)
-                        local bar_size = vector2_new(2, armor_size)
-
+                        local bar_x = box_x - armor_bar_offset["X"] + 1
+                        local bar_y = box_y + bar_h - armor_size - 2
                         local bar = drawings[10]
-                        bar["Position"] = bar_position
-                        bar["Size"] = bar_size
+                        bar["Position"] = vector2_new(bar_x, bar_y)
+                        bar["Size"] = vector2_new(2, armor_size)
 
                         if do_armor_bar_gradient then
                             local gradient = drawings[12]
-                            gradient["Position"] = bar_position - bar_offset
-                            gradient["Size"] = bar_size + bar_offset
+                            gradient["Position"] = vector2_new(bar_x, bar_y - 1)
+                            gradient["Size"] = vector2_new(2, armor_size + 1)
                         end
                     else
                         armor_ignored = true
@@ -17949,19 +17948,22 @@ end
                 end
 
                 if do_health_text then
-                    local health_text = drawings[7]
-                    drawings[7]["Position"] = position - (armor_ignored and normal_health_text_offset or health_text_offset) - vector2_new(health_text["TextBounds"]["X"], 0)
+                    local text_off = armor_ignored and normal_health_text_offset or health_text_offset
+                    drawings[7]["Position"] = vector2_new(
+                        box_x - text_off["X"] - drawings[7]["TextBounds"]["X"],
+                        box_y - text_off["Y"]
+                    )
                 end
 
                 if do_tool_text then
                     if data[13] then
-                        drawings[8]["Position"] = position + vector2_new(half_x, y_size + 2)
+                        drawings[8]["Position"] = vector2_new(box_x + half_x, box_y + y_size + 2)
                     end
                 end
 
                 if do_tool_icon then
                     if data[13] then
-                        drawings[9]["Position"] = position + vector2_new(half_x - 12, y_size + (do_tool_text and small_size or 0) + 2)
+                        drawings[9]["Position"] = vector2_new(box_x + half_x - 12, box_y + y_size + (do_tool_text and small_size or 0) + 2)
                     end
                 end
             elseif data[6] then
