@@ -13822,8 +13822,8 @@ end
             if old ~= state then
                 text3["Text"] = state
             end
-            local tick = clock()
-            if tick - last_beat > 0.8 then
+            if frame_tick - last_beat > 0.8 then
+                local tick = frame_tick
                 last_beat = tick
                 local heart_position = heart["Position"]
 
@@ -14021,6 +14021,7 @@ end
         local last_drawn_x = nil
         local last_drawn_y = nil
 
+        local crosshair_parity = false
         local do_drawing_crosshair = LPH_JIT_MAX(function(dt)
             local new_position = nil
             
@@ -14108,8 +14109,11 @@ end
             local rot_rad = rot * rad
             local gap = current_gap
             local len = current_len
-    
-    
+
+            crosshair_parity = not crosshair_parity
+            old_position = position
+            if not crosshair_parity then return end
+
             for i = 1, 4 do
                 -- A quarter turn per arm off the same rotation. The table this
                 -- used to read from was rebuilt every drawn frame for four values
@@ -14137,8 +14141,7 @@ end
                 lines[idx_outline]["From"] = vector2_new(osx, osy)
                 lines[idx_outline]["To"] = vector2_new(oex, oey)
             end
-    
-            old_position = position
+
         end)
 
         local update_fov_color = function()
@@ -17886,8 +17889,10 @@ end
                     image["Position"] = position
                 end
 
+                local half_x = x_size * 0.5
+
                 if do_name then
-                    drawings[3]["Position"] = position + vector2_new(x_size/2, -15)
+                    drawings[3]["Position"] = position + vector2_new(half_x, -15)
                 end
 
                 if do_health_bar then
@@ -17949,13 +17954,13 @@ end
 
                 if do_tool_text then
                     if data[13] then
-                        drawings[8]["Position"] = position + vector2_new(x_size/2, y_size + 2)
+                        drawings[8]["Position"] = position + vector2_new(half_x, y_size + 2)
                     end
                 end
 
                 if do_tool_icon then
                     if data[13] then
-                        drawings[9]["Position"] = position + vector2_new((x_size-24)/2, y_size + (do_tool_text and small_size or 0) + 2)
+                        drawings[9]["Position"] = position + vector2_new(half_x - 12, y_size + (do_tool_text and small_size or 0) + 2)
                     end
                 end
             end
