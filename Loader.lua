@@ -191,7 +191,7 @@ local function pick_target_ui()
 
         local bar = Instance.new("Frame")
         bar.Name = "PickLine"
-        bar.Position = UDim2.fromOffset(0, 3)
+        bar.Position = UDim2.fromOffset(0, 1)
         bar.Size = UDim2.fromOffset(1, 12)
         bar.BackgroundColor3 = Color3.fromRGB(154, 213, 222)
         bar.BackgroundTransparency = 1
@@ -202,7 +202,7 @@ local function pick_target_ui()
         local label = Instance.new("TextLabel")
         label.Name = "PickLabel"
         label.Position = UDim2.fromOffset(20, 0)
-        label.Size = UDim2.fromOffset(74, 18)
+        label.Size = UDim2.fromOffset(74, 14)
         label.BackgroundTransparency = 1
         label.Text = choice.name
         label.TextColor3 = Color3.fromRGB(197, 197, 197)
