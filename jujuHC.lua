@@ -19357,7 +19357,7 @@ do
 
             local teleport_bullets_hook_installed = false
 
-            local function get_character_head(instance)
+            local function get_character_head_part(instance)
                 if typeof(instance) ~= "Instance" then
                     return nil
                 end
@@ -19379,9 +19379,7 @@ do
                             return nil
                         end
 
-                        local head = character:FindFirstChild("Head")
-
-                        return head and head["Position"] or nil
+                        return character:FindFirstChild("Head")
                     end
 
                     character = character["Parent"]
@@ -19390,28 +19388,46 @@ do
                 return nil
             end
 
+            local function get_character_head(instance)
+                local head = get_character_head_part(instance)
+
+                return head and head["Position"] or nil
+            end
+
+            local function is_base_part(value)
+                if typeof(value) ~= "Instance" then
+                    return false
+                end
+
+                local ok, result = pcall(function()
+                    return value:IsA("BasePart")
+                end)
+
+                return ok and result
+            end
+
             local function find_target_in_table(value, depth)
                 if depth > 3 or type(value) ~= "table" then
-                    return nil
+                    return nil, nil
                 end
 
                 for _, nested in pairs(value) do
                     if typeof(nested) == "Instance" then
-                        local head = get_character_head(nested)
+                        local head = get_character_head_part(nested)
 
                         if head then
-                            return head
+                            return head["Position"], head
                         end
                     elseif type(nested) == "table" then
-                        local head = find_target_in_table(nested, depth + 1)
+                        local head_position, head = find_target_in_table(nested, depth + 1)
 
-                        if head then
-                            return head
+                        if head_position then
+                            return head_position, head
                         end
                     end
                 end
 
-                return nil
+                return nil, nil
             end
 
             local function find_target_from_args(args, count)
@@ -19419,21 +19435,21 @@ do
                     local value = args[i]
 
                     if typeof(value) == "Instance" then
-                        local head = get_character_head(value)
+                        local head = get_character_head_part(value)
 
                         if head then
-                            return head
+                            return head["Position"], head
                         end
                     elseif type(value) == "table" then
-                        local head = find_target_in_table(value, 0)
+                        local head_position, head = find_target_in_table(value, 0)
 
-                        if head then
-                            return head
+                        if head_position then
+                            return head_position, head
                         end
                     end
                 end
 
-                return nil
+                return nil, nil
             end
 
             local function get_teleport_target()
@@ -19441,22 +19457,28 @@ do
 
                 if target then
                     if target[7] or target[18] then
-                        return nil
+                        return nil, nil
                     end
 
                     local parts = target[4]
                     local head = parts and parts["Head"]
 
                     if head and head["Parent"] then
-                        return head["Position"]
+                        return head["Position"], head
+                    end
+
+                    local upper_torso = parts and parts["UpperTorso"]
+
+                    if upper_torso and upper_torso["Parent"] then
+                        return upper_torso["Position"], upper_torso
                     end
                 end
 
                 if ragebot_aim_position and ragebot_aim_position ~= vector3_zero then
-                    return ragebot_aim_position
+                    return ragebot_aim_position, nil
                 end
 
-                return nil
+                return nil, nil
             end
 
             local function get_teleport_local_position()
@@ -19598,11 +19620,15 @@ do
                 return result, changed
             end
 
-            local function rewrite_fire_args(args, count, target)
+            local function rewrite_fire_args(args, count, target, target_part)
                 local local_position = get_teleport_local_position()
 
                 if not local_position then
                     return false
+                end
+
+                if target_part and not target_part["Parent"] then
+                    target_part = nil
                 end
 
                 local spoof = flags["teleport_bullets_spoof_origin"]
@@ -19677,6 +19703,9 @@ do
                                 args[i] = table_value
                                 changed = true
                             end
+                        elseif target_part and is_base_part(value) and get_character_head_part(value) then
+                            args[i] = target_part
+                            changed = true
                         end
                     end
 
@@ -19741,6 +19770,9 @@ do
                             args[i] = table_value
                             changed = true
                         end
+                    elseif target_part and is_base_part(value) and get_character_head_part(value) then
+                        args[i] = target_part
+                        changed = true
                     end
                 end
 
@@ -19829,17 +19861,17 @@ do
                         return old_namecall(self, ...)
                     end
 
-                    local ok_target, target = pcall(find_target_from_args, args, count)
+                    local ok_target, target, target_part = pcall(find_target_from_args, args, count)
 
                     if not ok_target or not target then
-                        target = get_teleport_target()
+                        target, target_part = get_teleport_target()
                     end
 
                     if not target then
                         return old_namecall(self, ...)
                     end
 
-                    local ok_rewrite, changed = pcall(rewrite_fire_args, args, count, target)
+                    local ok_rewrite, changed = pcall(rewrite_fire_args, args, count, target, target_part)
 
                     if not ok_rewrite or not changed then
                         return old_namecall(self, ...)
