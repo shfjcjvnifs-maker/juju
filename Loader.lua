@@ -273,14 +273,15 @@ local function pick_target_ui()
     apply_font(info_status, false)
     info_status.Parent = info_panel
 
-    -- Button styling copied from juju.lua create_element("button"):
-    -- 16px tall, #181918 border, 1px #000 inside, 4px rounding, 12px text
-    -- at x=3, border brightens to #334146 on hover, inside flashes on click.
+    -- Pill button matching the reference: fully rounded, solid fill, bold
+    -- centred label, no outline. Hover brightens the fill; the click flash
+    -- is a soft accent wash instead of an inner border.
     local load_button = Instance.new("TextButton")
     load_button.Name = "LoadButton"
-    load_button.Position = UDim2.fromOffset(118, 112)
-    load_button.Size = UDim2.fromOffset(75, 16)
-    load_button.BackgroundColor3 = Color3.fromRGB(24, 25, 24)
+    load_button.AnchorPoint = Vector2.new(0.5, 0)
+    load_button.Position = UDim2.fromOffset(155, 109)
+    load_button.Size = UDim2.fromOffset(78, 18)
+    load_button.BackgroundColor3 = Color3.fromRGB(28, 29, 28)
     load_button.BackgroundTransparency = 1
     load_button.BorderSizePixel = 0
     load_button.Text = ""
@@ -293,36 +294,36 @@ local function pick_target_ui()
     picker_objects[#picker_objects + 1] = load_button
 
     local load_corner = Instance.new("UICorner")
-    load_corner.CornerRadius = UDim.new(0, 4)
+    load_corner.CornerRadius = UDim.new(1, 0)
     load_corner.Parent = load_button
 
     local load_inside = Instance.new("Frame")
-    load_inside.Name = "LoadInside"
-    load_inside.Position = UDim2.fromOffset(1, 1)
-    load_inside.Size = UDim2.new(1, -2, 1, -2)
-    load_inside.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    load_inside.Name = "LoadFlash"
+    load_inside.Position = UDim2.fromOffset(0, 0)
+    load_inside.Size = UDim2.fromScale(1, 1)
+    load_inside.BackgroundColor3 = Color3.fromRGB(154, 213, 222)
     load_inside.BackgroundTransparency = 1
     load_inside.BorderSizePixel = 0
     load_inside.ZIndex = 13
     load_inside.Parent = load_button
 
     local load_corner_inside = Instance.new("UICorner")
-    load_corner_inside.CornerRadius = UDim.new(0, 3)
+    load_corner_inside.CornerRadius = UDim.new(1, 0)
     load_corner_inside.Parent = load_inside
 
     local load_text = Instance.new("TextLabel")
     load_text.Name = "LoadText"
-    load_text.Position = UDim2.fromOffset(3, 0)
-    load_text.Size = UDim2.new(1, -6, 1, 0)
+    load_text.Position = UDim2.fromOffset(0, 0)
+    load_text.Size = UDim2.fromScale(1, 1)
     load_text.BackgroundTransparency = 1
     load_text.Text = "load"
-    load_text.TextColor3 = Color3.fromRGB(70, 85, 87)
-    load_text.TextSize = 12
-    load_text.TextXAlignment = Enum.TextXAlignment.Left
+    load_text.TextColor3 = Color3.fromRGB(235, 236, 235)
+    load_text.TextSize = 11
+    load_text.TextXAlignment = Enum.TextXAlignment.Center
     load_text.TextYAlignment = Enum.TextYAlignment.Center
     load_text.TextTransparency = 1
     load_text.ZIndex = 14
-    apply_font(load_text, false)
+    apply_font(load_text, true)
     load_text.Parent = load_inside
 
     local choices = {
@@ -349,7 +350,6 @@ local function pick_target_ui()
     track_info(info_updated, "TextTransparency", 0, 1)
     track_info(info_status, "TextTransparency", 0, 1)
     track_info(load_button, "BackgroundTransparency", 0, 1)
-    track_info(load_inside, "BackgroundTransparency", 0, 1)
     track_info(load_text, "TextTransparency", 0, 1)
 
     local info_shown = false
@@ -408,18 +408,8 @@ local function pick_target_ui()
 
     local http_service = game:GetService("HttpService")
 
-    local function http_json(url)
-        local ok, body = pcall(function()
-            return game:HttpGet(url, true)
-        end)
-
-        if not ok or type(body) ~= "string" or body == "" then
-            ok, body = pcall(function()
-                return game:HttpGet(url)
-            end)
-        end
-
-        if not ok or type(body) ~= "string" or body == "" then
+    local function decode_json(body)
+        if type(body) ~= "string" or body == "" then
             return nil
         end
 
@@ -429,6 +419,53 @@ local function pick_target_ui()
 
         if ok_decode and type(decoded) == "table" then
             return decoded
+        end
+
+        return nil
+    end
+
+    local function http_json(url)
+        -- Executors disagree about the second HttpGet argument; try the
+        -- cache-busted form first, then the plain one.
+        local ok, body = pcall(function()
+            return game:HttpGet(url, true)
+        end)
+
+        local decoded = ok and decode_json(body) or nil
+
+        if decoded then
+            return decoded
+        end
+
+        ok, body = pcall(function()
+            return game:HttpGet(url)
+        end)
+
+        decoded = ok and decode_json(body) or nil
+
+        if decoded then
+            return decoded
+        end
+
+        -- Some executors block HttpGet for Roblox API hosts. request() with a
+        -- normal browser user-agent gets through where HttpGet does not.
+        if type(request) == "function" then
+            local ok_request, response = pcall(request, {
+                Url = url,
+                Method = "GET",
+                Headers = {
+                    ["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    ["Accept"] = "application/json",
+                },
+            })
+
+            if ok_request and type(response) == "table" then
+                decoded = decode_json(response.Body or response.body)
+
+                if decoded then
+                    return decoded
+                end
+            end
         end
 
         return nil
@@ -465,7 +502,13 @@ local function pick_target_ui()
             return info
         end
 
-        local details = http_json("https://games.roblox.com/v1/games?universeIds=" .. tostring(universe_id))
+        local details_url = "https://games.roblox.com/v1/games?universeIds=" .. tostring(universe_id)
+        local details = http_json(details_url .. "&fields=name,playing,updated")
+
+        if not (details and details.data and details.data[1]) then
+            details = http_json(details_url)
+        end
+
         local game_data = details and details.data and details.data[1]
 
         if type(game_data) == "table" then
@@ -486,12 +529,18 @@ local function pick_target_ui()
             end
         end
 
-        local thumbs = http_json("https://thumbnails.roblox.com/v1/games/multiget/thumbnails?universeIds=" .. tostring(universe_id) .. "&size=150x150&format=Png&isCircular=false")
-        local thumb_data = thumbs and thumbs.data and thumbs.data[1]
-        local first_thumb = thumb_data and thumb_data.thumbnails and thumb_data.thumbnails[1]
+        -- The old multiget/thumbnails call returns 400 for 150x150, which is
+        -- why the card stayed blank. The icons endpoint returns the square
+        -- game icon; rbxthumb is the built-in Roblox image protocol and is
+        -- used when the CDN URL is unavailable.
+        local icons = http_json("https://thumbnails.roblox.com/v1/games/icons?universeIds=" .. tostring(universe_id) .. "&returnPolicy=PlaceHolder&size=150x150&format=Png&isCircular=false")
+        local icon_data = icons and icons.data and icons.data[1]
+        local icon_url = type(icon_data) == "table" and icon_data.imageUrl or nil
 
-        if type(first_thumb) == "table" and type(first_thumb.imageUrl) == "string" and first_thumb.imageUrl ~= "" then
-            info.thumbnail = first_thumb.imageUrl
+        if type(icon_url) == "string" and icon_url ~= "" then
+            info.thumbnail = icon_url
+        else
+            info.thumbnail = "rbxthumb://type=GameIcon&id=" .. tostring(universe_id) .. "&w=150&h=150"
         end
 
         return info
@@ -530,7 +579,7 @@ local function pick_target_ui()
         info_updated.Text = "fetching update..."
         info_status.Text = "checking status"
         info_thumb.Image = ""
-        load_text.Text = "load " .. choice.name
+        load_text.Text = "load"
 
         task.delay(0.16, function()
             if token ~= info_request or state.closed or state.picked then
@@ -541,7 +590,16 @@ local function pick_target_ui()
         end)
 
         task.spawn(function()
-            local info = get_place_info(place_id, fallback_name)
+            local ok_info, info = pcall(get_place_info, place_id, fallback_name)
+
+            if not ok_info or type(info) ~= "table" then
+                info = {
+                    name = fallback_name,
+                    updated = "update unavailable",
+                    status = "status unavailable",
+                    thumbnail = nil,
+                }
+            end
 
             if token ~= info_request or state.closed or state.picked then
                 return
@@ -564,10 +622,10 @@ local function pick_target_ui()
 
         pcall(function()
             tween(load_button, TweenInfo.new(0.17, Enum.EasingStyle.Circular, Enum.EasingDirection.Out), {
-                BackgroundColor3 = Color3.fromRGB(51, 65, 70),
+                BackgroundColor3 = Color3.fromRGB(45, 47, 46),
             })
             tween(load_text, TweenInfo.new(0.17, Enum.EasingStyle.Circular, Enum.EasingDirection.Out), {
-                TextColor3 = Color3.fromRGB(197, 197, 197),
+                TextColor3 = Color3.fromRGB(255, 255, 255),
             })
         end)
     end)
@@ -579,10 +637,10 @@ local function pick_target_ui()
 
         pcall(function()
             tween(load_button, TweenInfo.new(0.17, Enum.EasingStyle.Circular, Enum.EasingDirection.Out), {
-                BackgroundColor3 = Color3.fromRGB(24, 25, 24),
+                BackgroundColor3 = Color3.fromRGB(28, 29, 28),
             })
             tween(load_text, TweenInfo.new(0.17, Enum.EasingStyle.Circular, Enum.EasingDirection.Out), {
-                TextColor3 = Color3.fromRGB(70, 85, 87),
+                TextColor3 = Color3.fromRGB(235, 236, 235),
             })
         end)
     end)
@@ -598,8 +656,9 @@ local function pick_target_ui()
         load_text.Text = "loading..."
 
         pcall(function()
-            tween(load_inside, TweenInfo.new(0.075, Enum.EasingStyle.Circular, Enum.EasingDirection.Out), {
-                BackgroundColor3 = Color3.fromRGB(40, 40, 40),
+            load_inside.BackgroundTransparency = 0.55
+            tween(load_inside, TweenInfo.new(0.35, Enum.EasingStyle.Circular, Enum.EasingDirection.Out), {
+                BackgroundTransparency = 1,
             })
         end)
 
