@@ -1,13 +1,3 @@
--- juju multi-loader
---
--- Main Da Hood (place 2788229376) -> juju.lua
--- Any other place (custom hoods / copies) -> jujuHC.lua (universal)
---
--- Optional overrides set before executing this file:
---   getgenv().juju_loader_target = "juju" or "jujuHC"
---   getgenv().juju_loader_url = "https://..."    -- one-shot URL override
---   getgenv().juju_loader_source = "<lua source>" -- direct source override
-
 local DA_HOOD_PLACE_ID = 2788229376
 
 local TARGETS = {
@@ -74,8 +64,54 @@ local function pick_target_ui()
         return nil
     end
 
-    local state = { picked = nil }
+    local state = {
+        picked = nil,
+        closed = false,
+    }
+
     local screen = nil
+    local panel = nil
+    local overlay = nil
+    local buttons = {}
+    local tween_service = game:GetService("TweenService")
+
+    local function tween(object, info, properties)
+        local animation = tween_service:Create(object, info, properties)
+        animation:Play()
+        return animation
+    end
+
+    local function set_buttons_enabled(enabled)
+        for _, button in ipairs(buttons) do
+            button.Active = enabled
+        end
+    end
+
+    local function fade_out_and_close()
+        if state.closed then
+            return
+        end
+
+        state.closed = true
+        set_buttons_enabled(false)
+
+        local info = TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+        pcall(function()
+            if panel then
+                tween(panel, info, {
+                    GroupTransparency = 1,
+                    Position = UDim2.new(0.5, 0, 0.5, 12),
+                })
+            end
+
+            if overlay then
+                tween(overlay, info, {
+                    BackgroundTransparency = 1,
+                })
+            end
+        end)
+    end
 
     local ok_gui = pcall(function()
         screen = Instance.new("ScreenGui")
@@ -85,96 +121,205 @@ local function pick_target_ui()
         screen.DisplayOrder = 2147483647
         screen.Parent = parent
 
-        local frame = Instance.new("Frame")
-        frame.Size = UDim2.new(0, 330, 0, 178)
-        frame.Position = UDim2.new(0.5, 0, 0.5, 0)
-        frame.AnchorPoint = Vector2.new(0.5, 0.5)
-        frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-        frame.BorderSizePixel = 0
-        frame.Parent = screen
+        overlay = Instance.new("Frame")
+        overlay.Size = UDim2.new(1, 0, 1, 0)
+        overlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        overlay.BackgroundTransparency = 1
+        overlay.BorderSizePixel = 0
+        overlay.Parent = screen
 
-        local stroke = Instance.new("UIStroke")
-        stroke.Color = Color3.fromRGB(24, 25, 24)
-        stroke.Thickness = 1
-        stroke.Parent = frame
+        panel = Instance.new("CanvasGroup")
+        panel.Size = UDim2.new(0, 400, 0, 264)
+        panel.Position = UDim2.new(0.5, 0, 0.5, 12)
+        panel.AnchorPoint = Vector2.new(0.5, 0.5)
+        panel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        panel.BackgroundTransparency = 0
+        panel.BorderSizePixel = 0
+        panel.GroupTransparency = 1
+        panel.Parent = screen
 
         local title = Instance.new("TextLabel")
-        title.Size = UDim2.new(1, -24, 0, 24)
-        title.Position = UDim2.new(0, 12, 0, 10)
+        title.Size = UDim2.new(1, -40, 0, 28)
+        title.Position = UDim2.new(0, 20, 0, 16)
         title.BackgroundTransparency = 1
-        title.Text = "juju loader"
+        title.Text = "juju beta"
         title.TextColor3 = Color3.fromRGB(255, 255, 255)
         title.Font = Enum.Font.GothamBold
-        title.TextSize = 16
+        title.TextSize = 21
         title.TextXAlignment = Enum.TextXAlignment.Left
-        title.Parent = frame
+        title.Parent = panel
 
         local subtitle = Instance.new("TextLabel")
-        subtitle.Size = UDim2.new(1, -24, 0, 18)
-        subtitle.Position = UDim2.new(0, 12, 0, 34)
+        subtitle.Size = UDim2.new(1, -40, 0, 18)
+        subtitle.Position = UDim2.new(0, 20, 0, 50)
         subtitle.BackgroundTransparency = 1
-        subtitle.Text = "main Da Hood -> juju / any other place -> jujuHC"
-        subtitle.TextColor3 = Color3.fromRGB(154, 213, 222)
+        subtitle.Text = "Select a build for place " .. tostring(game.PlaceId)
+        subtitle.TextColor3 = Color3.fromRGB(150, 150, 150)
         subtitle.Font = Enum.Font.Gotham
-        subtitle.TextSize = 11
+        subtitle.TextSize = 13
         subtitle.TextXAlignment = Enum.TextXAlignment.Left
-        subtitle.Parent = frame
+        subtitle.Parent = panel
 
         local choices = {
-            { text = "Da Hood  -  juju", value = "juju" },
-            { text = "Custom / Copy  -  jujuHC", value = "jujuHC" },
-            { text = "Auto  -  place check", value = "auto" },
+            { name = "juju", badge = "main", value = "juju" },
+            { name = "jujuHC", badge = "universal", value = "jujuHC" },
+            { name = "Auto", badge = "place check", value = "auto" },
         }
 
         for index, choice in ipairs(choices) do
-            local button = Instance.new("TextButton")
-            button.Size = UDim2.new(1, -24, 0, 30)
-            button.Position = UDim2.new(0, 12, 0, 58 + (index - 1) * 36)
-            button.BackgroundColor3 = Color3.fromRGB(6, 6, 6)
-            button.BorderSizePixel = 0
-            button.Text = choice.text
-            button.TextColor3 = Color3.fromRGB(197, 197, 197)
-            button.Font = Enum.Font.Gotham
-            button.TextSize = 12
-            button.AutoButtonColor = false
-            button.Parent = frame
+            local row = Instance.new("TextButton")
+            row.Name = "row_" .. choice.value
+            row.Size = UDim2.new(1, -40, 0, 44)
+            row.Position = UDim2.new(0, 20, 0, 82 + (index - 1) * 48)
+            row.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+            row.BackgroundTransparency = 1
+            row.BorderSizePixel = 0
+            row.Text = ""
+            row.AutoButtonColor = false
+            row.Active = true
+            row.Parent = panel
 
-            local button_stroke = Instance.new("UIStroke")
-            button_stroke.Color = Color3.fromRGB(24, 25, 24)
-            button_stroke.Thickness = 1
-            button_stroke.Parent = button
+            local row_corner = Instance.new("UICorner")
+            row_corner.CornerRadius = UDim.new(0, 4)
+            row_corner.Parent = row
 
-            button.MouseEnter:Connect(function()
-                button.BackgroundColor3 = Color3.fromRGB(51, 65, 70)
-                button.TextColor3 = Color3.fromRGB(255, 255, 255)
-            end)
+            local row_padding = Instance.new("UIPadding")
+            row_padding.PaddingLeft = UDim.new(0, 12)
+            row_padding.Parent = row
 
-            button.MouseLeave:Connect(function()
-                button.BackgroundColor3 = Color3.fromRGB(6, 6, 6)
-                button.TextColor3 = Color3.fromRGB(197, 197, 197)
-            end)
+            local row_name = Instance.new("TextLabel")
+            row_name.Name = "row_name"
+            row_name.Size = UDim2.new(0, 0, 0, 0)
+            row_name.BackgroundTransparency = 1
+            row_name.Text = choice.name
+            row_name.TextColor3 = Color3.fromRGB(255, 255, 255)
+            row_name.Font = Enum.Font.GothamBold
+            row_name.TextSize = 15
+            row_name.TextXAlignment = Enum.TextXAlignment.Left
+            row_name.AutomaticSize = Enum.AutomaticSize.XY
+            row_name.LayoutOrder = 1
+            row_name.Active = false
+            row_name.Parent = row
 
-            button.MouseButton1Click:Connect(function()
-                state.picked = choice.value
-                if screen then
-                    screen.Visible = false
+            local badge = Instance.new("TextLabel")
+            badge.Name = "badge"
+            badge.Size = UDim2.new(0, 0, 0, 20)
+            badge.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
+            badge.BackgroundTransparency = 0
+            badge.BorderSizePixel = 0
+            badge.Text = choice.badge
+            badge.TextColor3 = Color3.fromRGB(180, 180, 180)
+            badge.Font = Enum.Font.Gotham
+            badge.TextSize = 11
+            badge.TextXAlignment = Enum.TextXAlignment.Center
+            badge.AutomaticSize = Enum.AutomaticSize.X
+            badge.LayoutOrder = 2
+            badge.Active = false
+            badge.Parent = row
+
+            local badge_corner = Instance.new("UICorner")
+            badge_corner.CornerRadius = UDim.new(0, 4)
+            badge_corner.Parent = badge
+
+            local badge_padding = Instance.new("UIPadding")
+            badge_padding.PaddingLeft = UDim.new(0, 6)
+            badge_padding.PaddingRight = UDim.new(0, 6)
+            badge_padding.Parent = badge
+
+            local layout = Instance.new("UIListLayout")
+            layout.FillDirection = Enum.FillDirection.Horizontal
+            layout.Padding = UDim.new(0, 8)
+            layout.VerticalAlignment = Enum.VerticalAlignment.Center
+            layout.SortOrder = Enum.SortOrder.LayoutOrder
+            layout.Parent = row
+
+            buttons[#buttons + 1] = row
+
+            row.MouseEnter:Connect(function()
+                if not state.closed then
+                    pcall(function()
+                        tween(row, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                            BackgroundColor3 = Color3.fromRGB(28, 28, 28),
+                            BackgroundTransparency = 0.15,
+                        })
+                    end)
                 end
+            end)
+
+            row.MouseLeave:Connect(function()
+                if not state.closed then
+                    pcall(function()
+                        tween(row, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                            BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+                            BackgroundTransparency = 1,
+                        })
+                    end)
+                end
+            end)
+
+            row.MouseButton1Click:Connect(function()
+                if state.picked or state.closed then
+                    return
+                end
+
+                state.picked = choice.value
+                set_buttons_enabled(false)
+
+                pcall(function()
+                    tween(row, TweenInfo.new(0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                        BackgroundColor3 = Color3.fromRGB(154, 213, 222),
+                        BackgroundTransparency = 0.1,
+                    })
+                end)
+
+                fade_out_and_close()
             end)
         end
     end)
 
     if not ok_gui or not screen then
+        if screen then
+            pcall(function()
+                screen:Destroy()
+            end)
+        end
+
         return nil
     end
 
-    local deadline = os.clock() + 30
+    local ok_fade_in = pcall(function()
+        tween(overlay, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            BackgroundTransparency = 0.35,
+        })
+        tween(panel, TweenInfo.new(0.26, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            GroupTransparency = 0,
+            Position = UDim2.new(0.5, 0, 0.5, 0),
+        })
+    end)
 
-    while not state.picked and os.clock() < deadline do
+    if not ok_fade_in then
+        overlay.BackgroundTransparency = 0.35
+        panel.GroupTransparency = 0
+        panel.Position = UDim2.new(0.5, 0, 0.5, 0)
+    end
+
+    local deadline = os.time() + 30
+
+    while not state.picked and os.time() < deadline do
         task.wait(0.05)
     end
 
+    if state.picked then
+        task.wait(0.26)
+    else
+        fade_out_and_close()
+        task.wait(0.26)
+    end
+
     pcall(function()
-        screen:Destroy()
+        if screen then
+            screen:Destroy()
+        end
     end)
 
     if state.picked == "juju" or state.picked == "jujuHC" then
@@ -1096,7 +1241,7 @@ function Uiloader.create(options)
         { inst = logo_viewport, prop = "ImageTransparency", shown = 0, hidden = 1 },
         { inst = title_label, prop = "TextTransparency", shown = 0, hidden = 1 },
         { inst = slider_line, prop = "BackgroundTransparency", shown = 0.5, hidden = 1 },
-        { inst = percent_label, prop = "TextTransparency", shown = 0, hidden = 1 },
+        { inst = percent_label, prop = "TextTransparency", shown = 0, hidden = 1 },
         { inst = asset_label, prop = "TextTransparency", shown = 0, hidden = 1 },
         { inst = slider_border, prop = "BackgroundTransparency", shown = 0, hidden = 1 },
         { inst = slider_stroke, prop = "Transparency", shown = 0, hidden = 1 },
@@ -1664,11 +1809,12 @@ if not chunk then
     return
 end
 
-set_status(1, "starting " .. target.name, 3, 3)
-close_loader()
+set_status(1, "loading " .. target.name .. " assets", 3, 3)
 
 local ok, err = pcall(chunk)
 
 if not ok then
     warn("[juju loader] " .. target.name .. " failed: " .. tostring(err))
 end
+
+close_loader()
