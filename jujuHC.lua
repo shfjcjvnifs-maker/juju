@@ -23516,6 +23516,13 @@ do
     local g = menu["get_active_binds"]
 
     getgenv()["juju"] = {
+        unload = function()
+            local unload = getgenv()["_JUJU"]
+
+            if unload then
+                pcall(unload)
+            end
+        end,
         create_connection = function(signal, callback)
             local type = typeof(signal)
 

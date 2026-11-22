@@ -30351,6 +30351,17 @@ do
     for name, func in old do
         new[name] = func
     end
+
+    -- Documented juju.lol API: lets an addon or the executor tear the whole
+    -- session down without re-executing the file.
+    new["unload"] = function()
+        local unload = getgenv()["_JUJU"]
+
+        if unload then
+            pcall(unload)
+        end
+    end
+
     getgenv()["juju"] = new
 end
 
