@@ -8411,6 +8411,136 @@ local ragebot_aim_position = nil
 local local_knocked = false
 local ragebot_force_position = nil
 
+-- > ( fov follow )
+
+-- The drawn field of view circles can sit on the cursor or on the locked
+-- target. "target" projects a world point into the drawing space and reports
+-- whether that point is on screen: a followed point that left the viewport
+-- takes its circle out of sight with it instead of pinning it to the edge.
+local get_fov_follow_anchor = LPH_NO_VIRTUALIZE(function(follow, target_position)
+    local fallback = get_mouse_location(user_input_service)
+    local world_position = follow == "target" and target_position or nil
+
+    if not world_position then
+        return fallback, true
+    end
+
+    local position, on_screen = world_to_viewport_point(camera, world_position)
+
+    if not on_screen then
+        if typeof(position) ~= "Vector3" or position["Z"] <= 0 then
+            return fallback, false
+        end
+
+        return vector2_new(position["X"], position["Y"]), false
+    end
+
+    return vector2_new(position["X"], position["Y"]), true
+end)
+
+-- The point a followed target is drawn around. The head is what the target is
+-- recognised by and the part "view target" locks the camera to, so every
+-- target-follow circle sits there. A missing head (decapitation) walks down
+-- the torso so the circle stays on the body.
+local get_fov_target_anchor = LPH_NO_VIRTUALIZE(function(target)
+    local parts = target and target[4]
+
+    if not parts then
+        return nil
+    end
+
+    local head = parts["Head"]
+
+    if head then
+        return head["Position"]
+    end
+
+    local upper_torso = parts["UpperTorso"]
+
+    if upper_torso then
+        return upper_torso["Position"]
+    end
+
+    local root = parts["HumanoidRootPart"]
+
+    return root and root["Position"] or nil
+end)
+
+-- The point a "target" anchor follows. The feature's own point comes first.
+-- When it has none -- the target is outside that feature's own field of view --
+-- the selected ragebot target's head stands in, so a locked target is followed
+-- by every circle instead of only by the one that locked it.
+local get_fov_follow_target_position = LPH_NO_VIRTUALIZE(function(position)
+    if position and position ~= vector3_zero then
+        return position
+    end
+
+    local target = ragebot_target
+
+    if target then
+        local anchor = get_fov_target_anchor(target)
+
+        if anchor then
+            return anchor
+        end
+    end
+
+    if ragebot_aim_position and ragebot_aim_position ~= vector3_zero then
+        return ragebot_aim_position
+    end
+
+    return nil
+end)
+
+-- Fraction of the way to the anchor on this frame. 100% sits on it
+-- immediately; lower values drag the circle behind, easing the same way at
+-- any framerate.
+local get_fov_follow_alpha = LPH_NO_VIRTUALIZE(function(lerp, dt)
+    if lerp >= 1 then
+        return 1
+    end
+
+    return 1 - (1 - lerp) ^ (dt * 60)
+end)
+
+-- Moves one feature's circle (and its outline / dead zone) onto its anchor.
+-- The flag names are passed in and read here per frame: a loaded config writes
+-- the flags without firing the dropdown callback, so a cached copy would keep
+-- the old anchor.
+local update_fov_circle_follow = LPH_NO_VIRTUALIZE(function(circle, outline, dead_zone, follow_flag, lerp_flag, follow_position, dt)
+    local follow_flags = flags[follow_flag]
+    local follow = follow_flags and follow_flags[1] or "mouse"
+    local lerp = clamp((flags[lerp_flag] or 27)/100, 0.01, 1)
+    local old_position = circle["Position"]
+    local target_position = follow == "target" and get_fov_follow_target_position(follow_position) or nil
+    local goal_position, on_screen = get_fov_follow_anchor(follow, target_position)
+
+    if not on_screen then
+        return false
+    end
+
+    local new_position = old_position + (goal_position - old_position) * get_fov_follow_alpha(lerp, dt)
+
+    -- A circle that has not been placed yet sits at the drawing origin. Snapping
+    -- on its first update keeps it from crawling in from the screen corner when
+    -- the menu is opened, which read as the follow being stuck.
+    if old_position["X"] == 0 and old_position["Y"] == 0 then
+        new_position = goal_position
+    end
+
+    circle["Position"] = new_position
+
+    if outline then
+        outline["Position"] = new_position
+    end
+
+    if dead_zone then
+        dead_zone["Position"] = new_position
+    end
+
+    return true
+end)
+
 local in_void = false
 local stomping = false
 
@@ -19127,15 +19257,17 @@ do
         menu_references["face_target"] = menu_references["visualization_section"]:create_element({["name"] = "face target"}, {["toggle"] = {["flag"] = "face_target"}})
         menu_references["ragebot_field_of_view_show_fov"] = menu_references["visualization_section"]:create_element({["name"] = "show fov"}, {["toggle"] = {["flag"] = "ragebot_field_of_view_show_fov"}})
         menu_references["ragebot_field_of_view_show_fov_settings"] = menu_references["ragebot_field_of_view_show_fov"]:create_settings()
-        menu_references["ragebot_field_of_view_follow_target"] = menu_references["ragebot_field_of_view_show_fov_settings"]:create_element({["name"] = "follow target"}, {["toggle"] = {["flag"] = "ragebot_field_of_view_follow_target"}})
+        menu_references["ragebot_field_of_view_follow"] = menu_references["ragebot_field_of_view_show_fov_settings"]:create_element({["name"] = "follow"}, {["dropdown"] = {["flag"] = "ragebot_field_of_view_follow", ["options"] = {"mouse", "target"}, ["default"] = {"mouse"}, ["requires_one"] = true}})
+        menu_references["ragebot_field_of_view_lerp"] = menu_references["ragebot_field_of_view_show_fov_settings"]:create_element({["name"] = "lerp"}, {["slider"] = {["flag"] = "ragebot_field_of_view_lerp", ["min"] = 1, ["max"] = 100, ["suffix"] = "%", ["default"] = 27, ["max_text"] = "instant"}})
         menu_references["ragebot_field_of_view_color"] = menu_references["ragebot_field_of_view_show_fov_settings"]:create_element({["name"] = "color"}, {["colorpicker"] = {["color_flag"] = "ragebot_field_of_view_color", ["default_color"] = color3_fromrgb(181, 255, 246), ["default_transparency"] = 0.8, ["transparency_flag"] = "ragebot_field_of_view_transparency"}})
         menu_references["ragebot_field_of_view_outline"] = menu_references["ragebot_field_of_view_show_fov_settings"]:create_element({["name"] = "outline"}, {["colorpicker"] = {["color_flag"] = "ragebot_field_of_view_outline_color", ["default_color"] = color3_fromrgb(181, 255, 246), ["default_transparency"] = 0.4, ["transparency_flag"] = "ragebot_field_of_view_outline_transparency"}})
         menu_references["ragebot_field_of_view_active_color"] = menu_references["ragebot_field_of_view_show_fov_settings"]:create_element({["name"] = "active color"}, {["colorpicker"] = {["color_flag"] = "ragebot_field_of_view_active_color", ["default_color"] = color3_fromrgb(233, 44, 44), ["default_transparency"] = 0.8, ["transparency_flag"] = "ragebot_field_of_view_active_transparency"}})
         menu_references["ragebot_field_of_view_active_outline"] = menu_references["ragebot_field_of_view_show_fov_settings"]:create_element({["name"] = "active outline"}, {["colorpicker"] = {["color_flag"] = "ragebot_field_of_view_active_outline", ["default_color"] = color3_fromrgb(233, 44, 44), ["default_transparency"] = 0.8, ["transparency_flag"] = "ragebot_field_of_view_active_outline_transparency"}})
         menu_references["ragebot_tracer"] = menu_references["visualization_section"]:create_element({["name"] = "tracer"}, {["toggle"] = {["flag"] = "ragebot_tracer"}})
         menu_references["ragebot_tracer_settings"] = menu_references["ragebot_tracer"]:create_settings()
+        menu_references["ragebot_tracer_thickness"] = menu_references["ragebot_tracer_settings"]:create_element({["name"] = "thickness"}, {["slider"] = {["flag"] = "ragebot_tracer_thickness", ["min"] = 0.5, ["max"] = 5, ["default"] = 2, ["decimals"] = 1, ["suffix"] = "px"}})
         menu_references["ragebot_tracer_color"] = menu_references["ragebot_tracer_settings"]:create_element({["name"] = "color"}, {["colorpicker"] = {["color_flag"] = "ragebot_tracer_color", ["default_color"] = color3_fromrgb(200, 30, 175), ["default_transparency"] = 0.1, ["transparency_flag"] = "ragebot_tracer_transparency"}})
-        menu_references["ragebot_tracer_outline_color"] = menu_references["ragebot_tracer_settings"]:create_element({["name"] = "outline"}, {["colorpicker"] = {["color_flag"] = "ragebot_tracer_outline_color", ["default_color"] = color3_fromrgb(35, 35, 35), ["default_transparency"] = 0.05, ["transparency_flag"] = "ragebot_tracer_outline_transparency"}})
+        menu_references["ragebot_tracer_outline_color"] = menu_references["ragebot_tracer_settings"]:create_element({["name"] = "outline"}, {["colorpicker"] = {["color_flag"] = "ragebot_tracer_outline_color", ["default_color"] = color3_fromrgb(15, 15, 15), ["default_transparency"] = 0.05, ["transparency_flag"] = "ragebot_tracer_outline_transparency"}})
         menu_references["ragebot_tracer_origin"] = menu_references["ragebot_tracer_settings"]:create_element({["name"] = "origin"}, {["dropdown"] = {["flag"] = "ragebot_tracer_origin", ["options"] = {"character", "mouse", "gun"}, ["default"] = {"gun"}, ["requires_one"] = true}})
         menu_references["ragebot_tracer_end_point"] = menu_references["ragebot_tracer_settings"]:create_element({["name"] = "end point"}, {["dropdown"] = {["flag"] = "ragebot_tracer_end_point", ["options"] = {"predicted position", "character"}, ["default"] = {"predicted position"}, ["multi"] = false, ["requires_one"] = true}})
     menu_references["anti_section"] = menu["groups"]["main"]:create_section("ragebot", "anti", 2, 0.3, 0)
@@ -19213,64 +19345,517 @@ do
         menu_references["void_hide_teleport_time"] = menu_references["void_hide_settings"]:create_element({["name"] = "teleport time"}, {["slider"] = {["min"] = 0.01, ["max"] = 2, ["decimals"] = 3, ["default"] = 0.1, ["flag"] = "void_hide_teleport_time", ["suffix"] = "s"}})
         menu_references["void_hide_stop_if_forced"]:set_visible(false)
     menu_references["utility_section"] = menu["groups"]["main"]:create_section("ragebot", "utility", 2, 0.7, 0.3)
-            if do_prediction then
+        -- The old grip trick only moved the local tool; the server still
+        -- received the client's real ray. This rewrites the shot packet
+        -- instead: it swaps the position (and optionally the origin) on the
+        -- FireServer call, which is what games actually validate. Wallbang
+        -- still depends on the server not re-raycasting from the character.
+        do
             menu_references["teleport_bullets"] = menu_references["utility_section"]:create_element({["name"] = "teleport bullets"}, {["toggle"] = {["flag"] = "teleport_bullets"}})
+            menu_references["teleport_bullets_settings"] = menu_references["teleport_bullets"]:create_settings()
+            menu_references["teleport_bullets_spoof_origin"] = menu_references["teleport_bullets_settings"]:create_element({["name"] = "spoof origin"}, {["toggle"] = {["flag"] = "teleport_bullets_spoof_origin", ["default"] = true}})
 
-            local teleport_bullets_connection = nil
-            local teleport_bullets_activated_connection = nil
+            local teleport_bullets_hook_installed = false
 
-            local teleport_bullet = function()
-                if not ragebot_aim_position or not local_gun or not local_tool then
+            local function get_character_head(instance)
+                if typeof(instance) ~= "Instance" then
+                    return nil
+                end
+
+                -- The argument can be the character model itself, a body part,
+                -- or an accessory handle a few levels down. Walk up a short
+                -- way looking for a Humanoid instead of assuming one parent.
+                local character = instance
+
+                for _ = 1, 4 do
+                    if not character then
+                        break
+                    end
+
+                    local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+                    if humanoid then
+                        if character == local_character then
+                            return nil
+                        end
+
+                        local head = character:FindFirstChild("Head")
+
+                        return head and head["Position"] or nil
+                    end
+
+                    character = character["Parent"]
+                end
+
+                return nil
+            end
+
+            local function find_target_in_table(value, depth)
+                if depth > 3 or type(value) ~= "table" then
+                    return nil
+                end
+
+                for _, nested in pairs(value) do
+                    if typeof(nested) == "Instance" then
+                        local head = get_character_head(nested)
+
+                        if head then
+                            return head
+                        end
+                    elseif type(nested) == "table" then
+                        local head = find_target_in_table(nested, depth + 1)
+
+                        if head then
+                            return head
+                        end
+                    end
+                end
+
+                return nil
+            end
+
+            local function find_target_from_args(args, count)
+                for i = 1, count do
+                    local value = args[i]
+
+                    if typeof(value) == "Instance" then
+                        local head = get_character_head(value)
+
+                        if head then
+                            return head
+                        end
+                    elseif type(value) == "table" then
+                        local head = find_target_in_table(value, 0)
+
+                        if head then
+                            return head
+                        end
+                    end
+                end
+
+                return nil
+            end
+
+            local function get_teleport_target()
+                local target = ragebot_target
+
+                if target then
+                    if target[7] or target[18] then
+                        return nil
+                    end
+
+                    local parts = target[4]
+                    local head = parts and parts["Head"]
+
+                    if head and head["Parent"] then
+                        return head["Position"]
+                    end
+                end
+
+                if ragebot_aim_position and ragebot_aim_position ~= vector3_zero then
+                    return ragebot_aim_position
+                end
+
+                return nil
+            end
+
+            local function get_teleport_local_position()
+                local hrp = local_parts["HumanoidRootPart"]
+
+                if hrp then
+                    return hrp["Position"]
+                end
+
+                return local_server_position and local_server_position["p"] or nil
+            end
+
+            local shoot_remote_names = {"shoot", "fire", "bullet", "gun", "weapon", "attack", "hit", "ray", "mouse", "combat", "damage"}
+
+            local function is_shoot_remote(remote, args, count)
+                local name = remote["Name"]
+
+                if type(name) == "string" then
+                    local lower = string.lower(name)
+
+                    for i = 1, #shoot_remote_names do
+                        if string.find(lower, shoot_remote_names[i], 1, true) then
+                            return true
+                        end
+                    end
+                end
+
+                -- Generic remote names are common; a character part in the
+                -- arguments is the strongest signal that this is a shot.
+                for i = 1, count do
+                    local value = args[i]
+
+                    if typeof(value) == "Instance" and get_character_head(value) then
+                        return true
+                    end
+                end
+
+                return false
+            end
+
+            local position_keys = {
+                ["position"] = true,
+                ["location"] = true,
+                ["hit"] = true,
+                ["hitposition"] = true,
+                ["hitpos"] = true,
+                ["pos"] = true,
+                ["point"] = true,
+                ["target"] = true,
+                ["destination"] = true,
+                ["endposition"] = true,
+                ["worldposition"] = true,
+                ["mouse"] = true,
+                ["aim"] = true,
+                ["aimposition"] = true,
+            }
+
+            local origin_keys = {
+                ["origin"] = true,
+                ["start"] = true,
+                ["startposition"] = true,
+                ["source"] = true,
+                ["from"] = true,
+                ["muzzle"] = true,
+                ["shootposition"] = true,
+            }
+
+            -- Only keys that hold the shot's travel direction. A surface
+            -- normal or a projectile velocity is not the same vector and
+            -- replacing those would corrupt the shot.
+            local direction_keys = {
+                ["direction"] = true,
+                ["dir"] = true,
+                ["lookvector"] = true,
+                ["unit"] = true,
+            }
+
+            local function table_has_position_key(value, depth)
+                if depth > 3 or type(value) ~= "table" then
+                    return false
+                end
+
+                for key, nested in pairs(value) do
+                    if type(key) == "string" and position_keys[string.lower(key)] then
+                        return true
+                    end
+
+                    if type(nested) == "table" and table_has_position_key(nested, depth + 1) then
+                        return true
+                    end
+                end
+
+                return false
+            end
+
+            local function rewrite_table(value, target, spoof_origin, direction, spoof, depth)
+                if depth > 3 then
+                    return value, false
+                end
+
+                local result = {}
+                local changed = false
+
+                for key, nested in pairs(value) do
+                    local lower = type(key) == "string" and string.lower(key) or nil
+                    local rewritten = nested
+
+                    if typeof(nested) == "Vector3" then
+                        if lower and position_keys[lower] then
+                            rewritten = target
+                            changed = true
+                        elseif lower and origin_keys[lower] and spoof then
+                            rewritten = spoof_origin
+                            changed = true
+                        elseif lower and direction_keys[lower] then
+                            rewritten = direction
+                            changed = true
+                        end
+                    elseif typeof(nested) == "CFrame" then
+                        if lower and position_keys[lower] then
+                            rewritten = (nested - nested["Position"]) + target
+                            changed = true
+                        elseif lower and origin_keys[lower] and spoof then
+                            rewritten = (nested - nested["Position"]) + spoof_origin
+                            changed = true
+                        end
+                    elseif typeof(nested) == "table" then
+                        local nested_value, nested_changed = rewrite_table(nested, target, spoof_origin, direction, spoof, depth + 1)
+
+                        if nested_changed then
+                            rewritten = nested_value
+                            changed = true
+                        end
+                    end
+
+                    result[key] = rewritten
+                end
+
+                return result, changed
+            end
+
+            local function rewrite_fire_args(args, count, target)
+                local local_position = get_teleport_local_position()
+
+                if not local_position then
+                    return false
+                end
+
+                local spoof = flags["teleport_bullets_spoof_origin"]
+                local offset = local_position - target
+                local magnitude = offset["Magnitude"]
+
+                -- Just in front of the target on the shooter's side, so the
+                -- server's own ray from the reported origin to the hit point
+                -- is short and stays on the target's side of the wall.
+                local spoof_origin = magnitude > 0.01 and (target + offset["Unit"] * 2) or (target + vector3_new(0, 0.5, 0))
+
+                local hit_index = nil
+                local hit_distance = -1
+                local origin_index = nil
+                local origin_distance = math.huge
+                local has_character_part = false
+                local has_named_position = false
+                local has_frame = false
+
+                for i = 1, count do
+                    local value = args[i]
+
+                    if typeof(value) == "Instance" and get_character_head(value) then
+                        has_character_part = true
+                    elseif typeof(value) == "CFrame" then
+                        has_frame = true
+                    elseif typeof(value) == "table" and table_has_position_key(value, 0) then
+                        has_named_position = true
+                    end
+                end
+
+                -- The farthest large vector is the hit point; the nearest
+                -- large vector is the reported origin. Small vectors are
+                -- directions / normals and are recomputed below.
+                for i = 1, count do
+                    local value = args[i]
+
+                    if typeof(value) == "Vector3" and value["Magnitude"] > 10 then
+                        local distance = (value - local_position)["Magnitude"]
+
+                        if distance > hit_distance then
+                            hit_distance = distance
+                            hit_index = i
+                        end
+
+                        if distance < origin_distance then
+                            origin_distance = distance
+                            origin_index = i
+                        end
+                    end
+                end
+
+                local changed = false
+
+                if not hit_index then
+                    -- No world-space vector: still rewrite CFrames and named
+                    -- position fields. The direction runs from the character
+                    -- toward the target because no origin argument was found.
+                    local fallback = target - local_position
+                    local direction = fallback["Magnitude"] > 0.01 and fallback["Unit"] or vector3_new(0, 0, 1)
+
+                    for i = 1, count do
+                        local value = args[i]
+
+                        if typeof(value) == "CFrame" then
+                            args[i] = (value - value["Position"]) + target
+                            changed = true
+                        elseif typeof(value) == "table" then
+                            local table_value, table_changed = rewrite_table(value, target, spoof_origin, direction, spoof, 0)
+
+                            if table_changed then
+                                args[i] = table_value
+                                changed = true
+                            end
+                        end
+                    end
+
+                    return changed
+                end
+
+                if origin_index == hit_index then
+                    origin_index = nil
+                end
+
+                -- One large vector with no hit part / named location is almost
+                -- always an origin, not a hit point. Replacing it would send
+                -- every shot from the target and break the gun.
+                if not origin_index and not has_character_part and not has_named_position and not has_frame then
+                    return false
+                end
+
+                -- The direction has to match the origin actually being sent.
+                -- When the origin is left alone, the old direction would point
+                -- the shot away from the target.
+                local final_origin = local_position
+
+                if origin_index then
+                    final_origin = spoof and spoof_origin or args[origin_index]
+                elseif spoof then
+                    final_origin = spoof_origin
+                end
+
+                local travel = target - final_origin
+                local direction = travel["Magnitude"] > 0.01 and travel["Unit"] or vector3_new(0, 0, 1)
+
+                for i = 1, count do
+                    local value = args[i]
+
+                    if typeof(value) == "Vector3" then
+                        local magnitude2 = value["Magnitude"]
+
+                        if i == hit_index then
+                            args[i] = target
+                            changed = true
+                        elseif i == origin_index and spoof then
+                            args[i] = spoof_origin
+                            changed = true
+                        elseif magnitude2 <= 10 and i > hit_index then
+                            args[i] = direction
+                            changed = true
+                        end
+                    elseif typeof(value) == "CFrame" then
+                        local frame_offset = value - value["Position"]
+
+                        if i == hit_index then
+                            args[i] = frame_offset + target
+                            changed = true
+                        elseif i == origin_index and spoof then
+                            args[i] = frame_offset + spoof_origin
+                            changed = true
+                        end
+                    elseif typeof(value) == "table" then
+                        local table_value, table_changed = rewrite_table(value, target, spoof_origin, direction, spoof, 0)
+
+                        if table_changed then
+                            args[i] = table_value
+                            changed = true
+                        end
+                    end
+                end
+
+                return changed
+            end
+
+            local function install_teleport_bullets_hook()
+                if teleport_bullets_hook_installed then
                     return
                 end
 
-                local right_hand = local_parts["RightHand"]
-                local new_grip = (right_hand["CFrame"] * cframe_new(0, -1, 0, 1, 0, 0, 0, 0, 1, 0, -1, 0)):ToObjectSpace(cframe_new(ragebot_aim_position)):inverse()
-                local backpack = local_player["Backpack"]
+                local ok, metatable = pcall(getrawmetatable, game)
 
-                if not right_hand or not backpack then
+                if not ok or type(metatable) ~= "table" or type(metatable["__namecall"]) ~= "function" then
                     return
                 end
 
-                local local_tool = local_tool
+                local old_namecall = metatable["__namecall"]
+                local new = {}
 
-                local old_grip = local_tool.Grip
-                local_tool.Parent = backpack
-                local_tool.Grip = new_grip
-                local_tool.Parent = local_character
-                run_service.PreRender:Wait()
-                local_tool.Parent = backpack
-                local_tool.Grip = old_grip
-                local_tool.Parent = local_character
-            end
-
-            local update_teleport_bullets = function(tool)
-                if teleport_bullets_activated_connection then
-                    teleport_bullets_activated_connection:Disconnect()
-                    teleport_bullets_activated_connection = nil
+                for key, value in pairs(metatable) do
+                    new[key] = value
                 end
 
-                if tool then
-                    teleport_bullets_activated_connection = create_connection(tool["Activated"], teleport_bullet)
-                end
+                new["__namecall"] = newcclosure(LPH_JIT_MAX(function(self, ...)
+                    local method = getnamecallmethod and getnamecallmethod()
+
+                    if method ~= "FireServer" or not flags["teleport_bullets"] then
+                        return old_namecall(self, ...)
+                    end
+
+                    if setthreadidentity then
+                        pcall(setthreadidentity, 4)
+                    end
+
+                    -- Only game scripts. Our own ragebot already sends the
+                    -- solved point; rewriting it again would double-apply the
+                    -- teleport and could trip our own tooling.
+                    local ok_caller, caller = pcall(function()
+                        return checkcaller and checkcaller()
+                    end)
+
+                    if ok_caller and caller then
+                        return old_namecall(self, ...)
+                    end
+
+                    if typeof(self) ~= "Instance" then
+                        return old_namecall(self, ...)
+                    end
+
+                    local class_name = self["ClassName"]
+
+                    if class_name ~= "RemoteEvent" and class_name ~= "UnreliableRemoteEvent" then
+                        return old_namecall(self, ...)
+                    end
+
+                    local count = select("#", ...)
+
+                    if count == 0 then
+                        return old_namecall(self, ...)
+                    end
+
+                    local args = {...}
+
+                    -- debug.info guard: never touch a call made by this
+                    -- script's own remotes even when checkcaller is missing.
+                    local debug_info = debug and (debug.info or debug.getinfo)
+
+                    if debug_info then
+                        for level = 3, 6 do
+                            local ok_info, source = pcall(debug_info, level, "s")
+
+                            if ok_info and type(source) == "string" then
+                                local lower = string.lower(source)
+
+                                if string.find(lower, "juju", 1, true) or string.find(lower, "opencode", 1, true) then
+                                    return old_namecall(self, ...)
+                                end
+                            end
+                        end
+                    end
+
+                    local ok_remote, shoot_remote = pcall(is_shoot_remote, self, args, count)
+
+                    if not ok_remote or not shoot_remote then
+                        return old_namecall(self, ...)
+                    end
+
+                    local ok_target, target = pcall(find_target_from_args, args, count)
+
+                    if not ok_target or not target then
+                        target = get_teleport_target()
+                    end
+
+                    if not target then
+                        return old_namecall(self, ...)
+                    end
+
+                    local ok_rewrite, changed = pcall(rewrite_fire_args, args, count, target)
+
+                    if not ok_rewrite or not changed then
+                        return old_namecall(self, ...)
+                    end
+
+                    return old_namecall(self, unpack(args, 1, count))
+                end))
+
+                teleport_bullets_hook_installed = pcall(setrawmetatable, game, new)
             end
+
+            install_teleport_bullets_hook()
 
             create_connection(menu_references["teleport_bullets"]["on_toggle_change"], function(value)
-                if teleport_bullets_connection then
-                    teleport_bullets_connection:Disconnect()
-                    teleport_bullets_connection = nil
-                end
-
-                if teleport_bullets_activated_connection then
-                    teleport_bullets_activated_connection:Disconnect()
-                    teleport_bullets_activated_connection = nil
-                end
-
                 if value then
-                    teleport_bullets_connection = create_connection(signals["on_local_tool_equipped"], update_teleport_bullets)
-                    if local_tool then
-                        update_teleport_bullets(local_tool)
-                    end
+                    install_teleport_bullets_hook()
                 end
             end)
         end
@@ -19635,24 +20220,21 @@ do
             last_refresh = clock()
         end
 
+        local fov_follow_position = nil
+
+        if ragebot_target then
+            fov_follow_position = get_fov_target_anchor(ragebot_target) or ragebot_aim_position
+        end
+
         if fov_circle then
-            local mouse_position = get_mouse_location(user_input_service)
+            local on_screen = update_fov_circle_follow(fov_circle, fov_circle_outline, nil, "ragebot_field_of_view_follow", "ragebot_field_of_view_lerp", fov_follow_position, dt)
+            local visible = on_screen and type(ragebot_field_of_view) == "number"
 
-            local old_position = fov_circle["Position"]
-            local goal_position = flags["ragebot_field_of_view_follow_target"] and ragebot_aim_position or nil
-            if goal_position then
-                local position, on_screen = world_to_viewport_point(camera, goal_position)
+            fov_circle["Visible"] = visible
 
-                if on_screen then
-                    goal_position = vector2_new(position["X"], position["Y"])
-                else
-                    goal_position = nil
-                end
+            if fov_circle_outline then
+                fov_circle_outline["Visible"] = visible
             end
-
-            local new_position = old_position + ((goal_position or mouse_position) - old_position) * dt*4^2
-            fov_circle["Position"] = new_position
-            fov_circle_outline["Position"] = new_position
         end
 
         if target and hrp then
@@ -21821,6 +22403,16 @@ do
     local outline_transparency = {["Transparency"] = 1}
 
     local do_ragebot_tracer = LPH_JIT_MAX(function(dt, hrp)
+        -- Read the dropdowns straight from the flags. A loaded config writes
+        -- the flags without firing the dropdown callback, so cached copies
+        -- would keep the old choice and the end point could drift to the
+        -- predicted position after auto fire was turned on.
+        local end_point_flags = flags["ragebot_tracer_end_point"]
+        local tracer_end = end_point_flags and end_point_flags[1] or "predicted position"
+
+        local origin_flags = flags["ragebot_tracer_origin"]
+        local tracer_origin = origin_flags and origin_flags[1] or "gun"
+
         local ragebot_aim_position = ragebot_aim_position ~= vector3_zero and ragebot_aim_position or nil
         if not ragebot_aim_position and did then
             did = false
@@ -21836,6 +22428,13 @@ do
 
             tween(tracer, transparency, circular, out, 0.12)
             tween(outline, outline_transparency, circular, out, 0.12)
+        end
+
+        -- The line is not on screen while it is hidden, and the tween that
+        -- hides it has already been started above, so the projections and
+        -- the mouse read below are not paid for until it is shown again.
+        if not did then
+            return
         end
 
         last_to = tracer_end == "predicted position" and ragebot_aim_position or (ragebot_target and (ragebot_target[4]["UpperTorso"] and ragebot_target[4]["UpperTorso"]["Position"] or vector3_new())) or last_to
@@ -21867,8 +22466,13 @@ do
 
             tracer["From"] = origin
             tracer["To"] = to
-            outline["From"] = origin
-            outline["To"] = to
+
+            local vector = to - origin
+            local distance = vector["Magnitude"]
+            local unit = distance > 0 and vector2_new(vector["X"] / distance, vector["Y"] / distance) * 2 or vector2_new(0, 0)
+
+            outline["From"] = origin - unit
+            outline["To"] = to + unit
         end
     end)
 
@@ -21889,14 +22493,14 @@ do
 
         if value then
             outline = create_real_drawing("Line", {
-                ["Thickness"] = 4,
+                ["Thickness"] = flags["ragebot_tracer_thickness"]+2,
                 ["Color"] = flags["ragebot_tracer_outline_color"],
                 ["Visible"] = true,
                 ["Transparency"] = 0
             })
 
             tracer = create_real_drawing("Line", {
-                ["Thickness"] = 2,
+                ["Thickness"] = flags["ragebot_tracer_thickness"],
                 ["Color"] = flags["ragebot_tracer_color"],
                 ["Visible"] = true,
                 ["ZIndex"] = 2,
@@ -21911,6 +22515,13 @@ do
 
     create_connection(menu_references["ragebot_tracer_origin"]["on_dropdown_change"], function(value)
         tracer_origin = value[1]
+    end)
+
+    create_connection(menu_references["ragebot_tracer_thickness"]["on_slider_change"], function(value)
+        if outline then
+            outline["Thickness"] = value+2
+            tracer["Thickness"] = value
+        end
     end)
 
     create_connection(menu_references["ragebot_tracer_end_point"]["on_dropdown_change"], function(value)
@@ -22047,6 +22658,8 @@ do
         menu_references["aim_assist_field_of_view_show_fov"] = menu_references["aim_assist_field_of_view_settings"]:create_element({["name"] = "show fov"}, {["toggle"] = {["flag"] = "aim_assist_field_of_view_show_fov"}, ["colorpicker"] = {["color_flag"] = "aim_assist_field_of_view_color", ["default_color"] = color3_fromrgb(181, 255, 246), ["default_transparency"] = 0.8, ["transparency_flag"] = "aim_assist_field_of_view_transparency"}})
         menu_references["aim_assist_field_of_view_dead_zone"] = menu_references["aim_assist_field_of_view_settings"]:create_element({["name"] = "dead zone"}, {["colorpicker"] = {["color_flag"] = "aim_assist_field_of_view_dead_zone_color", ["default_color"] = color3_fromrgb(155, 0, 0), ["default_transparency"] = 0.8, ["transparency_flag"] = "aim_assist_field_of_view_dead_zone_transparency"}})
         menu_references["aim_assist_field_of_view_outline"] = menu_references["aim_assist_field_of_view_settings"]:create_element({["name"] = "outline"}, {["colorpicker"] = {["color_flag"] = "aim_assist_field_of_view_outline_color", ["default_color"] = color3_fromrgb(181, 255, 246), ["default_transparency"] = 0.4, ["transparency_flag"] = "aim_assist_field_of_view_outline_transparency"}})
+        menu_references["aim_assist_field_of_view_follow"] = menu_references["aim_assist_field_of_view_settings"]:create_element({["name"] = "follow"}, {["dropdown"] = {["flag"] = "aim_assist_field_of_view_follow", ["options"] = {"mouse", "target"}, ["default"] = {"mouse"}, ["requires_one"] = true}})
+        menu_references["aim_assist_field_of_view_lerp"] = menu_references["aim_assist_field_of_view_settings"]:create_element({["name"] = "lerp"}, {["slider"] = {["flag"] = "aim_assist_field_of_view_lerp", ["min"] = 1, ["max"] = 100, ["suffix"] = "%", ["default"] = 27, ["max_text"] = "instant"}})
 
     menu_references["silent_aim_section"] = menu["groups"]["main"]:create_section("legitbot", "redirection", 2, 0.45, 0.0)
         menu_references["silent_aim"] = menu_references["silent_aim_section"]:create_element({["name"] = "silent aim"}, {["toggle"] = {["flag"] = "silent_aim"}})
@@ -22065,6 +22678,8 @@ do
         menu_references["silent_aim_field_of_view_settings"] = menu_references["silent_aim_field_of_view"]:create_settings()
         menu_references["silent_aim_field_of_view_show_fov"] = menu_references["silent_aim_field_of_view_settings"]:create_element({["name"] = "show fov"}, {["toggle"] = {["flag"] = "silent_aim_field_of_view_show_fov"}, ["colorpicker"] = {["color_flag"] = "silent_aim_field_of_view_color", ["default_color"] = color3_fromrgb(181, 255, 246), ["default_transparency"] = 0.8, ["transparency_flag"] = "silent_aim_field_of_view_transparency"}})
         menu_references["silent_aim_field_of_view_outline"] = menu_references["silent_aim_field_of_view_settings"]:create_element({["name"] = "outline"}, {["colorpicker"] = {["color_flag"] = "silent_aim_field_of_view_outline_color", ["default_color"] = color3_fromrgb(181, 255, 246), ["default_transparency"] = 0.4, ["transparency_flag"] = "silent_aim_field_of_view_outline_transparency"}})
+        menu_references["silent_aim_field_of_view_follow"] = menu_references["silent_aim_field_of_view_settings"]:create_element({["name"] = "follow"}, {["dropdown"] = {["flag"] = "silent_aim_field_of_view_follow", ["options"] = {"mouse", "target"}, ["default"] = {"mouse"}, ["requires_one"] = true}})
+        menu_references["silent_aim_field_of_view_lerp"] = menu_references["silent_aim_field_of_view_settings"]:create_element({["name"] = "lerp"}, {["slider"] = {["flag"] = "silent_aim_field_of_view_lerp", ["min"] = 1, ["max"] = 100, ["suffix"] = "%", ["default"] = 27, ["max_text"] = "instant"}})
         menu_references["silent_aim_max_curve"] = menu_references["silent_aim_section"]:create_element({["name"] = "max curve"}, {["slider"] = {["flag"] = "silent_aim_max_curve", ["min"] = 1, ["max"] = 100, ["default"] = 100, ["suffix"] = "%"}})
         menu_references["silent_aim_max_curve_settings"] = menu_references["silent_aim_max_curve"]:create_settings()
         menu_references["silent_aim_dont_curve_vertically"] = menu_references["silent_aim_max_curve_settings"]:create_element({["name"] = "dont curve vertically"}, {["toggle"] = {["flag"] = "silent_aim_dont_curve_vertically"}})
@@ -22452,17 +23067,18 @@ do
     local aim_assist_max_distance = 0
     local aim_assist_method = "mouse"
     local custom_aim_assist_position = nil
+    local aim_assist_follow_position = nil
 
     local do_aim_assist = LPH_JIT_MAX(function(dt, local_hrp)
         local mouse_position = get_mouse_location(user_input_service)
 
-        if fov_circle then
-            local old_position = fov_circle["Position"]
-            local new_position = old_position + (mouse_position - old_position) * dt*4^2
-
-            fov_circle["Position"] = new_position
-            fov_circle_outline["Position"] = new_position
-            fov_circle_dead_zone["Position"] = new_position
+        -- Remember the anchor between frames. The target solver is skipped
+        -- when another feature already resolved this dt, and a per-frame
+        -- local would drop the circle back to the cursor on those frames.
+        if legitbot_target then
+            aim_assist_follow_position = get_fov_target_anchor(legitbot_target[1])
+        else
+            aim_assist_follow_position = nil
         end
 
         if dt ~= last_target_dt and flags["aim_assist"] then
@@ -22489,6 +23105,11 @@ do
                         end
 
                         part_position+=legitbot_target_prediction
+
+                        -- The circle marks the target, not the limb the aim was
+                        -- placed on: the part is walked to the head so the ring
+                        -- does not jump whenever the aim solver changes part.
+                        aim_assist_follow_position = get_fov_target_anchor(data) or part_position
 
                         local pos, _ = world_to_viewport_point(camera, part_position)
                         local move_position = vector2_new(pos["X"] - mouse_position["X"], pos["Y"] - mouse_position["Y"])
@@ -22527,6 +23148,22 @@ do
                         end
                     end
                 end
+            end
+        end
+
+        if fov_circle then
+            -- Hidden while the followed point is outside the viewport; the
+            -- feature's own toggle keeps owning the transparency fade.
+            local visible = update_fov_circle_follow(fov_circle, fov_circle_outline, fov_circle_dead_zone, "aim_assist_field_of_view_follow", "aim_assist_field_of_view_lerp", aim_assist_follow_position, dt)
+
+            fov_circle["Visible"] = visible
+
+            if fov_circle_outline then
+                fov_circle_outline["Visible"] = visible
+            end
+
+            if fov_circle_dead_zone then
+                fov_circle_dead_zone["Visible"] = visible
             end
         end
 
@@ -22782,18 +23419,21 @@ do
     local silent_aim_no_tool_check = false
     local silent_aim_max_curve = nil
     local silent_aim_dont_curve_vertically = false
+    local silent_aim_follow_position = nil
 
     local do_silent_aim = LPH_JIT_MAX(function(dt, hrp)
         local mouse_position = get_mouse_location(user_input_service)
+        local did_silent_aim = false
 
-        if fov_circle then
-            local old_position = fov_circle["Position"]
-            local new_position = old_position + (mouse_position - old_position) * dt*4^2
-
-            fov_circle["Position"] = new_position
-            fov_circle_outline["Position"] = new_position
+        -- Remember the anchor between frames. The target solver is skipped
+        -- when another feature already resolved this dt, and a per-frame
+        -- local would drop the circle back to the cursor on those frames.
+        if legitbot_target then
+            silent_aim_follow_position = get_fov_target_anchor(legitbot_target[1])
+        else
+            silent_aim_follow_position = nil
         end
-        
+
         if dt ~= last_target_dt and flags["silent_aim"] then
             get_legitbot_target(dt)
         end
@@ -22818,6 +23458,10 @@ do
                 
                     silent_aim_position = part_position + legitbot_target_prediction
                     custom_silent_aim_position = nil
+                    -- Follow the body, not the solved limb, so the circle sits
+                    -- on the target instead of drifting to whichever part was
+                    -- aimed.
+                    silent_aim_follow_position = get_fov_target_anchor(data) or silent_aim_position
 
                     if silent_aim_max_curve or silent_aim_dont_curve_vertically then
                         local pos = world_to_viewport_point(camera, silent_aim_position)
@@ -22826,13 +23470,27 @@ do
                         silent_aim_position = ray["Origin"] + ray["Direction"] * (ray["Origin"]-part_position)["magnitude"]
                     end
 
-                    return
+                    did_silent_aim = true
                 end
             end
         end
 
-        silent_aim_position = nil
-        custom_silent_aim_position = nil
+        if not did_silent_aim then
+            silent_aim_position = nil
+            custom_silent_aim_position = nil
+        end
+
+        if fov_circle then
+            -- Hidden while the followed point is outside the viewport; the
+            -- feature's own toggle keeps owning the transparency fade.
+            local visible = update_fov_circle_follow(fov_circle, fov_circle_outline, nil, "silent_aim_field_of_view_follow", "silent_aim_field_of_view_lerp", silent_aim_follow_position, dt)
+
+            fov_circle["Visible"] = visible
+
+            if fov_circle_outline then
+                fov_circle_outline["Visible"] = visible
+            end
+        end
     end)
 
     create_connection(menu_references["silent_aim"]["on_toggle_change"], function(value)
