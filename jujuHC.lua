@@ -19345,549 +19345,65 @@ end)()
         menu_references["void_hide_teleport_time"] = menu_references["void_hide_settings"]:create_element({["name"] = "teleport time"}, {["slider"] = {["min"] = 0.01, ["max"] = 2, ["decimals"] = 3, ["default"] = 0.1, ["flag"] = "void_hide_teleport_time", ["suffix"] = "s"}})
         menu_references["void_hide_stop_if_forced"]:set_visible(false)
     menu_references["utility_section"] = menu["groups"]["main"]:create_section("ragebot", "utility", 2, 0.7, 0.3)
-        -- The old grip trick only moved the local tool; the server still
-        -- received the client's real ray. This rewrites the shot packet
-        -- instead: it swaps the position (and optionally the origin) on the
-        -- FireServer call, which is what games actually validate. Wallbang
-        -- still depends on the server not re-raycasting from the character.
         do
             menu_references["teleport_bullets"] = menu_references["utility_section"]:create_element({["name"] = "teleport bullets"}, {["toggle"] = {["flag"] = "teleport_bullets"}})
-            menu_references["teleport_bullets_settings"] = menu_references["teleport_bullets"]:create_settings()
-            menu_references["teleport_bullets_spoof_origin"] = menu_references["teleport_bullets_settings"]:create_element({["name"] = "spoof origin"}, {["toggle"] = {["flag"] = "teleport_bullets_spoof_origin", ["default"] = true}})
 
-            local teleport_bullets_hook_installed = false
+            local teleport_bullets_connection = nil
+            local teleport_bullets_activated_connection = nil
 
-            local function get_character_head_part(instance)
-                if typeof(instance) ~= "Instance" then
-                    return nil
-                end
-
-                -- The argument can be the character model itself, a body part,
-                -- or an accessory handle a few levels down. Walk up a short
-                -- way looking for a Humanoid instead of assuming one parent.
-                local character = instance
-
-                for _ = 1, 4 do
-                    if not character then
-                        break
-                    end
-
-                    local humanoid = character:FindFirstChildOfClass("Humanoid")
-
-                    if humanoid then
-                        if character == local_character then
-                            return nil
-                        end
-
-                        return character:FindFirstChild("Head")
-                    end
-
-                    character = character["Parent"]
-                end
-
-                return nil
-            end
-
-            local function get_character_head(instance)
-                local head = get_character_head_part(instance)
-
-                return head and head["Position"] or nil
-            end
-
-            local function is_base_part(value)
-                if typeof(value) ~= "Instance" then
-                    return false
-                end
-
-                local ok, result = pcall(function()
-                    return value:IsA("BasePart")
-                end)
-
-                return ok and result
-            end
-
-            local function find_target_in_table(value, depth)
-                if depth > 3 or type(value) ~= "table" then
-                    return nil, nil
-                end
-
-                for _, nested in pairs(value) do
-                    if typeof(nested) == "Instance" then
-                        local head = get_character_head_part(nested)
-
-                        if head then
-                            return head["Position"], head
-                        end
-                    elseif type(nested) == "table" then
-                        local head_position, head = find_target_in_table(nested, depth + 1)
-
-                        if head_position then
-                            return head_position, head
-                        end
-                    end
-                end
-
-                return nil, nil
-            end
-
-            local function find_target_from_args(args, count)
-                for i = 1, count do
-                    local value = args[i]
-
-                    if typeof(value) == "Instance" then
-                        local head = get_character_head_part(value)
-
-                        if head then
-                            return head["Position"], head
-                        end
-                    elseif type(value) == "table" then
-                        local head_position, head = find_target_in_table(value, 0)
-
-                        if head_position then
-                            return head_position, head
-                        end
-                    end
-                end
-
-                return nil, nil
-            end
-
-            local function get_teleport_target()
-                local target = ragebot_target
-
-                if target then
-                    if target[7] or target[18] then
-                        return nil, nil
-                    end
-
-                    local parts = target[4]
-                    local head = parts and parts["Head"]
-
-                    if head and head["Parent"] then
-                        return head["Position"], head
-                    end
-
-                    local upper_torso = parts and parts["UpperTorso"]
-
-                    if upper_torso and upper_torso["Parent"] then
-                        return upper_torso["Position"], upper_torso
-                    end
-                end
-
-                if ragebot_aim_position and ragebot_aim_position ~= vector3_zero then
-                    return ragebot_aim_position, nil
-                end
-
-                return nil, nil
-            end
-
-            local function get_teleport_local_position()
-                local hrp = local_parts["HumanoidRootPart"]
-
-                if hrp then
-                    return hrp["Position"]
-                end
-
-                return local_server_position and local_server_position["p"] or nil
-            end
-
-            local shoot_remote_names = {"shoot", "fire", "bullet", "gun", "weapon", "attack", "hit", "ray", "mouse", "combat", "damage"}
-
-            local function is_shoot_remote(remote, args, count)
-                local name = remote["Name"]
-
-                if type(name) == "string" then
-                    local lower = string.lower(name)
-
-                    for i = 1, #shoot_remote_names do
-                        if string.find(lower, shoot_remote_names[i], 1, true) then
-                            return true
-                        end
-                    end
-                end
-
-                -- Generic remote names are common; a character part in the
-                -- arguments is the strongest signal that this is a shot.
-                for i = 1, count do
-                    local value = args[i]
-
-                    if typeof(value) == "Instance" and get_character_head(value) then
-                        return true
-                    end
-                end
-
-                return false
-            end
-
-            local position_keys = {
-                ["position"] = true,
-                ["location"] = true,
-                ["hit"] = true,
-                ["hitposition"] = true,
-                ["hitpos"] = true,
-                ["pos"] = true,
-                ["point"] = true,
-                ["target"] = true,
-                ["destination"] = true,
-                ["endposition"] = true,
-                ["worldposition"] = true,
-                ["mouse"] = true,
-                ["aim"] = true,
-                ["aimposition"] = true,
-            }
-
-            local origin_keys = {
-                ["origin"] = true,
-                ["start"] = true,
-                ["startposition"] = true,
-                ["source"] = true,
-                ["from"] = true,
-                ["muzzle"] = true,
-                ["shootposition"] = true,
-            }
-
-            -- Only keys that hold the shot's travel direction. A surface
-            -- normal or a projectile velocity is not the same vector and
-            -- replacing those would corrupt the shot.
-            local direction_keys = {
-                ["direction"] = true,
-                ["dir"] = true,
-                ["lookvector"] = true,
-                ["unit"] = true,
-            }
-
-            local function table_has_position_key(value, depth)
-                if depth > 3 or type(value) ~= "table" then
-                    return false
-                end
-
-                for key, nested in pairs(value) do
-                    if type(key) == "string" and position_keys[string.lower(key)] then
-                        return true
-                    end
-
-                    if type(nested) == "table" and table_has_position_key(nested, depth + 1) then
-                        return true
-                    end
-                end
-
-                return false
-            end
-
-            local function rewrite_table(value, target, spoof_origin, direction, spoof, depth)
-                if depth > 3 then
-                    return value, false
-                end
-
-                local result = {}
-                local changed = false
-
-                for key, nested in pairs(value) do
-                    local lower = type(key) == "string" and string.lower(key) or nil
-                    local rewritten = nested
-
-                    if typeof(nested) == "Vector3" then
-                        if lower and position_keys[lower] then
-                            rewritten = target
-                            changed = true
-                        elseif lower and origin_keys[lower] and spoof then
-                            rewritten = spoof_origin
-                            changed = true
-                        elseif lower and direction_keys[lower] then
-                            rewritten = direction
-                            changed = true
-                        end
-                    elseif typeof(nested) == "CFrame" then
-                        if lower and position_keys[lower] then
-                            rewritten = (nested - nested["Position"]) + target
-                            changed = true
-                        elseif lower and origin_keys[lower] and spoof then
-                            rewritten = (nested - nested["Position"]) + spoof_origin
-                            changed = true
-                        end
-                    elseif typeof(nested) == "table" then
-                        local nested_value, nested_changed = rewrite_table(nested, target, spoof_origin, direction, spoof, depth + 1)
-
-                        if nested_changed then
-                            rewritten = nested_value
-                            changed = true
-                        end
-                    end
-
-                    result[key] = rewritten
-                end
-
-                return result, changed
-            end
-
-            local function rewrite_fire_args(args, count, target, target_part)
-                local local_position = get_teleport_local_position()
-
-                if not local_position then
-                    return false
-                end
-
-                if target_part and not target_part["Parent"] then
-                    target_part = nil
-                end
-
-                local spoof = flags["teleport_bullets_spoof_origin"]
-                local offset = local_position - target
-                local magnitude = offset["Magnitude"]
-
-                -- Just in front of the target on the shooter's side, so the
-                -- server's own ray from the reported origin to the hit point
-                -- is short and stays on the target's side of the wall.
-                local spoof_origin = magnitude > 0.01 and (target + offset["Unit"] * 2) or (target + vector3_new(0, 0.5, 0))
-
-                local hit_index = nil
-                local hit_distance = -1
-                local origin_index = nil
-                local origin_distance = math.huge
-                local has_character_part = false
-                local has_named_position = false
-                local has_frame = false
-
-                for i = 1, count do
-                    local value = args[i]
-
-                    if typeof(value) == "Instance" and get_character_head(value) then
-                        has_character_part = true
-                    elseif typeof(value) == "CFrame" then
-                        has_frame = true
-                    elseif typeof(value) == "table" and table_has_position_key(value, 0) then
-                        has_named_position = true
-                    end
-                end
-
-                -- The farthest large vector is the hit point; the nearest
-                -- large vector is the reported origin. Small vectors are
-                -- directions / normals and are recomputed below.
-                for i = 1, count do
-                    local value = args[i]
-
-                    if typeof(value) == "Vector3" and value["Magnitude"] > 10 then
-                        local distance = (value - local_position)["Magnitude"]
-
-                        if distance > hit_distance then
-                            hit_distance = distance
-                            hit_index = i
-                        end
-
-                        if distance < origin_distance then
-                            origin_distance = distance
-                            origin_index = i
-                        end
-                    end
-                end
-
-                local changed = false
-
-                if not hit_index then
-                    -- No world-space vector: still rewrite CFrames and named
-                    -- position fields. The direction runs from the character
-                    -- toward the target because no origin argument was found.
-                    local fallback = target - local_position
-                    local direction = fallback["Magnitude"] > 0.01 and fallback["Unit"] or vector3_new(0, 0, 1)
-
-                    for i = 1, count do
-                        local value = args[i]
-
-                        if typeof(value) == "CFrame" then
-                            args[i] = (value - value["Position"]) + target
-                            changed = true
-                        elseif typeof(value) == "table" then
-                            local table_value, table_changed = rewrite_table(value, target, spoof_origin, direction, spoof, 0)
-
-                            if table_changed then
-                                args[i] = table_value
-                                changed = true
-                            end
-                        elseif target_part and is_base_part(value) and get_character_head_part(value) then
-                            args[i] = target_part
-                            changed = true
-                        end
-                    end
-
-                    return changed
-                end
-
-                if origin_index == hit_index then
-                    origin_index = nil
-                end
-
-                -- One large vector with no hit part / named location is almost
-                -- always an origin, not a hit point. Replacing it would send
-                -- every shot from the target and break the gun.
-                if not origin_index and not has_character_part and not has_named_position and not has_frame then
-                    return false
-                end
-
-                -- The direction has to match the origin actually being sent.
-                -- When the origin is left alone, the old direction would point
-                -- the shot away from the target.
-                local final_origin = local_position
-
-                if origin_index then
-                    final_origin = spoof and spoof_origin or args[origin_index]
-                elseif spoof then
-                    final_origin = spoof_origin
-                end
-
-                local travel = target - final_origin
-                local direction = travel["Magnitude"] > 0.01 and travel["Unit"] or vector3_new(0, 0, 1)
-
-                for i = 1, count do
-                    local value = args[i]
-
-                    if typeof(value) == "Vector3" then
-                        local magnitude2 = value["Magnitude"]
-
-                        if i == hit_index then
-                            args[i] = target
-                            changed = true
-                        elseif i == origin_index and spoof then
-                            args[i] = spoof_origin
-                            changed = true
-                        elseif magnitude2 <= 10 and i > hit_index then
-                            args[i] = direction
-                            changed = true
-                        end
-                    elseif typeof(value) == "CFrame" then
-                        local frame_offset = value - value["Position"]
-
-                        if i == hit_index then
-                            args[i] = frame_offset + target
-                            changed = true
-                        elseif i == origin_index and spoof then
-                            args[i] = frame_offset + spoof_origin
-                            changed = true
-                        end
-                    elseif typeof(value) == "table" then
-                        local table_value, table_changed = rewrite_table(value, target, spoof_origin, direction, spoof, 0)
-
-                        if table_changed then
-                            args[i] = table_value
-                            changed = true
-                        end
-                    elseif target_part and is_base_part(value) and get_character_head_part(value) then
-                        args[i] = target_part
-                        changed = true
-                    end
-                end
-
-                return changed
-            end
-
-            local function install_teleport_bullets_hook()
-                if teleport_bullets_hook_installed then
+            local teleport_bullet = function()
+                if not ragebot_aim_position or not local_gun or not local_tool then
                     return
                 end
 
-                local ok, metatable = pcall(getrawmetatable, game)
+                local right_hand = local_parts["RightHand"]
+                local backpack = local_player:FindFirstChild("Backpack")
 
-                if not ok or type(metatable) ~= "table" or type(metatable["__namecall"]) ~= "function" then
+                if not right_hand or not backpack then
                     return
                 end
 
-                local old_namecall = metatable["__namecall"]
-                local new = {}
+                local new_grip = (right_hand["CFrame"] * cframe_new(0, -1, 0, 1, 0, 0, 0, 0, 1, 0, -1, 0)):ToObjectSpace(cframe_new(ragebot_aim_position)):inverse()
 
-                for key, value in pairs(metatable) do
-                    new[key] = value
-                end
+                local local_tool = local_tool
 
-                new["__namecall"] = newcclosure(LPH_JIT_MAX(function(self, ...)
-                    local method = getnamecallmethod and getnamecallmethod()
-
-                    if method ~= "FireServer" or not flags["teleport_bullets"] then
-                        return old_namecall(self, ...)
-                    end
-
-                    if setthreadidentity then
-                        pcall(setthreadidentity, 4)
-                    end
-
-                    -- Only game scripts. Our own ragebot already sends the
-                    -- solved point; rewriting it again would double-apply the
-                    -- teleport and could trip our own tooling.
-                    local ok_caller, caller = pcall(function()
-                        return checkcaller and checkcaller()
-                    end)
-
-                    if ok_caller and caller then
-                        return old_namecall(self, ...)
-                    end
-
-                    if typeof(self) ~= "Instance" then
-                        return old_namecall(self, ...)
-                    end
-
-                    local class_name = self["ClassName"]
-
-                    if class_name ~= "RemoteEvent" and class_name ~= "UnreliableRemoteEvent" then
-                        return old_namecall(self, ...)
-                    end
-
-                    local count = select("#", ...)
-
-                    if count == 0 then
-                        return old_namecall(self, ...)
-                    end
-
-                    local args = {...}
-
-                    -- debug.info guard: never touch a call made by this
-                    -- script's own remotes even when checkcaller is missing.
-                    local debug_info = debug and (debug.info or debug.getinfo)
-
-                    if debug_info then
-                        for level = 3, 6 do
-                            local ok_info, source = pcall(debug_info, level, "s")
-
-                            if ok_info and type(source) == "string" then
-                                local lower = string.lower(source)
-
-                                if string.find(lower, "juju", 1, true) or string.find(lower, "opencode", 1, true) then
-                                    return old_namecall(self, ...)
-                                end
-                            end
-                        end
-                    end
-
-                    local ok_remote, shoot_remote = pcall(is_shoot_remote, self, args, count)
-
-                    if not ok_remote or not shoot_remote then
-                        return old_namecall(self, ...)
-                    end
-
-                    local ok_target, target, target_part = pcall(find_target_from_args, args, count)
-
-                    if not ok_target or not target then
-                        target, target_part = get_teleport_target()
-                    end
-
-                    if not target then
-                        return old_namecall(self, ...)
-                    end
-
-                    local ok_rewrite, changed = pcall(rewrite_fire_args, args, count, target, target_part)
-
-                    if not ok_rewrite or not changed then
-                        return old_namecall(self, ...)
-                    end
-
-                    return old_namecall(self, unpack(args, 1, count))
-                end))
-
-                teleport_bullets_hook_installed = pcall(setrawmetatable, game, new)
+                local old_grip = local_tool.Grip
+                local_tool.Parent = backpack
+                local_tool.Grip = new_grip
+                local_tool.Parent = local_character
+                run_service.PreRender:Wait()
+                local_tool.Parent = backpack
+                local_tool.Grip = old_grip
+                local_tool.Parent = local_character
             end
 
-            install_teleport_bullets_hook()
+            local update_teleport_bullets = function(tool)
+                if teleport_bullets_activated_connection then
+                    teleport_bullets_activated_connection:Disconnect()
+                    teleport_bullets_activated_connection = nil
+                end
+
+                if tool then
+                    teleport_bullets_activated_connection = create_connection(tool["Activated"], teleport_bullet)
+                end
+            end
 
             create_connection(menu_references["teleport_bullets"]["on_toggle_change"], function(value)
+                if teleport_bullets_connection then
+                    teleport_bullets_connection:Disconnect()
+                    teleport_bullets_connection = nil
+                end
+
+                if teleport_bullets_activated_connection then
+                    teleport_bullets_activated_connection:Disconnect()
+                    teleport_bullets_activated_connection = nil
+                end
+
                 if value then
-                    install_teleport_bullets_hook()
+                    teleport_bullets_connection = create_connection(signals["on_local_tool_equipped"], update_teleport_bullets)
+                    if local_tool then
+                        update_teleport_bullets(local_tool)
+                    end
                 end
             end)
         end
