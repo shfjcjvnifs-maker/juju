@@ -21,8 +21,9 @@ local TARGETS = {
     ["jujuHC"] = {
         name = "jujuHC",
         urls = {
-            "https://raw.githubusercontent.com/shfjcjvnifs-maker/juju/main/jujuHC.lua",
             "https://raw.githubusercontent.com/shfjcjvnifs-maker/juju/refs/heads/main/jujuHC.lua",
+            "https://raw.githubusercontent.com/shfjcjvnifs-maker/juju/main/jujuHC.lua",
+            "https://cdn.jsdelivr.net/gh/shfjcjvnifs-maker/juju@main/jujuHC.lua",
         },
         files = { "jujuHC.lua" },
     },
