@@ -21,6 +21,8 @@ local TARGETS = {
     },
 }
 
+local __loader_ui = nil
+
 -- > ( target picker )
 
 local function pick_target_ui()
@@ -36,44 +38,69 @@ local function pick_target_ui()
         end
     end
 
-    local parent = nil
-
-    if type(gethui) == "function" then
-        local ok, hui = pcall(gethui)
-        if ok and hui then
-            parent = hui
-        end
-    end
-
-    if not parent then
-        local ok, core = pcall(function()
-            return game:GetService("CoreGui")
-        end)
-        if ok and core then
-            parent = core
-        end
-    end
-
-    if not parent then
-        local players = game:GetService("Players")
-        local local_player = players and players.LocalPlayer
-        parent = local_player and local_player:FindFirstChildOfClass("PlayerGui")
-    end
-
-    if not parent then
+    if type(__loader_ui) ~= "function" then
         return nil
     end
 
+    local ok_mod, mod = pcall(__loader_ui)
+
+    if not ok_mod or type(mod) ~= "table" or type(mod.create) ~= "function" then
+        return nil
+    end
+
+    local ok_ui, loader = pcall(mod.create, {
+        fade_duration = 0.28,
+    })
+
+    if not ok_ui or type(loader) ~= "table" then
+        return nil
+    end
+
+    local root = loader.root
+    local outer = root and root:FindFirstChild("OuterFrame")
+    local inside = outer and outer:FindFirstChild("Inside")
+    local right_side = inside and inside:FindFirstChild("RightSide")
+    local section_border = right_side and right_side:FindFirstChild("SectionBorder")
+    local section_inside = section_border and section_border:FindFirstChild("SectionInside")
+
+    if not inside or not section_inside then
+        pcall(function()
+            loader:destroy()
+        end)
+
+        return nil
+    end
+
+    -- The picker is the same juju.beta shell as the loader; hide only the
+    -- progress pieces and use the sidebar for the build tabs.
+    local slider_holder = section_inside:FindFirstChild("LoadingSliderHolder")
+    if slider_holder then
+        slider_holder.Visible = false
+    end
+
+    local tab_loader = inside:FindFirstChild("TabLoader")
+    if tab_loader then
+        tab_loader.Visible = false
+    end
+
+    local tab_line = inside:FindFirstChild("TabLine")
+    if tab_line then
+        tab_line.Visible = false
+    end
+
+    local drag_overlay = root and root:FindFirstChild("DragOverlay")
+    if drag_overlay then
+        drag_overlay.Active = false
+        drag_overlay.Visible = false
+    end
+
+    local tween_service = game:GetService("TweenService")
     local state = {
         picked = nil,
         closed = false,
     }
 
-    local screen = nil
-    local panel = nil
-    local overlay = nil
     local buttons = {}
-    local tween_service = game:GetService("TweenService")
 
     local function tween(object, info, properties)
         local animation = tween_service:Create(object, info, properties)
@@ -81,226 +108,225 @@ local function pick_target_ui()
         return animation
     end
 
-    local function set_buttons_enabled(enabled)
-        for _, button in ipairs(buttons) do
-            button.Active = enabled
-        end
-    end
-
-    local function fade_out_and_close()
-        if state.closed then
+    local function add_fade(inst, prop, shown, hidden)
+        if not inst or not prop then
             return
         end
 
-        state.closed = true
-        set_buttons_enabled(false)
+        if type(loader.add_fade_target) == "function" then
+            pcall(loader.add_fade_target, loader, inst, prop, shown or 0, hidden or 1)
+        else
+            inst[prop] = shown or 0
+        end
+    end
 
-        local info = TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    local function apply_font(label, bold)
+        local font = loader.font
 
-        pcall(function()
-            if panel then
-                tween(panel, info, {
-                    GroupTransparency = 1,
-                    Position = UDim2.new(0.5, 0, 0.5, 12),
-                })
+        if font then
+            label.FontFace = font
+        elseif bold then
+            label.Font = Enum.Font.GothamBold
+        else
+            label.Font = Enum.Font.Gotham
+        end
+    end
+
+    local picker_objects = {}
+
+    local title = Instance.new("TextLabel")
+    title.Name = "PickerTitle"
+    title.Position = UDim2.fromOffset(0, 112)
+    title.Size = UDim2.new(1, 0, 0, 16)
+    title.BackgroundTransparency = 1
+    title.Text = "select build"
+    title.TextColor3 = Color3.fromRGB(197, 197, 197)
+    title.TextSize = 12
+    title.TextXAlignment = Enum.TextXAlignment.Center
+    title.TextYAlignment = Enum.TextYAlignment.Center
+    title.TextTransparency = 1
+    title.ZIndex = 9
+    apply_font(title, true)
+    title.Parent = section_inside
+    add_fade(title, "TextTransparency", 0)
+    picker_objects[#picker_objects + 1] = title
+
+    local status = Instance.new("TextLabel")
+    status.Name = "PickerStatus"
+    status.Position = UDim2.fromOffset(0, 132)
+    status.Size = UDim2.new(1, 0, 0, 12)
+    status.BackgroundTransparency = 1
+    status.Text = "choose a build"
+    status.TextColor3 = Color3.fromRGB(75, 72, 72)
+    status.TextSize = 11
+    status.TextXAlignment = Enum.TextXAlignment.Center
+    status.TextYAlignment = Enum.TextYAlignment.Center
+    status.TextTransparency = 1
+    status.ZIndex = 9
+    apply_font(status, false)
+    status.Parent = section_inside
+    add_fade(status, "TextTransparency", 0)
+    picker_objects[#picker_objects + 1] = status
+
+    local choices = {
+        { name = "juju", value = "juju" },
+        { name = "jujuHC", value = "jujuHC" },
+        { name = "auto", value = "auto" },
+    }
+
+    for index, choice in ipairs(choices) do
+        local tab = Instance.new("TextButton")
+        tab.Name = "Pick_" .. choice.value
+        tab.Position = UDim2.fromOffset(0, 73 + (index - 1) * 20)
+        tab.Size = UDim2.fromOffset(100, 18)
+        tab.BackgroundTransparency = 1
+        tab.BorderSizePixel = 0
+        tab.Text = ""
+        tab.AutoButtonColor = false
+        tab.Selectable = false
+        tab.Active = true
+        tab.ZIndex = 7
+        tab.Parent = inside
+        picker_objects[#picker_objects + 1] = tab
+
+        local bar = Instance.new("Frame")
+        bar.Name = "PickLine"
+        bar.Position = UDim2.fromOffset(0, 3)
+        bar.Size = UDim2.fromOffset(1, 12)
+        bar.BackgroundColor3 = Color3.fromRGB(154, 213, 222)
+        bar.BackgroundTransparency = 1
+        bar.BorderSizePixel = 0
+        bar.ZIndex = 8
+        bar.Parent = tab
+
+        local label = Instance.new("TextLabel")
+        label.Name = "PickLabel"
+        label.Position = UDim2.fromOffset(20, 0)
+        label.Size = UDim2.fromOffset(74, 18)
+        label.BackgroundTransparency = 1
+        label.Text = choice.name
+        label.TextColor3 = Color3.fromRGB(197, 197, 197)
+        label.TextSize = 12
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.TextYAlignment = Enum.TextYAlignment.Center
+        label.TextTransparency = 1
+        label.Active = false
+        label.ZIndex = 8
+        apply_font(label, false)
+        label.Parent = tab
+
+        add_fade(label, "TextTransparency", 0)
+        add_fade(bar, "BackgroundTransparency", 1, 1)
+
+        buttons[#buttons + 1] = {
+            button = tab,
+            bar = bar,
+            label = label,
+            value = choice.value,
+        }
+
+        tab.MouseEnter:Connect(function()
+            if state.closed or state.picked then
+                return
             end
 
-            if overlay then
-                tween(overlay, info, {
+            pcall(function()
+                tween(bar, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                    BackgroundTransparency = 0.5,
+                })
+                tween(label, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                    TextColor3 = Color3.fromRGB(255, 255, 255),
+                })
+            end)
+        end)
+
+        tab.MouseLeave:Connect(function()
+            if state.closed or state.picked then
+                return
+            end
+
+            pcall(function()
+                tween(bar, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
                     BackgroundTransparency = 1,
                 })
+                tween(label, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                    TextColor3 = Color3.fromRGB(197, 197, 197),
+                })
+            end)
+        end)
+
+        tab.MouseButton1Click:Connect(function()
+            if state.picked or state.closed then
+                return
             end
+
+            state.picked = choice.value
+
+            for _, entry in ipairs(buttons) do
+                entry.button.Active = false
+
+                if entry.value == choice.value then
+                    entry.bar.BackgroundTransparency = 0.5
+                    entry.label.TextColor3 = Color3.fromRGB(255, 255, 255)
+                else
+                    entry.bar.BackgroundTransparency = 1
+                    entry.label.TextColor3 = Color3.fromRGB(75, 72, 72)
+                end
+            end
+
+            if choice.value == "auto" then
+                status.Text = "checking place"
+            else
+                status.Text = "loading " .. choice.name
+            end
+
+            pcall(function()
+                tween(status, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                    TextColor3 = Color3.fromRGB(154, 213, 222),
+                })
+            end)
         end)
     end
 
-    local ok_gui = pcall(function()
-        screen = Instance.new("ScreenGui")
-        screen.Name = "juju_loader_picker"
-        screen.ResetOnSpawn = false
-        screen.IgnoreGuiInset = true
-        screen.DisplayOrder = 2147483647
-        screen.Parent = parent
+    -- After a build is picked, the picker becomes the progress loader:
+    -- hide the picker rows and restore the loader tab + slider in place.
+    local function finish_picker()
+        state.closed = true
 
-        overlay = Instance.new("Frame")
-        overlay.Size = UDim2.new(1, 0, 1, 0)
-        overlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-        overlay.BackgroundTransparency = 1
-        overlay.BorderSizePixel = 0
-        overlay.Parent = screen
-
-        panel = Instance.new("CanvasGroup")
-        panel.Size = UDim2.new(0, 400, 0, 264)
-        panel.Position = UDim2.new(0.5, 0, 0.5, 12)
-        panel.AnchorPoint = Vector2.new(0.5, 0.5)
-        panel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-        panel.BackgroundTransparency = 0
-        panel.BorderSizePixel = 0
-        panel.GroupTransparency = 1
-        panel.Parent = screen
-
-        local title = Instance.new("TextLabel")
-        title.Size = UDim2.new(1, -40, 0, 28)
-        title.Position = UDim2.new(0, 20, 0, 16)
-        title.BackgroundTransparency = 1
-        title.Text = "juju beta"
-        title.TextColor3 = Color3.fromRGB(255, 255, 255)
-        title.Font = Enum.Font.GothamBold
-        title.TextSize = 21
-        title.TextXAlignment = Enum.TextXAlignment.Left
-        title.Parent = panel
-
-        local subtitle = Instance.new("TextLabel")
-        subtitle.Size = UDim2.new(1, -40, 0, 18)
-        subtitle.Position = UDim2.new(0, 20, 0, 50)
-        subtitle.BackgroundTransparency = 1
-        subtitle.Text = "Select a build for place " .. tostring(game.PlaceId)
-        subtitle.TextColor3 = Color3.fromRGB(150, 150, 150)
-        subtitle.Font = Enum.Font.Gotham
-        subtitle.TextSize = 13
-        subtitle.TextXAlignment = Enum.TextXAlignment.Left
-        subtitle.Parent = panel
-
-        local choices = {
-            { name = "juju", badge = "main", value = "juju" },
-            { name = "jujuHC", badge = "universal", value = "jujuHC" },
-            { name = "Auto", badge = "place check", value = "auto" },
-        }
-
-        for index, choice in ipairs(choices) do
-            local row = Instance.new("TextButton")
-            row.Name = "row_" .. choice.value
-            row.Size = UDim2.new(1, -40, 0, 44)
-            row.Position = UDim2.new(0, 20, 0, 82 + (index - 1) * 48)
-            row.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-            row.BackgroundTransparency = 1
-            row.BorderSizePixel = 0
-            row.Text = ""
-            row.AutoButtonColor = false
-            row.Active = true
-            row.Parent = panel
-
-            local row_corner = Instance.new("UICorner")
-            row_corner.CornerRadius = UDim.new(0, 4)
-            row_corner.Parent = row
-
-            local row_padding = Instance.new("UIPadding")
-            row_padding.PaddingLeft = UDim.new(0, 12)
-            row_padding.Parent = row
-
-            local row_name = Instance.new("TextLabel")
-            row_name.Name = "row_name"
-            row_name.Size = UDim2.new(0, 0, 0, 0)
-            row_name.BackgroundTransparency = 1
-            row_name.Text = choice.name
-            row_name.TextColor3 = Color3.fromRGB(255, 255, 255)
-            row_name.Font = Enum.Font.GothamBold
-            row_name.TextSize = 15
-            row_name.TextXAlignment = Enum.TextXAlignment.Left
-            row_name.AutomaticSize = Enum.AutomaticSize.XY
-            row_name.LayoutOrder = 1
-            row_name.Active = false
-            row_name.Parent = row
-
-            local badge = Instance.new("TextLabel")
-            badge.Name = "badge"
-            badge.Size = UDim2.new(0, 0, 0, 20)
-            badge.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
-            badge.BackgroundTransparency = 0
-            badge.BorderSizePixel = 0
-            badge.Text = choice.badge
-            badge.TextColor3 = Color3.fromRGB(180, 180, 180)
-            badge.Font = Enum.Font.Gotham
-            badge.TextSize = 11
-            badge.TextXAlignment = Enum.TextXAlignment.Center
-            badge.AutomaticSize = Enum.AutomaticSize.X
-            badge.LayoutOrder = 2
-            badge.Active = false
-            badge.Parent = row
-
-            local badge_corner = Instance.new("UICorner")
-            badge_corner.CornerRadius = UDim.new(0, 4)
-            badge_corner.Parent = badge
-
-            local badge_padding = Instance.new("UIPadding")
-            badge_padding.PaddingLeft = UDim.new(0, 6)
-            badge_padding.PaddingRight = UDim.new(0, 6)
-            badge_padding.Parent = badge
-
-            local layout = Instance.new("UIListLayout")
-            layout.FillDirection = Enum.FillDirection.Horizontal
-            layout.Padding = UDim.new(0, 8)
-            layout.VerticalAlignment = Enum.VerticalAlignment.Center
-            layout.SortOrder = Enum.SortOrder.LayoutOrder
-            layout.Parent = row
-
-            buttons[#buttons + 1] = row
-
-            row.MouseEnter:Connect(function()
-                if not state.closed then
-                    pcall(function()
-                        tween(row, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-                            BackgroundColor3 = Color3.fromRGB(28, 28, 28),
-                            BackgroundTransparency = 0.15,
-                        })
-                    end)
-                end
-            end)
-
-            row.MouseLeave:Connect(function()
-                if not state.closed then
-                    pcall(function()
-                        tween(row, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-                            BackgroundColor3 = Color3.fromRGB(0, 0, 0),
-                            BackgroundTransparency = 1,
-                        })
-                    end)
-                end
-            end)
-
-            row.MouseButton1Click:Connect(function()
-                if state.picked or state.closed then
-                    return
-                end
-
-                state.picked = choice.value
-                set_buttons_enabled(false)
-
-                pcall(function()
-                    tween(row, TweenInfo.new(0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-                        BackgroundColor3 = Color3.fromRGB(154, 213, 222),
-                        BackgroundTransparency = 0.1,
-                    })
-                end)
-
-                fade_out_and_close()
-            end)
-        end
-    end)
-
-    if not ok_gui or not screen then
-        if screen then
+        for _, inst in ipairs(picker_objects) do
             pcall(function()
-                screen:Destroy()
+                inst.Visible = false
             end)
         end
 
-        return nil
+        if slider_holder then
+            slider_holder.Visible = true
+        end
+
+        if tab_loader then
+            tab_loader.Visible = true
+        end
+
+        if tab_line then
+            tab_line.Visible = true
+        end
+
+        if drag_overlay then
+            drag_overlay.Active = true
+            drag_overlay.Visible = true
+        end
     end
 
-    local ok_fade_in = pcall(function()
-        tween(overlay, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-            BackgroundTransparency = 0.35,
-        })
-        tween(panel, TweenInfo.new(0.26, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-            GroupTransparency = 0,
-            Position = UDim2.new(0.5, 0, 0.5, 0),
-        })
+    local ok_fade = pcall(function()
+        loader:fade_in(0.28)
     end)
 
-    if not ok_fade_in then
-        overlay.BackgroundTransparency = 0.35
-        panel.GroupTransparency = 0
-        panel.Position = UDim2.new(0.5, 0, 0.5, 0)
+    if not ok_fade then
+        pcall(function()
+            loader:destroy()
+        end)
+
+        return nil
     end
 
     local deadline = os.time() + 30
@@ -310,28 +336,26 @@ local function pick_target_ui()
     end
 
     if state.picked then
-        task.wait(0.26)
-    else
-        fade_out_and_close()
-        task.wait(0.26)
+        task.wait(0.12)
+        return state.picked, loader, finish_picker
     end
+
+    state.closed = true
 
     pcall(function()
-        if screen then
-            screen:Destroy()
-        end
+        loader:fade_out(0.28)
     end)
 
-    if state.picked == "juju" or state.picked == "jujuHC" then
-        return state.picked
-    end
+    pcall(function()
+        loader:destroy()
+    end)
 
     return nil
 end
 
 -- > ( embedded uiloader )
 
-local function __loader_ui()
+__loader_ui = function()
 -- > ( juju.beta ui loader )
 -- Scale: 432 x 198, centered on screen, draggable anywhere on the window,
 -- authentic juju.lua shell (background #000000 outer frame, #060606 left sidebar + right_side #000000
@@ -1420,6 +1444,7 @@ function Uiloader.create(options)
         gui = gui,
         root = root,
         manifest = ASSET_MANIFEST,
+        font = UI_FONT_FACE,
     }
 
     function controller:set_spin_angle(deg)
@@ -1478,6 +1503,22 @@ function Uiloader.create(options)
         if current_index ~= nil and total_count ~= nil then
             count_label.Text = tostring(current_index) .. " / " .. tostring(total_count) .. " files"
         end
+    end
+
+    function controller:add_fade_target(inst, prop, shown, hidden)
+        if destroyed or not inst or not prop then
+            return
+        end
+
+        local target = {
+            inst = inst,
+            prop = prop,
+            shown = shown or 0,
+            hidden = hidden or 1,
+        }
+
+        fade_targets[#fade_targets + 1] = target
+        inst[prop] = target.hidden
     end
 
     local active_fade_tweens = {}
@@ -1724,9 +1765,9 @@ end
 
 -- > ( loader ui )
 
-local picked_target = pick_target_ui()
+local picked_target, picker_loader, finish_picker = pick_target_ui()
 
-if picked_target then
+if picked_target == "juju" or picked_target == "jujuHC" then
     local env = (type(getgenv) == "function" and getgenv()) or _G
     if env then
         env["juju_loader_target"] = picked_target
@@ -1738,19 +1779,25 @@ local target = TARGETS[target_name]
 
 local loader = nil
 
-do
-    local ok, mod = pcall(__loader_ui)
+if picker_loader and type(finish_picker) == "function" then
+    -- Seamless handoff: the picker shell becomes the progress loader.
+    loader = picker_loader
+    pcall(finish_picker)
+else
+    do
+        local ok, mod = pcall(__loader_ui)
 
-    if ok and type(mod) == "table" and type(mod.create) == "function" then
-        local ok_ui, ui = pcall(mod.create, {
-            fade_duration = 0.28,
-        })
+        if ok and type(mod) == "table" and type(mod.create) == "function" then
+            local ok_ui, ui = pcall(mod.create, {
+                fade_duration = 0.28,
+            })
 
-        if ok_ui and ui then
-            loader = ui
-            pcall(function()
-                loader:fade_in(0.28)
-            end)
+            if ok_ui and ui then
+                loader = ui
+                pcall(function()
+                    loader:fade_in(0.28)
+                end)
+            end
         end
     end
 end
