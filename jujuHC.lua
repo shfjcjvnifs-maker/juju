@@ -328,7 +328,7 @@ local menu = {
     theme = ""
 }
 
-do
+;(function()
     -- > ( file system )
 
     do
@@ -8310,7 +8310,7 @@ do
             }))
         end
     end
-end
+end)()
 
 -- > ( cheat signals )
 
@@ -10256,7 +10256,7 @@ end
 
 -- > ( movement )
 
-do
+;(function()
     menu_references["movement_section"] = menu["groups"]["misc."]:create_section("main", "movement", 1, 0.6, 0)
 
     -- >> ( removals )
@@ -10850,7 +10850,7 @@ do
     create_connection(menu_references["spinbot_speed"]["on_slider_change"], LPH_NO_VIRTUALIZE(function(value)
         spinbot_speed = value * spinbot_multiplier
     end))
-end
+end)()
 
 -- > ( misc )
 
@@ -11578,7 +11578,7 @@ end
 
 -- > ( world visuals )
 
-do
+;(function()
     local lighting = game:GetService("Lighting")
     local sky = find_first_child_of_class(lighting, "Sky") or create_instance("Sky", {["Parent"] = lighting, ["Name"] = "\0"})
 
@@ -12290,11 +12290,11 @@ do
             color_correction["TintColor"] = value
         end
     end)
-end
+end)()
 
 -- >> ( game )
 
-do
+;(function()
     local numbersequencekeypointnew = NumberSequenceKeypoint["new"]
     local numbersequencenew = NumberSequence["new"]
 
@@ -15461,11 +15461,11 @@ do
             blur_intensity = value*110
         end)
     end
-end
+end)()
 
 -- >> ( player visuals )
 
-do
+;(function()
     menu_references["esp_section"] = menu["groups"]["visuals"]:create_section("players", "player esp", 1, 0.6, 0)
     menu_references["esp"] = menu_references["esp_section"]:create_element({["name"] = "enabled"}, {["toggle"] = {["flag"] = "esp"}})
         menu_references["esp_settings"] = menu_references["esp"]:create_settings()
@@ -18358,11 +18358,11 @@ do
             end
         end
     end)
-end
+end)()
 
 -- > ( self esp)
 
-do
+;(function()
     local character_highlight_connection = nil
     local character_highlight = nil
         menu_references["character_highlight_settings"] = menu_references["character_highlight"]:create_settings()
@@ -19168,11 +19168,11 @@ do
             menu_references["particle_aura_color"]["on_color_change"]:Fire(flags["particle_aura_color"])
         end)
     end
-end
+end)()
 
 -- > ( ragebot / hvh )
 
-do
+;(function()
     menu_references["general_section"] = menu["groups"]["main"]:create_section("ragebot", "general", 1, 0.7)
         menu_references["ragebot_enabled"] = menu_references["general_section"]:create_element({["name"] = "ragebot"}, {["toggle"] = {["flag"] = "ragebot"}})
         menu_references["auto_fire"] = menu_references["general_section"]:create_element({["name"] = "auto fire"}, {["toggle"] = {["flag"] = "auto_fire", ["default"] = true}})
@@ -22587,7 +22587,7 @@ do
             outline["Transparency"] = value
         end
     end)
-end
+end)()
 
 -- > ( legitbot )
 
@@ -22595,7 +22595,7 @@ local set_aim_assist_position = nil
 local set_silent_aim_position = nil
 local get_silent_aim_position = nil
 
-do
+;(function()
     -- >> ( mouse hook )
 
     local silent_aim_position = nil
@@ -24037,7 +24037,7 @@ do
             end)
         end
     end
-end
+end)()
 
 -- > ( finalization )
 
@@ -24104,7 +24104,7 @@ end
 
 -- > ( addons )
 
-do
+;(function()
     local running_image_data = base64_decode("iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAMAAABhq6zVAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAGUExURf///wAAAFXC034AAAACdFJOU/8A5bcwSgAAAAlwSFlzAAAOxAAADsQBlSsOGwAAABh0RVh0U29mdHdhcmUAUGFpbnQuTkVUIDUuMS4y+7wDtgAAALZlWElmSUkqAAgAAAAFABoBBQABAAAASgAAABsBBQABAAAAUgAAACgBAwABAAAAAgAAADEBAgAQAAAAWgAAAGmHBAABAAAAagAAAAAAAAAMdwEA6AMAAAx3AQDoAwAAUGFpbnQuTkVUIDUuMS4yAAMAAJAHAAQAAAAwMjMwAaADAAEAAAABAAAABaAEAAEAAACUAAAAAAAAAAIAAQACAAQAAABSOTgAAgAHAAQAAAAwMTAwAAAAAO7qLRjGzAACAAAALElEQVQYV2NgRALoHAYGmAiEA+XCOGAenAPiYucgKwOxoRwwE8xBACQOIyMAHuoAZdtKAY0AAAAASUVORK5CYII=")
     local lua_image_data = base64_decode("iVBORw0KGgoAAAANSUhEUgAAAA4AAAAOCAMAAAAolt3jAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAGUExURf///wAAAFXC034AAAACdFJOU/8A5bcwSgAAAAlwSFlzAAAOwgAADsIBFShKgAAAABh0RVh0U29mdHdhcmUAUGFpbnQuTkVUIDUuMS4y+7wDtgAAALZlWElmSUkqAAgAAAAFABoBBQABAAAASgAAABsBBQABAAAAUgAAACgBAwABAAAAAgAAADEBAgAQAAAAWgAAAGmHBAABAAAAagAAAAAAAADydgEA6AMAAPJ2AQDoAwAAUGFpbnQuTkVUIDUuMS4yAAMAAJAHAAQAAAAwMjMwAaADAAEAAAABAAAABaAEAAEAAACUAAAAAAAAAAIAAQACAAQAAABSOTgAAgAHAAQAAAAwMTAwAAAAAI47wVfTF7xOAAAAOklEQVQYV3WMQQoAMAjD6v8/PVLrwMHKZhMPqlY+qgamvwYF8uDUXUNW86OMVktq1r4OBYnVkE6WVh04mgCJI6LjgQAAAABJRU5ErkJggg==")
     local addon_list = menu_references["addon_list"]
@@ -24806,11 +24806,11 @@ do
             new_notification(text, type, time)
         end)
     }
-end
+end)()
 
 -- > ( finish loading )
 
-do
+;(function()
     local username = "?"
     local avatar = nil
 
@@ -25319,4 +25319,4 @@ do
         spawn(menu["load_config"], autoload)
         menu["new_notification"]("autoloaded config "..autoload, 1)
     end
-end
+end)()
