@@ -2,6 +2,14 @@ repeat task["wait"]() until game:IsLoaded()
 
 local __juju_ok, __juju_err = xpcall(function()
 
+-- juju.lua targets the main Da Hood place. Copies and custom hoods are routed
+-- to jujuHC.lua by Loader.lua, which is universal; this build's data offsets
+-- assume the main game.
+if game["PlaceId"] ~= 2788229376 then
+    warn("[juju] this build runs only in the main Da Hood place; use Loader.lua")
+    return
+end
+
 if (identifyexecutor() == "AWP" or identifyexecutor() == "Nihon") then
     cleardrawcache()
 end
@@ -1275,7 +1283,7 @@ function Uiloader.create(options)
         { inst = logo_viewport, prop = "ImageTransparency", shown = 0, hidden = 1 },
         { inst = title_label, prop = "TextTransparency", shown = 0, hidden = 1 },
         { inst = slider_line, prop = "BackgroundTransparency", shown = 0.5, hidden = 1 },
-        { inst = percent_label, prop = "TextTransparency", shown = 0, hidden = 1 },
+        { inst = percent_label, prop = "TextTransparency", shown = 0, hidden = 1 },
         { inst = asset_label, prop = "TextTransparency", shown = 0, hidden = 1 },
         { inst = slider_border, prop = "BackgroundTransparency", shown = 0, hidden = 1 },
         { inst = slider_stroke, prop = "Transparency", shown = 0, hidden = 1 },
