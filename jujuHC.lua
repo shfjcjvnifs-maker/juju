@@ -95,6 +95,20 @@ local out = Enum["EasingDirection"]["Out"]
 local connections = {}
 local addon_data = {}
 local heartbeat = {}
+
+-- Lists filled later in the chunk that unload has to empty. They cannot be
+-- referenced directly: a local declared after the unload closure is a global
+-- inside it, and indexing that raises and aborts the whole unload.
+local unload_lists = {}
+
+-- Executor Drawing objects are not children of the menu gui, so destroying the
+-- gui leaves every ESP box and HUD element on screen. They are held here and
+-- destroyed one by one.
+local unload_drawings = {}
+
+-- Every instance the script builds, kept as weak keys so destroyed ones drop
+-- out on their own. Unload walks it and destroys what is still alive.
+local created_instances = setmetatable({}, {["__mode"] = "k"})
 local flags = {
     ["keybinds_position"] = {15, camera["ViewportSize"]["Y"]/2 - 10},
     ["loaded_addons"] = {},
@@ -112,6 +126,8 @@ end)
 
 local create_instance = LPH_NO_VIRTUALIZE(function(class, properties)
     local instance = Instance["new"](class)
+
+    created_instances[instance] = true
 
     for property, value in properties do
         instance[property] = value
@@ -8047,7 +8063,33 @@ do
         local unload = getgenv()["_JUJU"]
 
         if unload then
-            unload()
+            -- Guarded: a teardown that throws halfway is why a re-execute used
+            -- to crash. Whatever it missed, the rawmetatable restore below
+            -- still puts the executor's own function back.
+            pcall(unload)
+        end
+
+        -- The previous run may have died without restoring this. Putting the
+        -- real function back here means `_OG` below is the executor's, not a
+        -- hook belonging to a script that no longer exists.
+        do
+            local previous = getgenv()["_OG"]
+
+            if type(previous) == "function" then
+                pcall(function()
+                    getgenv()["getrawmetatable"] = previous
+                    getrawmetatable = previous
+                end)
+            end
+
+            local previous_set = getgenv()["_OG_SET"]
+
+            if type(previous_set) == "function" then
+                pcall(function()
+                    getgenv()["setrawmetatable"] = previous_set
+                    setrawmetatable = previous_set
+                end)
+            end
         end
 
         local env = getgenv()
@@ -8055,19 +8097,72 @@ do
 
         local metatables = {}
 
-        local real = getrawmetatable
+        -- Always wrap the executor's own getrawmetatable, never a previous
+        -- run's hook. `_OG` is written once and kept across runs for exactly
+        -- that reason: on a re-execute the live getrawmetatable is already our
+        -- last wrapper, and wrapping it again is what turned the second run into
+        -- a stack of closures over a dead script.
+        local real = env["_OG"] or getrawmetatable
         env["_OG"] = real
+
+        -- A previous run that never unloaded left its wrapper live. Replace the
+        -- global rather than nesting on top of it.
         env["getrawmetatable"] = newcclosure(function(instance)
             local mt = real(instance)
-            metatables[instance] = mt
+
+            -- First sighting wins. A later read returns the hooked metatable,
+            -- and storing that would install the hook again on unload.
+            if metatables[instance] == nil then
+                metatables[instance] = mt
+            end
 
             return mt
         end)
 
         getrawmetatable = env["getrawmetatable"]
 
+        -- Same idea for writes. Every setrawmetatable records the metatable that
+        -- was there first, so unload can put all of them back whether or not the
+        -- call site kept its own copy. `_OG_SET` persists across runs for the
+        -- same reason `_OG` does.
+        local raw_getmetatable = real
+        local real_setrawmetatable = env["_OG_SET"] or setrawmetatable
+        local touched_metatables = {}
+
+        if real_setrawmetatable then
+            env["_OG_SET"] = real_setrawmetatable
+
+            env["setrawmetatable"] = newcclosure(function(instance, mt)
+                if touched_metatables[instance] == nil then
+                    local ok, original = pcall(raw_getmetatable, instance)
+
+                    if ok and original then
+                        touched_metatables[instance] = original
+                    end
+                end
+
+                return real_setrawmetatable(instance, mt)
+            end)
+
+            setrawmetatable = env["setrawmetatable"]
+        end
+
         env["_JUJU"] = function()
             env["_JUJU"] = nil
+
+            -- Every loop is unregistered so a late spawn cannot run a job that
+            -- belongs to a dead session.
+            for i = #heartbeat, 1, -1 do
+                heartbeat[i] = nil
+            end
+
+            for i = 1, #unload_lists do
+                local list = unload_lists[i]
+
+                for j = #list, 1, -1 do
+                    list[j] = nil
+                end
+            end
 
             for _, group in menu["groups"] do
                 for _, tab in group["tabs"] do
@@ -8077,7 +8172,7 @@ do
                             local element = elements[i]
 
                             if element["toggle_flag"] then
-                                element:set_toggle(false)
+                                pcall(element.set_toggle, element, false)
                             end
                         end
                     end
@@ -8090,27 +8185,85 @@ do
                     local element = elements[i]
 
                     if element["toggle_flag"] then
-                        element:set_toggle(false)
+                        pcall(element.set_toggle, element, false)
                     end
                 end
             end
 
             for i = 1, #connections do
-                connections[i]:Disconnect()
+                pcall(connections[i].Disconnect, connections[i])
             end
 
-            context_action_service:UnbindAction(context_action_click)
-            context_action_service:UnbindAction(context_action_typing)
-            context_action_service:UnbindCoreAction(context_action_typing_core)
-            context_action_service:UnbindAction(context_action_scroll)
+            for i = #connections, 1, -1 do
+                connections[i] = nil
+            end
 
+            -- The menu hides the system cursor while it is open and drives it
+            -- from its own drawing. That drawing dies with the gui, so the
+            -- cursor has to come back or the pointer disappears for good.
+            pcall(function()
+                user_input_service["MouseIconEnabled"] = true
+            end)
+
+            pcall(context_action_service.UnbindAction, context_action_service, context_action_click)
+            pcall(context_action_service.UnbindAction, context_action_service, context_action_typing)
+            pcall(context_action_service.UnbindCoreAction, context_action_service, context_action_typing_core)
+            pcall(context_action_service.UnbindAction, context_action_service, context_action_scroll)
+
+            -- `_OG` is deliberately kept: the next run needs it to skip past any
+            -- wrapper this one leaves behind.
             env["getrawmetatable"] = real
 
+            -- Restored ahead of the drawing pass, because that pass talks to the
+            -- executor and a throw in it must not leave hooks installed.
             for instance, mt in metatables do
-                setrawmetatable(instance, mt)
+                pcall(setrawmetatable, instance, mt)
             end
 
-            old_drawing["_UNLOAD"]()
+            metatables = {}
+
+            -- Undo the writes too, through the executor's own function. The Aim
+            -- frame in particular is never put back by the feature that hooked
+            -- it, so without this a leftover fake metatable survives the unload.
+            if real_setrawmetatable then
+                env["setrawmetatable"] = real_setrawmetatable
+                setrawmetatable = real_setrawmetatable
+
+                for instance, mt in touched_metatables do
+                    pcall(real_setrawmetatable, instance, mt)
+                end
+            end
+
+            touched_metatables = {}
+
+            for i = 1, #unload_drawings do
+                local drawing = unload_drawings[i]
+
+                pcall(function()
+                    drawing:Destroy()
+                end)
+                pcall(function()
+                    drawing["Visible"] = false
+                end)
+            end
+
+            for i = #unload_drawings, 1, -1 do
+                unload_drawings[i] = nil
+            end
+
+            for instance in created_instances do
+                pcall(function()
+                    instance:Destroy()
+                end)
+            end
+
+            -- Executors that only reclaim drawings through the cache call need
+            -- this on top of the per-object Destroy above.
+            pcall(cleardrawcache)
+
+            if old_drawing and old_drawing["_UNLOAD"] then
+                pcall(old_drawing["_UNLOAD"])
+            end
         end
 
         -- >> ( data )
@@ -8270,6 +8423,8 @@ local clone = workspace["Clone"]
 local player_data = {}
 local anti_aim = {}
 
+unload_lists[#unload_lists+1] = anti_aim
+
 -- > ( cheat functions )
 
 local create_real_drawing = LPH_NO_VIRTUALIZE(function(class, properties)
@@ -8278,6 +8433,8 @@ local create_real_drawing = LPH_NO_VIRTUALIZE(function(class, properties)
     for property, value in properties do
         object[property] = value
     end
+
+    unload_drawings[#unload_drawings+1] = object
 
     return object
 end)
@@ -8288,6 +8445,8 @@ local create_fake_drawing = LPH_NO_VIRTUALIZE(function(class, properties)
     for property, value in properties do
         object[property] = value
     end
+
+    unload_drawings[#unload_drawings+1] = object
 
     return object
 end)
@@ -15252,6 +15411,11 @@ do
         menu_references["friendly_armor_bar_color"] = menu_references["armor_bar_settings"]:create_element({["name"] = "friendly color"}, {["colorpicker"] = {["color_flag"] = "friendly_armor_bar_color", ["transparency_flag"] = "friendly_armor_bar_transparency", ["default_color"] = color3_fromrgb(0, 155, 255), ["default_transparency"] = 0}})
         menu_references["enemy_armor_bar_gradient"]:set_visible(false)
         menu_references["friendly_armor_bar_gradient"]:set_visible(false)
+        menu_references["armor_bar_live"] = menu_references["armor_bar_settings"]:create_element({["name"] = "live gradient"}, {["toggle"] = {["flag"] = "armor_bar_live", ["default"] = true}})
+        menu_references["armor_bar_live_speed"] = menu_references["armor_bar_settings"]:create_element({["name"] = "live speed"}, {["slider"] = {["flag"] = "armor_bar_live_speed", ["min"] = 1, ["max"] = 100, ["default"] = 25, ["suffix"] = "%", ["prefix"] = ""}})
+        menu_references["armor_bar_live_direction"] = menu_references["armor_bar_settings"]:create_element({["name"] = "live direction"}, {["dropdown"] = {["flag"] = "armor_bar_live_direction", ["options"] = {"down", "up"}, ["default"] = {"down"}, ["requires_one"] = true}})
+        menu_references["armor_bar_live_repeats"] = menu_references["armor_bar_settings"]:create_element({["name"] = "color repeats"}, {["slider"] = {["flag"] = "armor_bar_live_repeats", ["min"] = 1, ["max"] = 8, ["default"] = 2, ["suffix"] = "x", ["prefix"] = ""}})
+        menu_references["armor_bar_live_blend"] = menu_references["armor_bar_settings"]:create_element({["name"] = "middle mix"}, {["slider"] = {["flag"] = "armor_bar_live_blend", ["min"] = 0, ["max"] = 100, ["default"] = 100, ["suffix"] = "%", ["prefix"] = "", ["min_text"] = "hard"}})
 
     menu_references["health_bar"] = menu_references["esp_section"]:create_element({["name"] = "health bar"}, {["toggle"] = {["flag"] = "health_bar"}})
         menu_references["health_bar_settings"] = menu_references["health_bar"]:create_settings()
@@ -15264,6 +15428,11 @@ do
         menu_references["friendly_health_bar_color"] = menu_references["health_bar_settings"]:create_element({["name"] = "friendly color"}, {["colorpicker"] = {["color_flag"] = "friendly_health_bar_color", ["transparency_flag"] = "friendly_health_bar_transparency", ["default_color"] = color3_fromrgb(0, 255, 0), ["default_transparency"] = 0}})
         menu_references["enemy_health_bar_gradient"]:set_visible(false)
         menu_references["friendly_health_bar_gradient"]:set_visible(false)
+        menu_references["health_bar_live"] = menu_references["health_bar_settings"]:create_element({["name"] = "live gradient"}, {["toggle"] = {["flag"] = "health_bar_live", ["default"] = true}})
+        menu_references["health_bar_live_speed"] = menu_references["health_bar_settings"]:create_element({["name"] = "live speed"}, {["slider"] = {["flag"] = "health_bar_live_speed", ["min"] = 1, ["max"] = 100, ["default"] = 25, ["suffix"] = "%", ["prefix"] = ""}})
+        menu_references["health_bar_live_direction"] = menu_references["health_bar_settings"]:create_element({["name"] = "live direction"}, {["dropdown"] = {["flag"] = "health_bar_live_direction", ["options"] = {"down", "up"}, ["default"] = {"down"}, ["requires_one"] = true}})
+        menu_references["health_bar_live_repeats"] = menu_references["health_bar_settings"]:create_element({["name"] = "color repeats"}, {["slider"] = {["flag"] = "health_bar_live_repeats", ["min"] = 1, ["max"] = 8, ["default"] = 2, ["suffix"] = "x", ["prefix"] = ""}})
+        menu_references["health_bar_live_blend"] = menu_references["health_bar_settings"]:create_element({["name"] = "middle mix"}, {["slider"] = {["flag"] = "health_bar_live_blend", ["min"] = 0, ["max"] = 100, ["default"] = 100, ["suffix"] = "%", ["prefix"] = "", ["min_text"] = "hard"}})
 
     menu_references["health_text"] = menu_references["esp_section"]:create_element({["name"] = "health text"}, {["toggle"] = {["flag"] = "health_text"}})
         menu_references["health_text_settings"] = menu_references["health_text"]:create_settings()
@@ -15782,15 +15951,274 @@ do
 
     local bar_half_gradient_data = base64_decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAACACAYAAADK+QP0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAACUSURBVChTbVHRFQMhDFLjEA7T/ecqoXBRe3woJIjm2dZanwH0XLABIyLEDLJdls+ypYznmCxkB2Q22GUMa+wmAUPcLr1gy+JbA9gZfWQV5RoujWhnCrtjzDnVsLkWvpRRnPeyUNZslLooxSMvVvIKUCggn3HdoQFL5v4LBd7yCDUqwGcrhVCe8efzw6+U3WKcX9H7F7u/BOHzO9gQAAAAAElFTkSuQmCC")
 
+    local live_bars = {}
+    do
+        local live_bar_states = {}
+        local live_bar_gui = nil
+
+        unload_lists[#unload_lists+1] = live_bar_states
+        -- Scroll phase per bar kind (4 = health, 10 = armor). The "live" toggle
+        -- of a kind freezes its phase, so its gradient stays still where it is.
+        local live_bar_phases = {[4] = 0, [10] = 0}
+        -- Per bar kind: speed in cycles per second, direction 1 = down / -1 = up,
+        -- repeats = colour cycles shown on a full bar, blend 0 = hard stripes to
+        -- 1 = smooth. Defaults match the original look (0.5 cps, 2 repeats).
+        local live_bar_settings = {
+            [4] = {speed = 0.5, direction = 1, repeats = 2, blend = 1},
+            [10] = {speed = 0.5, direction = 1, repeats = 2, blend = 1}
+        }
+
+        -- Slice layout for one bar kind. n repeats need n + 1 slices, each 1/n of
+        -- the bar, so a spare slice always covers the gap the scroll opens.
+        local live_bar_positions = LPH_NO_VIRTUALIZE(function(phase, repeats)
+            local positions = {}
+            for i = 1, repeats + 1 do
+                positions[i] = udim2_new(0, 0, (i - 1 - phase) / repeats, 0)
+            end
+            return positions
+        end)
+
+        -- Keep animation outside the ESP layout cache: stationary players still
+        -- need their slices to move. All bars share one non-yielding frame callback.
+        local animate_live_bars = LPH_NO_VIRTUALIZE(function(dt)
+            local moved = {}
+            for kind, live in pairs({[4] = live_bars.health_live, [10] = live_bars.armor_live}) do
+                if live then
+                    local settings = live_bar_settings[kind]
+                    live_bar_phases[kind] = (live_bar_phases[kind] + dt * settings.speed * settings.direction) % 1
+                    moved[kind] = live_bar_positions(live_bar_phases[kind], settings.repeats)
+                end
+            end
+            for state in pairs(live_bar_states) do
+                local positions = moved[state.kind]
+                if positions and state.fill.Visible then
+                    local slices = state.slices
+                    for i = 1, #slices do
+                        slices[i].Position = positions[i]
+                    end
+                end
+            end
+        end)
+
+        local create_live_bar = LPH_NO_VIRTUALIZE(function(bar_colors, bar_opacities, index, rendering)
+            if not live_bar_gui then
+                live_bar_gui = create_instance("ScreenGui", {
+                    Name = "juju_live_bars",
+                    IgnoreGuiInset = true,
+                    ResetOnSpawn = false,
+                    DisplayOrder = 10,
+                    ZIndexBehavior = Enum.ZIndexBehavior.Global,
+                    Parent = core_gui
+                })
+                heartbeat[#heartbeat + 1] = animate_live_bars
+            end
+
+            -- The outline must also use GUI rendering. A filled Drawing outline
+            -- would otherwise cover the UIGradient in external drawing backends.
+            local outline = create_instance("Frame", {
+                BackgroundColor3 = bar_colors[index + 1],
+                BackgroundTransparency = 1 - bar_opacities[index + 1],
+                BorderSizePixel = 0,
+                Size = udim2_new(0, 0, 0, 0),
+                Visible = false,
+                ZIndex = 2,
+                Parent = live_bar_gui
+            })
+            local fill = create_instance("Frame", {
+                BackgroundTransparency = 1,
+                BorderSizePixel = 0,
+                ClipsDescendants = true,
+                Size = udim2_new(0, 0, 0, 0),
+                Visible = false,
+                ZIndex = 3,
+                Parent = live_bar_gui
+            })
+            local state = {kind = index, fill = fill, slices = {}, gradients = {}, destroyed = false}
+            local properties = {}
+            for i = 1, 3 do
+                properties[i] = {
+                    Color = bar_colors[index + i - 1],
+                    Transparency = bar_opacities[index + i - 1],
+                    Position = zero_size,
+                    Size = zero_size,
+                    Visible = rendering
+                }
+            end
+
+            -- Each slice runs A / mix / B / mix / A, including the join. Slices
+            -- are rebuilt when the repeat count changes, so they live in a helper.
+            local refresh_colors, refresh_opacity
+
+            state.build_slices = function()
+                for i = 1, #state.slices do
+                    state.slices[i]:Destroy()
+                end
+                state.slices, state.gradients = {}, {}
+
+                local repeats = live_bar_settings[index].repeats
+                local positions = live_bar_positions(live_bar_phases[index], repeats)
+                for i = 1, repeats + 1 do
+                    local slice = create_instance("Frame", {
+                        BackgroundColor3 = color3_fromrgb(255, 255, 255),
+                        BackgroundTransparency = 0,
+                        BorderSizePixel = 0,
+                        Size = udim2_new(1, 0, 1 / repeats, 0),
+                        Position = positions[i],
+                        ZIndex = 3,
+                        Parent = fill
+                    })
+                    state.slices[i] = slice
+                    state.gradients[i] = create_instance("UIGradient", {
+                        Rotation = 90,
+                        Parent = slice
+                    })
+                end
+
+                if refresh_colors then
+                    refresh_colors()
+                    refresh_opacity()
+                end
+            end
+
+            -- Keypoint layout as roles (1 = A, 2 = mix, 3 = B). Blend 1 is a fully
+            -- smooth A / B / A ramp; blend 0 is hard stripes. The width is kept
+            -- inside (0.001, 0.249) so keypoint times always strictly increase.
+            local gradient_layout = function()
+                local w = clamp(0.25 * live_bar_settings[index].blend, 0.001, 0.249)
+                return {
+                    {0, 1}, {0.25 - w, 1}, {0.25, 2}, {0.25 + w, 3},
+                    {0.75 - w, 3}, {0.75, 2}, {0.75 + w, 1}, {1, 1}
+                }
+            end
+
+            refresh_colors = function()
+                local first, second = properties[1].Color, properties[3].Color
+                local values = {first, color3_lerp(first, second, 0.5), second}
+                local keypoints = {}
+                for i, point in ipairs(gradient_layout()) do
+                    keypoints[i] = ColorSequenceKeypoint.new(point[1], values[point[2]])
+                end
+                local sequence = ColorSequence.new(keypoints)
+                for i = 1, #state.gradients do state.gradients[i].Color = sequence end
+            end
+            refresh_opacity = function()
+                -- Drawing values are opacity; UIGradient values are transparency.
+                local first = 1 - clamp(properties[1].Transparency, 0, 1)
+                local second = 1 - clamp(properties[3].Transparency, 0, 1)
+                local values = {first, (first + second) * 0.5, second}
+                local keypoints = {}
+                for i, point in ipairs(gradient_layout()) do
+                    keypoints[i] = NumberSequenceKeypoint.new(point[1], values[point[2]])
+                end
+                local sequence = NumberSequence.new(keypoints)
+                for i = 1, #state.gradients do state.gradients[i].Transparency = sequence end
+            end
+            state.refresh_colors = refresh_colors
+            state.refresh_opacity = refresh_opacity
+            state.build_slices()
+            local refresh_visibility = function()
+                local size = properties[1].Size
+                fill.Visible = properties[1].Visible and properties[3].Visible
+                    and size.X > 0 and size.Y > 0
+                local outline_size = properties[2].Size
+                outline.Visible = properties[2].Visible and outline_size.X > 0 and outline_size.Y > 0
+            end
+            local destroy_bar = function()
+                if state.destroyed then return end
+                state.destroyed = true
+                live_bar_states[state] = nil
+                fill:Destroy()
+                outline:Destroy()
+            end
+
+            -- Preserve the drawing slots consumed by layout, color pickers, fades,
+            -- visibility updates and teardown without changing those call sites.
+            local proxies = {}
+            for i = 1, 3 do
+                local role = i
+                local values = properties[role]
+                proxies[role] = setmetatable({}, {
+                    __index = function(_, key)
+                        if key == "Destroy" or key == "Remove" then return destroy_bar end
+                        if key == "Destroyed" then return state.destroyed end
+                        return values[key]
+                    end,
+                    __newindex = function(_, key, value)
+                        if state.destroyed or values[key] == value then return end
+                        values[key] = value
+                        if key == "Color" then
+                            if role == 2 then outline.BackgroundColor3 = value else refresh_colors() end
+                        elseif key == "Transparency" then
+                            if role == 2 then
+                                outline.BackgroundTransparency = 1 - clamp(value, 0, 1)
+                            else
+                                refresh_opacity()
+                            end
+                        elseif key == "Position" or key == "Size" then
+                            -- The old image overlay had a one-pixel overhang. The
+                            -- primary fill alone owns the clipped gradient bounds.
+                            if role ~= 3 then
+                                local frame = role == 2 and outline or fill
+                                frame[key] = udim2_new(0, value.X, 0, value.Y)
+                            end
+                            if key == "Size" then refresh_visibility() end
+                        elseif key == "Visible" then
+                            refresh_visibility()
+                        end
+                    end
+                })
+            end
+            refresh_colors()
+            refresh_opacity()
+            live_bar_states[state] = true
+            return proxies[1], proxies[2], proxies[3]
+        end)
+
+        -- Menu setters. kind is 4 for health bars and 10 for armor bars.
+        local set_live_bar_repeats = LPH_NO_VIRTUALIZE(function(kind, repeats)
+            repeats = clamp(floor(repeats + 0.5), 1, 8)
+            if live_bar_settings[kind].repeats == repeats then return end
+            live_bar_settings[kind].repeats = repeats
+            for state in pairs(live_bar_states) do
+                if state.kind == kind then state.build_slices() end
+            end
+        end)
+
+        local set_live_bar_blend = LPH_NO_VIRTUALIZE(function(kind, blend)
+            live_bar_settings[kind].blend = clamp(blend, 0, 1)
+            for state in pairs(live_bar_states) do
+                if state.kind == kind then
+                    state.refresh_colors()
+                    state.refresh_opacity()
+                end
+            end
+        end)
+
+
+        live_bars.health_live = true
+        live_bars.armor_live = true
+        live_bars.settings = live_bar_settings
+        live_bars.create = create_live_bar
+        live_bars.set_repeats = set_live_bar_repeats
+        live_bars.set_blend = set_live_bar_blend
+    end
+
     local create_health_bar = LPH_NO_VIRTUALIZE(function(data)
         local rendering = data[6]
         local drawings = data[5]
         local status = data[1]
 
+        data[20] = nil
+
         data[11] = data[9]
 
         local colors = colors[status]
         local transparencies = transparencies[status]
+
+        if do_health_bar_gradient then
+            drawings[4], drawings[5], drawings[6] = live_bars.create(colors, transparencies, 4, rendering)
+            return
+        end
 
         drawings[4] = create_real_drawing("Square", {
             Color = colors[4],
@@ -15808,16 +16236,6 @@ do
             Transparency = transparencies[5],
             Visible = rendering
         })
-
-        if do_health_bar_gradient then
-            drawings[6] = create_real_drawing("Image", {
-                Color = colors[6],
-                Transparency = transparencies[6],
-                ZIndex = 4,
-                Data = bar_half_gradient_data,
-                Visible = rendering
-            })
-        end
     end)
 
     local update_health_bar = LPH_NO_VIRTUALIZE(function(data, new_health, difference)
@@ -15829,6 +16247,7 @@ do
     end)
 
     local create_armor_bar = LPH_NO_VIRTUALIZE(function(data)
+        data[20] = nil
         local rendering = data[6]
         local drawings = data[5]
         local status = data[1]
@@ -15841,6 +16260,11 @@ do
 
         local colors = colors[status]
         local transparencies = transparencies[status]
+
+        if do_armor_bar_gradient then
+            drawings[10], drawings[11], drawings[12] = live_bars.create(colors, transparencies, 10, rendering)
+            return
+        end
 
         drawings[10] = create_real_drawing("Square", {
             Color = colors[10],
@@ -15862,20 +16286,6 @@ do
         if hide then
             drawings[10]["Size"] = zero_size
             drawings[11]["Size"] = zero_size
-        end
-
-        if do_armor_bar_gradient then
-            drawings[12] = create_real_drawing("Image", {
-                Color = colors[12],
-                Transparency = transparencies[12],
-                ZIndex = 4,
-                Data = bar_half_gradient_data,
-                Visible = rendering
-            })
-
-            if hide then
-                drawings[12]["Size"] = zero_size
-            end
         end
     end)
 
@@ -16889,6 +17299,34 @@ do
             end
         end))
 
+        create_connection(menu_references["health_bar_live"]["on_toggle_change"], LPH_NO_VIRTUALIZE(function(value)
+            live_bars.health_live = value
+        end))
+
+        create_connection(menu_references["armor_bar_live"]["on_toggle_change"], LPH_NO_VIRTUALIZE(function(value)
+            live_bars.armor_live = value
+        end))
+
+        -- Live gradient tuning for both bars. Speed 100% = 2 cycles per
+        -- second, so the 25% default keeps the original 0.5 cycles per second.
+        for kind, prefix in pairs({[4] = "health_bar_live", [10] = "armor_bar_live"}) do
+            create_connection(menu_references[prefix.."_speed"]["on_slider_change"], LPH_NO_VIRTUALIZE(function(value)
+                live_bars.settings[kind].speed = value / 50
+            end))
+
+            create_connection(menu_references[prefix.."_direction"]["on_dropdown_change"], LPH_NO_VIRTUALIZE(function(value)
+                live_bars.settings[kind].direction = value[1] == "up" and -1 or 1
+            end))
+
+            create_connection(menu_references[prefix.."_repeats"]["on_slider_change"], LPH_NO_VIRTUALIZE(function(value)
+                live_bars.set_repeats(kind, value)
+            end))
+
+            create_connection(menu_references[prefix.."_blend"]["on_slider_change"], LPH_NO_VIRTUALIZE(function(value)
+                live_bars.set_blend(kind, value / 100)
+            end))
+        end
+
         create_connection(menu_references["health_bar"]["on_toggle_change"], LPH_NO_VIRTUALIZE(function(value)
             do_health_bar = value
             armor_bar_offset = value and vector2_new(11, 1) or vector2_new(6, 1)
@@ -17801,19 +18239,69 @@ do
         menu_references["character_highlight_color"] = menu_references["character_highlight_settings"]:create_element({["name"] = "color"}, {["colorpicker"] = {["color_flag"] = "character_highlight_color", ["default_color"] = color3_fromrgb(255, 255, 255), ["transparency_flag"] = "character_highlight_transparency", ["default_transparency"] =  0.9}})
         menu_references["character_highlight_outline"] = menu_references["character_highlight_settings"]:create_element({["name"] = "outline"}, {["colorpicker"] = {["color_flag"] = "character_highlight_outline_color", ["default_color"] = color3_fromrgb(255, 255, 255), ["transparency_flag"] = "character_highlight_outline_transparency", ["default_transparency"] =  0.9}})
 
-    local apply_character_highlight = LPH_NO_VIRTUALIZE(function()
-        character_highlight["FillTransparency"] = 1
-        character_highlight["OutlineTransparency"] = 1
+    -- local_character is only written after the character hooks finish waiting
+    -- on the body, so when the script is executed into a game that is already
+    -- running it can still hold the previous body (or nil). Player.Character is
+    -- the live one; the cache is only the fallback while the live body is gone.
+    local get_character_highlight_target = LPH_NO_VIRTUALIZE(function()
+        local character = local_player["Character"]
 
-        tween(character_highlight, {["FillTransparency"] = flags["character_highlight_transparency"], ["OutlineTransparency"] = flags["character_highlight_outline_transparency"]}, quad, out, 0.3)
+        if character and character["Parent"] ~= nil then
+            return character
+        end
+
+        if local_character and local_character["Parent"] ~= nil then
+            return local_character
+        end
+
+        return nil
+    end)
+
+    -- Rebuilding the Adornee is what makes the engine recalculate the
+    -- silhouette. A model that receives parts after the first Adornee write
+    -- does not update on its own, which is why the self highlight only showed
+    -- up after the player reset into a body that was already fully built.
+    local refresh_character_highlight = LPH_NO_VIRTUALIZE(function(character, fade)
+        if not character_highlight then
+            return
+        end
+
+        character = character or get_character_highlight_target()
+
+        if not character then
+            return
+        end
+
+        character_highlight["FillColor"] = flags["character_highlight_color"]
+        character_highlight["OutlineColor"] = flags["character_highlight_outline_color"]
+        character_highlight["Enabled"] = true
+
+        if fade then
+            character_highlight["FillTransparency"] = 1
+            character_highlight["OutlineTransparency"] = 1
+
+            tween(character_highlight, {["FillTransparency"] = flags["character_highlight_transparency"], ["OutlineTransparency"] = flags["character_highlight_outline_transparency"]}, quad, out, 0.3)
+        else
+            character_highlight["FillTransparency"] = flags["character_highlight_transparency"]
+            character_highlight["OutlineTransparency"] = flags["character_highlight_outline_transparency"]
+        end
 
         character_highlight["Adornee"] = nil
         character_highlight["Parent"] = nil
-        character_highlight["Adornee"] = local_character
+        character_highlight["Adornee"] = character
         character_highlight["Parent"] = hui
     end)
 
-    create_connection(menu_references["character_highlight"]["on_toggle_change"], LPH_NO_VIRTUALIZE(function(value)
+    local apply_character_highlight = LPH_NO_VIRTUALIZE(function(character)
+        -- on_local_character_added fires with a placeholder, not the model.
+        if typeof(character) ~= "Instance" then
+            character = nil
+        end
+
+        refresh_character_highlight(character, true)
+    end)
+
+    local destroy_character_highlight = LPH_NO_VIRTUALIZE(function()
         if character_highlight_connection then
             character_highlight_connection:Disconnect()
             character_highlight_connection = nil
@@ -17823,23 +18311,37 @@ do
             destroy(character_highlight)
             character_highlight = nil
         end
+    end)
+
+    local create_character_highlight = LPH_NO_VIRTUALIZE(function()
+        if character_highlight then
+            return character_highlight
+        end
+
+        character_highlight = create_instance("Highlight", {
+            FillColor = flags["character_highlight_color"],
+            FillTransparency = 1,
+            OutlineColor = flags["character_highlight_outline_color"],
+            OutlineTransparency = 1,
+            DepthMode = Enum["HighlightDepthMode"]["AlwaysOnTop"],
+            Enabled = true,
+            Parent = hui
+        })
+
+        character_highlight_connection = create_connection(signals["on_local_character_added"], apply_character_highlight)
+
+        return character_highlight
+    end)
+
+    create_connection(menu_references["character_highlight"]["on_toggle_change"], LPH_NO_VIRTUALIZE(function(value)
+        destroy_character_highlight()
+
+        -- The menu writes the flag before firing, so this raises the floor when
+        -- the feature is on and hands it back when it is off.
 
         if value then
-            character_highlight = create_instance("Highlight", {
-                FillColor = flags["character_highlight_color"],
-                FillTransparency = flags["character_highlight_transparency"],
-                OutlineColor = flags["character_highlight_outline_color"],
-                OutlineTransparency = flags["character_highlight_outline_transparency"],
-                DepthMode = Enum["HighlightDepthMode"]["AlwaysOnTop"],
-                Enabled = true,
-                Parent = hui
-            })
-
-            character_highlight_connection = create_connection(signals["on_local_character_added"], apply_character_highlight)
-
-            if local_character then
-                apply_character_highlight()
-            end
+            create_character_highlight()
+            apply_character_highlight()
         end
     end))
 
@@ -17866,6 +18368,87 @@ do
             character_highlight["OutlineTransparency"] = value
         end
     end))
+
+    -- The character appearance and the game's fully-loaded marker can both
+    -- arrive after the first apply. Refresh then without the fade, so the new
+    -- parts are included and the body does not flash.
+    create_connection(local_player["CharacterAppearanceLoaded"], LPH_NO_VIRTUALIZE(function(character)
+        if flags["character_highlight"] and character == local_player["Character"] then
+            if character_highlight and character_highlight["Parent"] == nil then
+                destroy_character_highlight()
+            end
+
+            if not character_highlight then
+                create_character_highlight()
+            end
+
+            refresh_character_highlight(character, false)
+        end
+    end))
+
+    create_connection(signals["on_local_character_loaded"], LPH_NO_VIRTUALIZE(function()
+        if flags["character_highlight"] then
+            if character_highlight and character_highlight["Parent"] == nil then
+                destroy_character_highlight()
+            end
+
+            if not character_highlight then
+                create_character_highlight()
+            end
+
+            refresh_character_highlight(nil, false)
+        end
+    end))
+
+    -- A config load writes the flags without firing the toggle callback, so the
+    -- self highlight would never be created from a saved config. This runs once
+    -- when the menu is built and once after each config load. Respawns and late
+    -- appearance changes are covered by the character signals above, so there
+    -- is no per-frame loop to keep the highlight alive.
+    local sync_character_highlight = LPH_NO_VIRTUALIZE(function()
+
+        if not flags["character_highlight"] then
+            if character_highlight then
+                destroy_character_highlight()
+            end
+
+            return
+        end
+
+        -- A parent cleared by the client or a disabled Highlight renders
+        -- nothing. Rebuild it through the same path the toggle uses.
+        if character_highlight and character_highlight["Parent"] == nil then
+            destroy_character_highlight()
+        end
+
+        if not character_highlight then
+            create_character_highlight()
+        end
+
+        local character = get_character_highlight_target()
+
+        if not character then
+            if character_highlight["Adornee"] ~= nil then
+                character_highlight["Adornee"] = nil
+            end
+
+            if character_highlight["Enabled"] then
+                character_highlight["Enabled"] = false
+            end
+
+            return
+        end
+
+        if character_highlight["Adornee"] ~= character
+            or character_highlight["Parent"] ~= hui
+            or not character_highlight["Enabled"]
+        then
+            apply_character_highlight(character)
+        end
+    end)
+
+    sync_character_highlight()
+    create_connection(menu["on_config_loaded"], sync_character_highlight)
 
     menu_references["custom_character"] = menu_references["local_character_section"]:create_element({["name"] = "custom character"}, {["toggle"] = {["flag"] = "custom_character"}})
     menu_references["custom_character_settings"] = menu_references["custom_character"]:create_settings()
@@ -23534,13 +24117,202 @@ do
     local username = "?"
     local avatar = nil
 
-    local LRM_LinkedDiscordID = LRM_LinkedDiscordID or "320421345324433418"
-    if LRM_LinkedDiscordID then
-        local s, data = pcall(function()
-            local body = request({
-                ["Url"] = "https://discord-lookup-api-pied.vercel.app/v1/user/"..LRM_LinkedDiscordID,
+    -- Luashield (https://luashield-vjts.onrender.com) hands the loader the Discord
+    -- snapshot of the key that ran the script: handshake user { Id, Username,
+    -- DisplayName, Avatar }, published as SEC_Discord*. Older loaders carry only
+    -- the id (handshake vars.DiscordID / SEC_DiscordID) with no name or avatar, so
+    -- those still resolve through a lookup keyed on that id.
+    local discord_id = nil
+    local discord_username = ""
+    local discord_display = ""
+    local discord_avatar = ""
+
+    local function read_global(name)
+        local env = getgenv() or _G
+        local value = env and env[name]
+
+        if value == nil then
+            value = _G[name]
+        end
+
+        return value
+    end
+
+    local function clean(value)
+        if type(value) ~= "string" then
+            return ""
+        end
+
+        value = value:gsub("%c", "")
+        value = value:match("^%s*(.-)%s*$") or ""
+
+        return #value > 64 and value:sub(1, 64) or value
+    end
+
+    local function is_snowflake(value)
+        if typeof(value) ~= "string" or #value < 17 or #value > 20 then
+            return false
+        end
+
+        return value:match("^%d+$") ~= nil
+    end
+
+    local function http_get(url, headers)
+        local senders = {}
+
+        if type(request) == "function" then
+            senders[#senders + 1] = request
+        end
+
+        if type(http_request) == "function" then
+            senders[#senders + 1] = http_request
+        end
+
+        if type(syn) == "table" and type(syn.request) == "function" then
+            senders[#senders + 1] = syn.request
+        end
+
+        for index = 1, #senders do
+            local sender = senders[index]
+            local ok, body = pcall(sender, {
+                ["Url"] = url,
                 ["Method"] = "GET",
-                ["Headers"] = {
+                ["Headers"] = headers
+            })
+
+            if ok and type(body) == "table" then
+                local status = body["StatusCode"] or body["status"]
+                local content = body["Body"] or body["body"]
+
+                if (status == nil or status == 200) and type(content) == "string" then
+                    return content
+                end
+            end
+        end
+
+        local ok, body = pcall(function()
+            return game:HttpGet(url)
+        end)
+
+        if ok and type(body) == "string" and #body > 0 then
+            return body
+        end
+
+        return nil
+    end
+
+    -- No custom avatar: index = (snowflake >> 22) % 6. Done on the decimal string
+    -- so a 17-20 digit id never loses bits to float precision.
+    local function default_avatar(id)
+        local remainder = 0
+
+        for i = 1, #id do
+            remainder = (remainder * 10 + tonumber(id:sub(i, i))) % 25165824
+        end
+
+        return ("https://cdn.discordapp.com/embed/avatars/%d.png"):format(floor(remainder / 4194304))
+    end
+
+    do
+        local names = { "SEC_DiscordID", "LRM_LinkedDiscordID" }
+
+        for index = 1, #names do
+            local value = read_global(names[index])
+
+            if is_snowflake(value) then
+                discord_id = value
+                break
+            end
+        end
+
+        discord_username = clean(read_global("SEC_DiscordUsername"))
+        discord_display = clean(read_global("SEC_DiscordDisplayName"))
+
+        local published_avatar = read_global("SEC_DiscordAvatar")
+
+        if type(published_avatar) == "string" and published_avatar:match("^https://") then
+            discord_avatar = published_avatar
+        end
+    end
+
+    -- The loader is not the only way in. The same snapshot answers on the public
+    -- handshake for anyone running the file with a licence key set, so pull it
+    -- whenever the sealed globals left a name or an avatar missing.
+    if discord_username == "" or discord_avatar == "" then
+        local key = nil
+
+        pcall(function()
+            key = script_key
+        end)
+
+        if type(key) ~= "string" or #key == 0 then
+            key = read_global("script_key")
+        end
+
+        if type(key) == "string" and #key > 0 then
+            local hwid = "unknown"
+
+            pcall(function()
+                if type(gethwid) == "function" then
+                    hwid = gethwid()
+                else
+                    hwid = game:GetService("RbxAnalyticsService"):GetClientId()
+                end
+            end)
+
+            local body = http_get(
+                "https://luashield-vjts.onrender.com/api/v1/handshake?key="..http_service:UrlEncode(key)
+                    .."&hwid="..http_service:UrlEncode(tostring(hwid))
+                    .."&script=pjxSE16vW44&name=juju.beta"
+            )
+
+            local ok, result = pcall(function()
+                return body and http_service:JSONDecode(body) or nil
+            end)
+
+            if ok and type(result) == "table" and result["ok"] then
+                local user = result["user"]
+
+                if type(user) == "table" then
+                    local id = user["Id"]
+
+                    if is_snowflake(id) then
+                        discord_id = id
+                    end
+
+                    if discord_username == "" then
+                        discord_username = clean(user["Username"])
+                    end
+
+                    if discord_display == "" then
+                        discord_display = clean(user["DisplayName"])
+                    end
+
+                    local link = user["Avatar"]
+
+                    if discord_avatar == "" and type(link) == "string" and link:match("^https://") then
+                        discord_avatar = link
+                    end
+                end
+
+                if not discord_id then
+                    local vars = result["vars"]
+                    local id = vars and vars["DiscordID"]
+
+                    if is_snowflake(id) then
+                        discord_id = id
+                    end
+                end
+            end
+        end
+    end
+
+    -- Id-only loaders: the handle and avatar still come from a lookup on that id.
+    if discord_id and (discord_avatar == "" or discord_username == "") then
+        local ok, data = pcall(function()
+            local body = http_get(
+                "https://discord-lookup-api-pied.vercel.app/v1/user/"..discord_id,
+                {
                     ["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                     ["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
                     ["Accept-Language"] = "en-US,en;q=0.9",
@@ -23549,23 +24321,53 @@ do
                     ["DNT"] = "1",
                     ["Upgrade-Insecure-Requests"] = "1"
                 }
-            })
+            )
 
-            if body and body["StatusCode"] == 200 then
-                local username = http_service:JSONDecode(body["Body"])
-
-                if username then
-                    return username
-                end
+            if type(body) == "string" then
+                return http_service:JSONDecode(body)
             end
         end)
 
-        username = (s and data) and "@"..data["username"] or "?"
+        if ok and type(data) == "table" then
+            if discord_username == "" and type(data["username"]) == "string" then
+                discord_username = clean(data["username"])
+            end
 
-        if username ~= "?" then
-            s, avatar = pcall(function()
-                return game:HttpGet(data["avatar"]["link"])
-            end)
+            local link = data["avatar"] and data["avatar"]["link"]
+
+            if discord_avatar == "" and type(link) == "string" and link:match("^https://") then
+                discord_avatar = link
+            end
+        end
+    end
+
+    -- No custom avatar anywhere: deterministic embed avatar derived from the id.
+    if discord_avatar == "" and discord_id then
+        discord_avatar = default_avatar(discord_id)
+    end
+
+    -- Avatar bytes for the notification icon. Only real image data is passed on,
+    -- so a failed download never ends up as the notification image.
+    if discord_avatar ~= "" then
+        local bytes = http_get(discord_avatar)
+
+        if type(bytes) == "string" and (bytes:sub(1, 4) == "\137PNG" or bytes:sub(1, 3) == "GIF") then
+            avatar = bytes
+        end
+    end
+
+    -- Display name wins, with the handle kept alongside when both exist.
+    do
+        local shown = discord_display ~= "" and discord_display or discord_username
+
+        if shown ~= "" then
+            if discord_display ~= "" and discord_username ~= "" and discord_username ~= discord_display then
+                shown = shown.." (@"..discord_username..")"
+            elseif discord_display == "" then
+                shown = "@"..shown
+            end
+
+            username = shown
         end
     end
 
@@ -23576,6 +24378,10 @@ do
         avatar or base64_decode("iVBORw0KGgoAAAANSUhEUgAAAA4AAAAOCAYAAAAfSC3RAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsQAAA7EAZUrDhsAAAAYdEVYdFNvZnR3YXJlAFBhaW50Lk5FVCA1LjEuMvu8A7YAAAC2ZVhJZklJKgAIAAAABQAaAQUAAQAAAEoAAAAbAQUAAQAAAFIAAAAoAQMAAQAAAAIAAAAxAQIAEAAAAFoAAABphwQAAQAAAGoAAAAAAAAADHcBAOgDAAAMdwEA6AMAAFBhaW50Lk5FVCA1LjEuMgADAACQBwAEAAAAMDIzMAGgAwABAAAAAQAAAAWgBAABAAAAlAAAAAAAAAACAAEAAgAEAAAAUjk4AAIABwAEAAAAMDEwMAAAAADu6i0YxswAAgAAAGBJREFUOE+tkdEOgCAIRdH//+eCO3BG16TWeUEYB5zK7xyKHynNI9g1G01BRJZYDOjqjPpN3G2lG2cpGqIWOWUW89nwFHSPIG95DRNLwypNl6sapcmMqjiemAmPX/ANkROaKkTiEnqHHQAAAABJRU5ErkJggg==")
     )
 
+    new_notification(
+        "please only use alternate accounts! read announcements for more info",
+        1
+    )
     local overlay = core_gui["RobloxPromptGui"]["promptOverlay"]
 
     create_connection(overlay["ChildAdded"], LPH_JIT_MAX(function(error) -- >> genuinely if this ever gets leaked.. DONT ask
