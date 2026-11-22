@@ -12374,6 +12374,7 @@ end)()
         menu_references["drawing_crosshair_line_size"] = menu_references["drawing_crosshair_settings"]:create_element({["name"] = "line size"}, {["slider"] = {["flag"] = "drawing_crosshair_line_size", ["min"] = 4, ["max"] = 30, ["suffix"] = "px", ["default"] = 5}})
         menu_references["drawing_crosshair_gap_size"] = menu_references["drawing_crosshair_settings"]:create_element({["name"] = "gap size"}, {["slider"] = {["flag"] = "drawing_crosshair_gap_size", ["min"] = 1, ["max"] = 30, ["suffix"] = "px", ["default"] = 2}})
         menu_references["drawing_crosshair_rotation"] = menu_references["drawing_crosshair_settings"]:create_element({["name"] = "rotating"}, {["slider"] = {["flag"] = "drawing_crosshair_rotation", ["min"] = 0, ["max"] = 100, ["suffix"] = "%", ["min_text"] = "off"}})
+        menu_references["drawing_crosshair_lerp"] = menu_references["drawing_crosshair_settings"]:create_element({["name"] = "lerp"}, {["slider"] = {["flag"] = "drawing_crosshair_lerp", ["min"] = 1, ["max"] = 100, ["suffix"] = "%", ["default"] = 27, ["max_text"] = "instant"}})
         menu_references["center_panel"] = menu_references["hud_section"]:create_element({["name"] = "center panel"}, {["toggle"] = {["flag"] = "center_panel"}})
         menu_references["center_panel_settings"] = menu_references["center_panel"]:create_settings()
         menu_references["center_panel_show_state"] = menu_references["center_panel_settings"]:create_element({["name"] = "show state"}, {["toggle"] = {["flag"] = "center_panel_show_state"}})
@@ -12722,6 +12723,7 @@ end)()
         local lines = {}
 
         local gap_offset, length, rot = 10, 6, 0
+        local crosshair_lerp = 0.27
         local cos = math["cos"]
         local sin = math["sin"]
         local pi = math["pi"]
@@ -12734,6 +12736,8 @@ end)()
         local old_position = nil
         local animation = "none"
         local connection = nil
+        local last_drawn_x = nil
+        local last_drawn_y = nil
 
         local do_drawing_crosshair = LPH_JIT_MAX(function(dt)
             local new_position = nil
@@ -12757,9 +12761,29 @@ end)()
                 old_position = new_position
             end
     
-            local position = old_position + (new_position - old_position) * dt * 16
+            local lerp_alpha = crosshair_lerp >= 1 and 1 or 1 - (1 - crosshair_lerp) ^ (dt * 60)
+            local position = old_position + (new_position - old_position) * lerp_alpha
+
+            -- snap onto the target once close enough so the idle frame skip below can kick in
+            local snap_x = new_position["X"] - position["X"]
+            local snap_y = new_position["Y"] - position["Y"]
+
+            if snap_x * snap_x + snap_y * snap_y < 0.0025 then
+                position = new_position
+            end
+
             local px = position["X"]
             local py = position["Y"]
+
+            -- Crosshair at rest: no mouse movement, no rotation, no animation,
+            -- and the arm set is already on screen. Nothing below can change it,
+            -- so the frame is skipped before any trig runs.
+            if animation == "none" and rotation == 0 and px == last_drawn_x and py == last_drawn_y then
+                return
+            end
+
+            last_drawn_x = px
+            last_drawn_y = py
     
             local anim_time = clock()
     
@@ -12861,6 +12885,8 @@ end)()
             end
 
             old_position = nil
+            last_drawn_x = nil
+            last_drawn_y = nil
 
             for i = 1, #lines do
                 lines[i]:Destroy()
@@ -12983,18 +13009,25 @@ end)()
 
         create_connection(menu_references["drawing_crosshair_line_size"]["on_slider_change"], function(value)
             length = value
+            last_drawn_x = nil
         end)
 
         create_connection(menu_references["drawing_crosshair_gap_size"]["on_slider_change"], function(value)
             gap_offset = value
+            last_drawn_x = nil
         end)
 
         create_connection(menu_references["drawing_crosshair_rotation"]["on_slider_change"], function(value)
             rotation = value*5
+            last_drawn_x = nil
         end)
 
         create_connection(menu_references["drawing_crosshair_animation_speed"]["on_slider_change"], function(value)
             animation_speed = value/100
+        end)
+
+        create_connection(menu_references["drawing_crosshair_lerp"]["on_slider_change"], function(value)
+            crosshair_lerp = value/100
         end)
 
         create_connection(menu_references["drawing_crosshair_line_thickness"]["on_slider_change"], function(value)
@@ -15475,101 +15508,69 @@ end)()
         menu_references["box_settings"] = menu_references["box"]:create_settings()
         menu_references["box_outline"] = menu_references["box_settings"]:create_element({["name"] = "outline"}, {["colorpicker"] = {["color_flag"] = "box_outline_color", ["transparency_flag"] = "box_outline_transparency", ["default_color"] = color3_fromrgb(30, 30, 30), ["default_transparency"] = 0}})
         menu_references["box_color"] = menu_references["box_settings"]:create_element({["name"] = "color"}, {["colorpicker"] = {["color_flag"] = "box_color", ["transparency_flag"] = "box_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0}})
-        menu_references["enemy_box_color"] = menu_references["box_settings"]:create_element({["name"] = "enemy color"}, {["colorpicker"] = {["color_flag"] = "enemy_box_color", ["transparency_flag"] = "enemy_box_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0}})
-        menu_references["friendly_box_color"] = menu_references["box_settings"]:create_element({["name"] = "friendly color"}, {["colorpicker"] = {["color_flag"] = "friendly_box_color", ["transparency_flag"] = "friendly_box_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0}})
 
     menu_references["name"] = menu_references["esp_section"]:create_element({["name"] = "name"}, {["toggle"] = {["flag"] = "name"}})
         menu_references["name_settings"] = menu_references["name"]:create_settings()
         menu_references["name_use_display"] = menu_references["name_settings"]:create_element({["name"] = "use display name"}, {["toggle"] = {["flag"] = "name_use_display"}})
         menu_references["name_color"] = menu_references["name_settings"]:create_element({["name"] = "color"}, {["colorpicker"] = {["color_flag"] = "name_color", ["transparency_flag"] = "name_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0}})
-        menu_references["enemy_name_color"] = menu_references["name_settings"]:create_element({["name"] = "enemy color"}, {["colorpicker"] = {["color_flag"] = "enemy_name_color", ["transparency_flag"] = "enemy_name_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0}})
-        menu_references["friendly_name_color"] = menu_references["name_settings"]:create_element({["name"] = "friendly color"}, {["colorpicker"] = {["color_flag"] = "friendly_name_color", ["transparency_flag"] = "friendly_name_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0}})
 
     menu_references["image"] = menu_references["esp_section"]:create_element({["name"] = "image"}, {["toggle"] = {["flag"] = "image"}})
         menu_references["image_settings"] = menu_references["image"]:create_settings()
         menu_references["image_value"] = menu_references["image_settings"]:create_element({["name"] = "image"}, {["dropdown"] = {["options"] = {"gradient fill", "fill"}, ["requires_one"] = true, ["flag"] = "image_value", ["default"] = {"gradient fill"}}})
         menu_references["image_color"] = menu_references["image_settings"]:create_element({["name"] = "color"}, {["colorpicker"] = {["color_flag"] = "image_color", ["transparency_flag"] = "image_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0.85}})
-        menu_references["enemy_image_color"] = menu_references["image_settings"]:create_element({["name"] = "enemy color"}, {["colorpicker"] = {["color_flag"] = "enemy_image_color", ["transparency_flag"] = "enemy_image_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0.85}})
-        menu_references["friendly_image_color"] = menu_references["image_settings"]:create_element({["name"] = "friendly color"}, {["colorpicker"] = {["color_flag"] = "friendly_image_color", ["transparency_flag"] = "friendly_image_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0.85}})
 
     menu_references["chams"] = menu_references["esp_section"]:create_element({["name"] = "chams"}, {["toggle"] = {["flag"] = "chams"}})
         menu_references["chams_settings"] = menu_references["chams"]:create_settings()
         menu_references["chams_behind_walls"] = menu_references["chams_settings"]:create_element({["name"] = "behind walls"}, {["toggle"] = {["flag"] = "chams_behind_walls", ["default"] = true}})
         menu_references["chams_color"] = menu_references["chams_settings"]:create_element({["name"] = "color"}, {["colorpicker"] = {["color_flag"] = "chams_color", ["transparency_flag"] = "chams_transparency", ["default_color"] = color3_fromrgb(249, 217, 255), ["default_transparency"] = 0.5}})
-        menu_references["enemy_chams_color"] = menu_references["chams_settings"]:create_element({["name"] = "enemy color"}, {["colorpicker"] = {["color_flag"] = "enemy_chams_color", ["transparency_flag"] = "enemy_chams_transparency", ["default_color"] = color3_fromrgb(249, 217, 255), ["default_transparency"] = 0.5}})
-        menu_references["friendly_chams_color"] = menu_references["chams_settings"]:create_element({["name"] = "friendly color"}, {["colorpicker"] = {["color_flag"] = "friendly_chams_color", ["transparency_flag"] = "friendly_chams_transparency", ["default_color"] = color3_fromrgb(249, 217, 255), ["default_transparency"] = 0.5}})
 
     menu_references["material"] = menu_references["esp_section"]:create_element({["name"] = "material"}, {["toggle"] = {["flag"] = "material"}})
         menu_references["material_settings"] = menu_references["material"]:create_settings()
         menu_references["material_value"] = menu_references["material_settings"]:create_element({["name"] = "material"}, {["dropdown"] = {["options"] = {"neon", "forcefield"}, ["requires_one"] = true, ["flag"] = "material_value", ["default"] = {"neon"}}})
         menu_references["material_color"] = menu_references["material_settings"]:create_element({["name"] = "color"}, {["colorpicker"] = {["color_flag"] = "material_color", ["transparency_flag"] = "material_transparency", ["default_color"] = color3_fromrgb(249, 217, 255), ["default_transparency"] = 0.2}})
-        menu_references["enemy_material_color"] = menu_references["material_settings"]:create_element({["name"] = "enemy color"}, {["colorpicker"] = {["color_flag"] = "enemy_material_color", ["transparency_flag"] = "enemy_material_transparency", ["default_color"] = color3_fromrgb(249, 217, 255), ["default_transparency"] = 0.2}})
-        menu_references["friendly_material_color"] = menu_references["material_settings"]:create_element({["name"] = "friendly color"}, {["colorpicker"] = {["color_flag"] = "friendly_material_color", ["transparency_flag"] = "friendly_material_transparency", ["default_color"] = color3_fromrgb(249, 217, 255), ["default_transparency"] = 0.2}})
         
     menu_references["tool_text"] = menu_references["esp_section"]:create_element({["name"] = "tool text"}, {["toggle"] = {["flag"] = "tool_text"}})
         menu_references["tool_text_settings"] = menu_references["tool_text"]:create_settings()
         menu_references["tool_text_casing"] = menu_references["tool_text_settings"]:create_element({["name"] = "casing"}, {["dropdown"] = {["options"] = {"uppercase", "lowercase"}, ["requires_one"] = true, ["flag"] = "tool_text_casing", ["default"] = {"lowercase"}}})
         menu_references["tool_text_color"] = menu_references["tool_text_settings"]:create_element({["name"] = "color"}, {["colorpicker"] = {["color_flag"] = "tool_text_color", ["transparency_flag"] = "tool_text_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0}})
-        menu_references["enemy_tool_text_color"] = menu_references["tool_text_settings"]:create_element({["name"] = "enemy color"}, {["colorpicker"] = {["color_flag"] = "enemy_tool_text_color", ["transparency_flag"] = "enemy_tool_text_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0}})
-        menu_references["friendly_tool_text_color"] = menu_references["tool_text_settings"]:create_element({["name"] = "friendly color"}, {["colorpicker"] = {["color_flag"] = "friendly_tool_text_color", ["transparency_flag"] = "friendly_tool_text_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0}})
         
     menu_references["tool_icon"] = menu_references["esp_section"]:create_element({["name"] = "tool icon"}, {["toggle"] = {["flag"] = "tool_icon"}})
         menu_references["tool_icon_settings"] = menu_references["tool_icon"]:create_settings()
         menu_references["tool_icon_color"] = menu_references["tool_icon_settings"]:create_element({["name"] = "color"}, {["colorpicker"] = {["color_flag"] = "tool_icon_color", ["transparency_flag"] = "tool_icon_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0}})
-        menu_references["enemy_tool_icon_color"] = menu_references["tool_icon_settings"]:create_element({["name"] = "enemy color"}, {["colorpicker"] = {["color_flag"] = "enemy_tool_icon_color", ["transparency_flag"] = "enemy_tool_icon_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0}})
-        menu_references["friendly_tool_icon_color"] = menu_references["tool_icon_settings"]:create_element({["name"] = "friendly color"}, {["colorpicker"] = {["color_flag"] = "friendly_tool_icon_color", ["transparency_flag"] = "friendly_tool_icon_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0}})
 
     menu_references["highlight"] = menu_references["esp_section"]:create_element({["name"] = "highlight"}, {["toggle"] = {["flag"] = "highlight"}})
         menu_references["highlight_settings"] = menu_references["highlight"]:create_settings()
         menu_references["highlight_behind_walls"] = menu_references["highlight_settings"]:create_element({["name"] = "behind walls"}, {["toggle"] = {["flag"] = "highlight_behind_walls", ["default"] = true}})
         menu_references["highlight_color"] = menu_references["highlight_settings"]:create_element({["name"] = "color"}, {["colorpicker"] = {["color_flag"] = "highlight_color", ["transparency_flag"] = "highlight_transparency", ["default_color"] = color3_fromrgb(0, 0, 0), ["default_transparency"] = 0.9}})
-        menu_references["enemy_highlight_color"] = menu_references["highlight_settings"]:create_element({["name"] = "enemy color"}, {["colorpicker"] = {["color_flag"] = "enemy_highlight_color", ["transparency_flag"] = "enemy_highlight_transparency", ["default_color"] = color3_fromrgb(0, 0, 0), ["default_transparency"] = 0.9}})
-        menu_references["friendly_highlight_color"] = menu_references["highlight_settings"]:create_element({["name"] = "friendly color"}, {["colorpicker"] = {["color_flag"] = "friendly_highlight_color", ["transparency_flag"] = "friendly_highlight_transparency", ["default_color"] = color3_fromrgb(0, 0, 0), ["default_transparency"] = 0.9}})
         menu_references["highlight_outline_color"] = menu_references["highlight_settings"]:create_element({["name"] = "outline color"}, {["colorpicker"] = {["color_flag"] = "highlight_outline_color", ["transparency_flag"] = "highlight_outline_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0.2}})
-        menu_references["enemy_highlight_outline_color"] = menu_references["highlight_settings"]:create_element({["name"] = "enemy outline color"}, {["colorpicker"] = {["color_flag"] = "enemy_highlight_outline_color", ["transparency_flag"] = "enemy_highlight_outline_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0.2}})
-        menu_references["friendly_highlight_outline_color"] = menu_references["highlight_settings"]:create_element({["name"] = "friendly outline color"}, {["colorpicker"] = {["color_flag"] = "friendly_highlight_outline_color", ["transparency_flag"] = "friendly_highlight_outline_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0.2}})
 
     menu_references["armor_bar"] = menu_references["esp_section"]:create_element({["name"] = "armor bar"}, {["toggle"] = {["flag"] = "armor_bar"}})
         menu_references["armor_bar_settings"] = menu_references["armor_bar"]:create_settings()
         menu_references["armor_bar_hide_if_empty"] = menu_references["armor_bar_settings"]:create_element({["name"] = "hide if no armor"}, {["toggle"] = {["flag"] = "armor_bar_hide_if_empty"}})
         menu_references["armor_bar_gradient"] = menu_references["armor_bar_settings"]:create_element({["name"] = "gradient"}, {["toggle"] = {["flag"] = "armor_bar_gradient"}, ["colorpicker"] = {["color_flag"] = "armor_bar_gradient_color", ["transparency_flag"] = "armor_bar_gradient_transparency", ["default_color"] = color3_fromrgb(105, 205, 255), ["default_transparency"] = 0}})
-        menu_references["enemy_armor_bar_gradient"] = menu_references["armor_bar_settings"]:create_element({["name"] = "enemy gradient"}, {["colorpicker"] = {["color_flag"] = "enemy_armor_bar_gradient_color", ["transparency_flag"] = "enemy_armor_bar_gradient_transparency", ["default_color"] = color3_fromrgb(105, 205, 255), ["default_transparency"] = 0}})
-        menu_references["friendly_armor_bar_gradient"] = menu_references["armor_bar_settings"]:create_element({["name"] = "friendly gradient"}, {["colorpicker"] = {["color_flag"] = "friendly_armor_bar_gradient_color", ["transparency_flag"] = "friendly_armor_bar_gradient_transparency", ["default_color"] = color3_fromrgb(105, 205, 255), ["default_transparency"] = 0}})
-        menu_references["armor_bar_outline"] = menu_references["armor_bar_settings"]:create_element({["name"] = "outline"}, {["colorpicker"] = {["color_flag"] = "armor_bar_outline_color", ["transparency_flag"] = "armor_bar_outline_transparency", ["default_color"] = color3_fromrgb(30, 30, 30), ["default_transparency"] = 0}})
-        menu_references["armor_bar_color"] = menu_references["armor_bar_settings"]:create_element({["name"] = "color"}, {["colorpicker"] = {["color_flag"] = "armor_bar_color", ["transparency_flag"] = "armor_bar_transparency", ["default_color"] = color3_fromrgb(0, 155, 255), ["default_transparency"] = 0}})
-        menu_references["enemy_armor_bar_color"] = menu_references["armor_bar_settings"]:create_element({["name"] = "enemy color"}, {["colorpicker"] = {["color_flag"] = "enemy_armor_bar_color", ["transparency_flag"] = "enemy_armor_bar_transparency", ["default_color"] = color3_fromrgb(0, 155, 255), ["default_transparency"] = 0}})
-        menu_references["friendly_armor_bar_color"] = menu_references["armor_bar_settings"]:create_element({["name"] = "friendly color"}, {["colorpicker"] = {["color_flag"] = "friendly_armor_bar_color", ["transparency_flag"] = "friendly_armor_bar_transparency", ["default_color"] = color3_fromrgb(0, 155, 255), ["default_transparency"] = 0}})
-        menu_references["enemy_armor_bar_gradient"]:set_visible(false)
-        menu_references["friendly_armor_bar_gradient"]:set_visible(false)
         menu_references["armor_bar_live"] = menu_references["armor_bar_settings"]:create_element({["name"] = "live gradient"}, {["toggle"] = {["flag"] = "armor_bar_live", ["default"] = true}})
         menu_references["armor_bar_live_speed"] = menu_references["armor_bar_settings"]:create_element({["name"] = "live speed"}, {["slider"] = {["flag"] = "armor_bar_live_speed", ["min"] = 1, ["max"] = 100, ["default"] = 25, ["suffix"] = "%", ["prefix"] = ""}})
         menu_references["armor_bar_live_direction"] = menu_references["armor_bar_settings"]:create_element({["name"] = "live direction"}, {["dropdown"] = {["flag"] = "armor_bar_live_direction", ["options"] = {"down", "up"}, ["default"] = {"down"}, ["requires_one"] = true}})
         menu_references["armor_bar_live_repeats"] = menu_references["armor_bar_settings"]:create_element({["name"] = "color repeats"}, {["slider"] = {["flag"] = "armor_bar_live_repeats", ["min"] = 1, ["max"] = 8, ["default"] = 2, ["suffix"] = "x", ["prefix"] = ""}})
         menu_references["armor_bar_live_blend"] = menu_references["armor_bar_settings"]:create_element({["name"] = "middle mix"}, {["slider"] = {["flag"] = "armor_bar_live_blend", ["min"] = 0, ["max"] = 100, ["default"] = 100, ["suffix"] = "%", ["prefix"] = "", ["min_text"] = "hard"}})
+        menu_references["armor_bar_outline"] = menu_references["armor_bar_settings"]:create_element({["name"] = "outline"}, {["colorpicker"] = {["color_flag"] = "armor_bar_outline_color", ["transparency_flag"] = "armor_bar_outline_transparency", ["default_color"] = color3_fromrgb(30, 30, 30), ["default_transparency"] = 0}})
+        menu_references["armor_bar_color"] = menu_references["armor_bar_settings"]:create_element({["name"] = "color"}, {["colorpicker"] = {["color_flag"] = "armor_bar_color", ["transparency_flag"] = "armor_bar_transparency", ["default_color"] = color3_fromrgb(0, 155, 255), ["default_transparency"] = 0}})
 
     menu_references["health_bar"] = menu_references["esp_section"]:create_element({["name"] = "health bar"}, {["toggle"] = {["flag"] = "health_bar"}})
         menu_references["health_bar_settings"] = menu_references["health_bar"]:create_settings()
         menu_references["health_bar_gradient"] = menu_references["health_bar_settings"]:create_element({["name"] = "gradient"}, {["toggle"] = {["flag"] = "health_bar_gradient"}, ["colorpicker"] = {["color_flag"] = "health_bar_gradient_color", ["transparency_flag"] = "health_bar_gradient_transparency", ["default_color"] = color3_fromrgb(105, 205, 255), ["default_transparency"] = 0}})
-        menu_references["enemy_health_bar_gradient"] = menu_references["health_bar_settings"]:create_element({["name"] = "enemy gradient"}, {["colorpicker"] = {["color_flag"] = "enemy_health_bar_gradient_color", ["transparency_flag"] = "enemy_health_bar_gradient_transparency", ["default_color"] = color3_fromrgb(105, 205, 255), ["default_transparency"] = 0}})
-        menu_references["friendly_health_bar_gradient"] = menu_references["health_bar_settings"]:create_element({["name"] = "friendly gradient"}, {["colorpicker"] = {["color_flag"] = "friendly_health_bar_gradient_color", ["transparency_flag"] = "friendly_health_bar_gradient_transparency", ["default_color"] = color3_fromrgb(105, 205, 255), ["default_transparency"] = 0}})
-        menu_references["health_bar_outline"] = menu_references["health_bar_settings"]:create_element({["name"] = "outline"}, {["colorpicker"] = {["color_flag"] = "health_bar_outline_color", ["transparency_flag"] = "health_bar_outline_transparency", ["default_color"] = color3_fromrgb(30, 30, 30), ["default_transparency"] = 0}})
-        menu_references["health_bar_color"] = menu_references["health_bar_settings"]:create_element({["name"] = "color"}, {["colorpicker"] = {["color_flag"] = "health_bar_color", ["transparency_flag"] = "health_bar_transparency", ["default_color"] = color3_fromrgb(0, 255, 0), ["default_transparency"] = 0}})
-        menu_references["enemy_health_bar_color"] = menu_references["health_bar_settings"]:create_element({["name"] = "enemy color"}, {["colorpicker"] = {["color_flag"] = "enemy_health_bar_color", ["transparency_flag"] = "enemy_health_bar_transparency", ["default_color"] = color3_fromrgb(0, 255, 0), ["default_transparency"] = 0}})
-        menu_references["friendly_health_bar_color"] = menu_references["health_bar_settings"]:create_element({["name"] = "friendly color"}, {["colorpicker"] = {["color_flag"] = "friendly_health_bar_color", ["transparency_flag"] = "friendly_health_bar_transparency", ["default_color"] = color3_fromrgb(0, 255, 0), ["default_transparency"] = 0}})
-        menu_references["enemy_health_bar_gradient"]:set_visible(false)
-        menu_references["friendly_health_bar_gradient"]:set_visible(false)
         menu_references["health_bar_live"] = menu_references["health_bar_settings"]:create_element({["name"] = "live gradient"}, {["toggle"] = {["flag"] = "health_bar_live", ["default"] = true}})
         menu_references["health_bar_live_speed"] = menu_references["health_bar_settings"]:create_element({["name"] = "live speed"}, {["slider"] = {["flag"] = "health_bar_live_speed", ["min"] = 1, ["max"] = 100, ["default"] = 25, ["suffix"] = "%", ["prefix"] = ""}})
         menu_references["health_bar_live_direction"] = menu_references["health_bar_settings"]:create_element({["name"] = "live direction"}, {["dropdown"] = {["flag"] = "health_bar_live_direction", ["options"] = {"down", "up"}, ["default"] = {"down"}, ["requires_one"] = true}})
         menu_references["health_bar_live_repeats"] = menu_references["health_bar_settings"]:create_element({["name"] = "color repeats"}, {["slider"] = {["flag"] = "health_bar_live_repeats", ["min"] = 1, ["max"] = 8, ["default"] = 2, ["suffix"] = "x", ["prefix"] = ""}})
         menu_references["health_bar_live_blend"] = menu_references["health_bar_settings"]:create_element({["name"] = "middle mix"}, {["slider"] = {["flag"] = "health_bar_live_blend", ["min"] = 0, ["max"] = 100, ["default"] = 100, ["suffix"] = "%", ["prefix"] = "", ["min_text"] = "hard"}})
+        menu_references["health_bar_outline"] = menu_references["health_bar_settings"]:create_element({["name"] = "outline"}, {["colorpicker"] = {["color_flag"] = "health_bar_outline_color", ["transparency_flag"] = "health_bar_outline_transparency", ["default_color"] = color3_fromrgb(30, 30, 30), ["default_transparency"] = 0}})
+        menu_references["health_bar_color"] = menu_references["health_bar_settings"]:create_element({["name"] = "color"}, {["colorpicker"] = {["color_flag"] = "health_bar_color", ["transparency_flag"] = "health_bar_transparency", ["default_color"] = color3_fromrgb(0, 255, 0), ["default_transparency"] = 0}})
 
     menu_references["health_text"] = menu_references["esp_section"]:create_element({["name"] = "health text"}, {["toggle"] = {["flag"] = "health_text"}})
         menu_references["health_text_settings"] = menu_references["health_text"]:create_settings()
         menu_references["health_text_hide_if_full"] = menu_references["health_text_settings"]:create_element({["name"] = "hide if full"}, {["toggle"] = {["flag"] = "health_text_hide_if_full"}})
         menu_references["health_text_color"] = menu_references["health_text_settings"]:create_element({["name"] = "color"}, {["colorpicker"] = {["color_flag"] = "health_text_color", ["transparency_flag"] = "health_text_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0}})
-        menu_references["enemy_health_text_color"] = menu_references["health_text_settings"]:create_element({["name"] = "enemy color"}, {["colorpicker"] = {["color_flag"] = "enemy_health_text_color", ["transparency_flag"] = "enemy_health_text_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0}})
-        menu_references["friendly_health_text_color"] = menu_references["health_text_settings"]:create_element({["name"] = "friendly color"}, {["colorpicker"] = {["color_flag"] = "friendly_health_text_color", ["transparency_flag"] = "friendly_health_text_transparency", ["default_color"] = color3_fromrgb(255, 255, 255), ["default_transparency"] = 0}})
 
     menu_references["fonts"] = menu_references["esp_section"]:create_element({["name"] = "fonts"}, {}):create_settings()
         menu_references["main_font"] = menu_references["fonts"]:create_element({["name"] = "main font"}, {["dropdown"] = {["options"] = {"0", "1", "2", "3"}, ["requires_one"] = true, ["flag"] = "main_font", ["default"] = identifyexecutor() == "Wave" and {"1"} or {"2"}}})
@@ -15622,19 +15623,19 @@ end)()
 
     local transparencies = {
         [1] = {
-            [1] = 1,
-            [2] = 1,
-            [3] = 1,
-            [4] = 1,
-            [5] = 1,
-            [6] = 1,
-            [7] = 1,
-            [8] = 1,
-            [9] = 1,
-            [10] = 1,
-            [11] = 1,
-            [12] = 1,
-            [13] = 1,
+            [1] = 1 - (flags["box_transparency"] or 0),
+            [2] = 1 - (flags["box_outline_transparency"] or 0),
+            [3] = 1 - (flags["name_transparency"] or 0),
+            [4] = 1 - (flags["health_bar_transparency"] or 0),
+            [5] = 1 - (flags["health_bar_outline_transparency"] or 0),
+            [6] = 1 - (flags["health_bar_gradient_transparency"] or 0),
+            [7] = 1 - (flags["health_text_transparency"] or 0),
+            [8] = 1 - (flags["tool_text_transparency"] or 0),
+            [9] = 1 - (flags["tool_icon_transparency"] or 0),
+            [10] = 1 - (flags["armor_bar_transparency"] or 0),
+            [11] = 1 - (flags["armor_bar_outline_transparency"] or 0),
+            [12] = 1 - (flags["armor_bar_gradient_transparency"] or 0),
+            [13] = 1 - (flags["image_transparency"] or 0),
             [14] = 0.11
         }
     }
@@ -15677,26 +15678,13 @@ end)()
         [3] = 1
     }
 
+    -- Colors are global: friendly, neutral and enemy all share one table, so
+    -- every lookup by status reads the same values the menu writes.
     do
-        local old_alt_information = alt_information[1]
-        local old_transparencies = transparencies[1]
-        local old_colors = colors[1]
-
         for i = 2, 3 do
-            local new_alt_information = {}
-
-            local new_transparencies = {}
-            local new_colors = {}
-            for i = 1, #old_transparencies do
-                new_transparencies[i] = old_transparencies[i]
-                new_colors[i] = old_colors[i]
-            end
-            for i = 1, #old_alt_information do
-                new_alt_information[i] = old_alt_information[i]
-            end
-            alt_information[i] = new_alt_information
-            transparencies[i] = new_transparencies
-            colors[i] = new_colors
+            alt_information[i] = alt_information[1]
+            transparencies[i] = transparencies[1]
+            colors[i] = colors[1]
         end
     end
 
@@ -17399,9 +17387,6 @@ end)()
         create_connection(menu_references["health_bar_gradient"]["on_toggle_change"], LPH_NO_VIRTUALIZE(function(value)
             do_health_bar_gradient = value
 
-            menu_references["enemy_health_bar_gradient"]:set_visible(value)
-            menu_references["friendly_health_bar_gradient"]:set_visible(value)
-
             if do_health_bar and flags["esp"] then
                 for player, data in player_data do
                     local drawings = data[5]
@@ -17712,9 +17697,6 @@ end)()
         create_connection(menu_references["armor_bar_gradient"]["on_toggle_change"], LPH_NO_VIRTUALIZE(function(value)
             do_armor_bar_gradient = value
 
-            menu_references["enemy_armor_bar_gradient"]:set_visible(value)
-            menu_references["friendly_armor_bar_gradient"]:set_visible(value)
-
             if do_armor_bar and flags["esp"] then
                 for player, data in player_data do
                     local drawings = data[5]
@@ -17867,9 +17849,7 @@ end)()
     -- >> ( color / transparency updaters )
 
     local statuses = {
-        [1] = "",
-        [2] = "friendly_",
-        [3] = "enemy_"
+        [1] = ""
     }
 
     for status, name in statuses do
@@ -17881,7 +17861,7 @@ end)()
             colors[1] = color
             if do_box then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local box = data[5][1]
 
                         if box then
@@ -17893,12 +17873,12 @@ end)()
         end))
 
         create_connection(menu_references[name.."box_color"]["on_transparency_change"], LPH_NO_VIRTUALIZE(function(transparency)
-            local transparency = -transparency+1
+            transparency = 1 - transparency
             transparencies[1] = transparency
 
             if do_box then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local box = data[5][1]
 
                         if box then
@@ -17913,7 +17893,7 @@ end)()
             colors[3] = color
             if do_name then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local name = data[5][3]
 
                         if name then
@@ -17925,12 +17905,12 @@ end)()
         end))
 
         create_connection(menu_references[name.."name_color"]["on_transparency_change"], LPH_NO_VIRTUALIZE(function(transparency)
-            local transparency = -transparency+1
+            transparency = 1 - transparency
             transparencies[3] = transparency
 
             if do_name then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local name = data[5][3]
 
                         if name then
@@ -17945,7 +17925,7 @@ end)()
             colors[4] = color
             if do_health_bar then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local health_bar = data[5][4]
 
                         if health_bar then
@@ -17957,12 +17937,12 @@ end)()
         end))
 
         create_connection(menu_references[name.."health_bar_color"]["on_transparency_change"], LPH_NO_VIRTUALIZE(function(transparency)
-            local transparency = -transparency+1
+            transparency = 1 - transparency
             transparencies[4] = transparency
 
             if do_health_bar then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local health_bar = data[5][4]
 
                         if health_bar then
@@ -17977,7 +17957,7 @@ end)()
             colors[6] = color
             if do_health_bar and do_health_bar_gradient then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local health_bar_gradient = data[5][6]
 
                         if health_bar_gradient then
@@ -17989,12 +17969,12 @@ end)()
         end))
 
         create_connection(menu_references[name.."health_bar_gradient"]["on_transparency_change"], LPH_NO_VIRTUALIZE(function(transparency)
-            local transparency = -transparency+1
+            transparency = 1 - transparency
             transparencies[6] = transparency
 
             if do_health_bar and do_health_bar_gradient then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local health_bar_gradient = data[5][6]
 
                         if health_bar_gradient then
@@ -18009,7 +17989,7 @@ end)()
             alt_information[5] = color
             if do_chams then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local chams = data[12]
 
                         if chams then
@@ -18027,7 +18007,7 @@ end)()
 
             if do_chams then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local chams = data[12]
 
                         if chams then
@@ -18044,7 +18024,7 @@ end)()
             alt_information[1] = color
             if do_highlight then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local highlight = data[8]
 
                         if highlight then
@@ -18060,7 +18040,7 @@ end)()
 
             if do_highlight then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local highlight = data[8]
 
                         if highlight then
@@ -18075,7 +18055,7 @@ end)()
             alt_information[3] = color
             if do_highlight then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local highlight = data[8]
 
                         if highlight then
@@ -18091,7 +18071,7 @@ end)()
 
             if do_highlight then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local highlight = data[8]
 
                         if highlight then
@@ -18106,7 +18086,7 @@ end)()
             colors[7] = color
             if do_health_text then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local health_text = data[5][7]
 
                         if health_text then
@@ -18118,12 +18098,12 @@ end)()
         end))
 
         create_connection(menu_references[name.."health_text_color"]["on_transparency_change"], LPH_NO_VIRTUALIZE(function(transparency)
-            local transparency = -transparency+1
+            transparency = 1 - transparency
             transparencies[7] = transparency
 
             if do_health_text then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local health_text = data[5][7]
 
                         if health_text then
@@ -18138,7 +18118,7 @@ end)()
             colors[8] = color
             if do_tool_text then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local tool_text = data[5][8]
 
                         if tool_text then
@@ -18150,12 +18130,12 @@ end)()
         end))
 
         create_connection(menu_references[name.."tool_text_color"]["on_transparency_change"], LPH_NO_VIRTUALIZE(function(transparency)
-            local transparency = -transparency+1
+            transparency = 1 - transparency
             transparencies[8] = transparency
 
             if do_tool_text then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local tool_text = data[5][8]
 
                         if tool_text then
@@ -18170,7 +18150,7 @@ end)()
             colors[9] = color
             if do_tool_icon then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local tool_icon = data[5][9]
 
                         if tool_icon then
@@ -18182,12 +18162,12 @@ end)()
         end))
 
         create_connection(menu_references[name.."tool_icon_color"]["on_transparency_change"], LPH_NO_VIRTUALIZE(function(transparency)
-            local transparency = -transparency+1
+            transparency = 1 - transparency
             transparencies[9] = transparency
 
             if do_tool_icon then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local tool_icon = data[5][9]
 
                         if tool_icon then
@@ -18202,7 +18182,7 @@ end)()
             colors[10] = color
             if do_armor_bar then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local armor_bar = data[5][10]
 
                         if armor_bar then
@@ -18214,12 +18194,12 @@ end)()
         end))
 
         create_connection(menu_references[name.."armor_bar_color"]["on_transparency_change"], LPH_NO_VIRTUALIZE(function(transparency)
-            local transparency = -transparency+1
+            transparency = 1 - transparency
             transparencies[10] = transparency
 
             if do_armor_bar then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local armor_bar = data[5][10]
 
                         if armor_bar then
@@ -18234,7 +18214,7 @@ end)()
             colors[12] = color
             if do_armor_bar and do_armor_bar_gradient then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local armor_bar_gradient = data[5][12]
 
                         if armor_bar_gradient then
@@ -18246,12 +18226,12 @@ end)()
         end))
 
         create_connection(menu_references[name.."armor_bar_gradient"]["on_transparency_change"], LPH_NO_VIRTUALIZE(function(transparency)
-            local transparency = -transparency+1
+            transparency = 1 - transparency
             transparencies[12] = transparency
 
             if do_armor_bar and do_armor_bar_gradient then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local armor_bar_gradient = data[5][12]
 
                         if armor_bar_gradient then
@@ -18266,7 +18246,7 @@ end)()
             colors[13] = color
             if do_image then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local image = data[5][13]
 
                         if image then
@@ -18278,12 +18258,12 @@ end)()
         end))
 
         create_connection(menu_references[name.."image_color"]["on_transparency_change"], LPH_NO_VIRTUALIZE(function(transparency)
-            local transparency = -transparency+1
+            transparency = 1 - transparency
             transparencies[13] = transparency
 
             if do_image then
                 for player, data in player_data do
-                    if data[1] == status then
+                    do
                         local image = data[5][13]
 
                         if image then
@@ -18299,7 +18279,7 @@ end)()
 
             if do_material then
                 for player, data in player_data do
-                    if data[1] == status and data[3] then
+                    if data[3] then
                         spawn(apply_material, data)
                     end
                 end
@@ -18311,7 +18291,7 @@ end)()
 
             if do_material then
                 for player, data in player_data do
-                    if data[1] == status and data[3] then
+                    if data[3] then
                         spawn(apply_material, data)
                     end
                 end
