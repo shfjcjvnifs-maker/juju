@@ -168,11 +168,445 @@ local function pick_target_ui()
     add_fade(status, "TextTransparency", 0)
     picker_objects[#picker_objects + 1] = status
 
+    -- > ( build info card )
+    -- A row no longer starts the download. It opens this card with the
+    -- place name, thumbnail, last update and live status; the load button
+    -- under the spinning logo commits the build.
+
+    local info_panel = Instance.new("Frame")
+    info_panel.Name = "PickerInfo"
+    info_panel.Position = UDim2.fromOffset(201, 20)
+    info_panel.Size = UDim2.fromOffset(100, 100)
+    info_panel.BackgroundTransparency = 1
+    info_panel.Visible = false
+    info_panel.ZIndex = 10
+    info_panel.Parent = section_inside
+    picker_objects[#picker_objects + 1] = info_panel
+
+    local thumb_border = Instance.new("Frame")
+    thumb_border.Name = "PlaceThumbBorder"
+    thumb_border.AnchorPoint = Vector2.new(0.5, 0)
+    thumb_border.Position = UDim2.new(0.5, 0, 0, 0)
+    thumb_border.Size = UDim2.fromOffset(50, 50)
+    thumb_border.BackgroundColor3 = Color3.fromRGB(24, 25, 24)
+    thumb_border.BackgroundTransparency = 1
+    thumb_border.BorderSizePixel = 0
+    thumb_border.ZIndex = 10
+    thumb_border.Parent = info_panel
+
+    local thumb_corner = Instance.new("UICorner")
+    thumb_corner.CornerRadius = UDim.new(0, 4)
+    thumb_corner.Parent = thumb_border
+
+    local thumb_inside = Instance.new("Frame")
+    thumb_inside.Name = "PlaceThumbInside"
+    thumb_inside.Position = UDim2.fromOffset(1, 1)
+    thumb_inside.Size = UDim2.new(1, -2, 1, -2)
+    thumb_inside.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    thumb_inside.BackgroundTransparency = 1
+    thumb_inside.BorderSizePixel = 0
+    thumb_inside.ZIndex = 11
+    thumb_inside.Parent = thumb_border
+
+    local thumb_corner_inside = Instance.new("UICorner")
+    thumb_corner_inside.CornerRadius = UDim.new(0, 3)
+    thumb_corner_inside.Parent = thumb_inside
+
+    local info_thumb = Instance.new("ImageLabel")
+    info_thumb.Name = "PlaceThumb"
+    info_thumb.Position = UDim2.fromScale(0, 0)
+    info_thumb.Size = UDim2.fromScale(1, 1)
+    info_thumb.BackgroundTransparency = 1
+    info_thumb.Image = ""
+    info_thumb.ImageTransparency = 1
+    info_thumb.ScaleType = Enum.ScaleType.Crop
+    info_thumb.ZIndex = 12
+    info_thumb.Parent = thumb_inside
+
+    local thumb_corner_image = Instance.new("UICorner")
+    thumb_corner_image.CornerRadius = UDim.new(0, 3)
+    thumb_corner_image.Parent = info_thumb
+
+    local info_name = Instance.new("TextLabel")
+    info_name.Name = "PlaceName"
+    info_name.Position = UDim2.fromOffset(0, 54)
+    info_name.Size = UDim2.fromOffset(100, 12)
+    info_name.BackgroundTransparency = 1
+    info_name.Text = "Da Hood"
+    info_name.TextColor3 = Color3.fromRGB(197, 197, 197)
+    info_name.TextSize = 10
+    info_name.TextXAlignment = Enum.TextXAlignment.Center
+    info_name.TextYAlignment = Enum.TextYAlignment.Center
+    info_name.TextTruncate = Enum.TextTruncate.AtEnd
+    info_name.TextTransparency = 1
+    info_name.ZIndex = 10
+    apply_font(info_name, true)
+    info_name.Parent = info_panel
+
+    local info_updated = Instance.new("TextLabel")
+    info_updated.Name = "PlaceUpdated"
+    info_updated.Position = UDim2.fromOffset(0, 68)
+    info_updated.Size = UDim2.fromOffset(100, 10)
+    info_updated.BackgroundTransparency = 1
+    info_updated.Text = "updated unknown"
+    info_updated.TextColor3 = Color3.fromRGB(75, 72, 72)
+    info_updated.TextSize = 9
+    info_updated.TextXAlignment = Enum.TextXAlignment.Center
+    info_updated.TextYAlignment = Enum.TextYAlignment.Center
+    info_updated.TextTransparency = 1
+    info_updated.ZIndex = 10
+    apply_font(info_updated, false)
+    info_updated.Parent = info_panel
+
+    local info_status = Instance.new("TextLabel")
+    info_status.Name = "PlaceStatus"
+    info_status.Position = UDim2.fromOffset(0, 80)
+    info_status.Size = UDim2.fromOffset(100, 10)
+    info_status.BackgroundTransparency = 1
+    info_status.Text = "checking status"
+    info_status.TextColor3 = Color3.fromRGB(154, 213, 222)
+    info_status.TextSize = 9
+    info_status.TextXAlignment = Enum.TextXAlignment.Center
+    info_status.TextYAlignment = Enum.TextYAlignment.Center
+    info_status.TextTransparency = 1
+    info_status.ZIndex = 10
+    apply_font(info_status, false)
+    info_status.Parent = info_panel
+
+    -- Button styling copied from juju.lua create_element("button"):
+    -- 16px tall, #181918 border, 1px #000 inside, 4px rounding, 12px text
+    -- at x=3, border brightens to #334146 on hover, inside flashes on click.
+    local load_button = Instance.new("TextButton")
+    load_button.Name = "LoadButton"
+    load_button.Position = UDim2.fromOffset(118, 112)
+    load_button.Size = UDim2.fromOffset(75, 16)
+    load_button.BackgroundColor3 = Color3.fromRGB(24, 25, 24)
+    load_button.BackgroundTransparency = 1
+    load_button.BorderSizePixel = 0
+    load_button.Text = ""
+    load_button.AutoButtonColor = false
+    load_button.Active = false
+    load_button.Selectable = false
+    load_button.Visible = false
+    load_button.ZIndex = 12
+    load_button.Parent = section_inside
+    picker_objects[#picker_objects + 1] = load_button
+
+    local load_corner = Instance.new("UICorner")
+    load_corner.CornerRadius = UDim.new(0, 4)
+    load_corner.Parent = load_button
+
+    local load_inside = Instance.new("Frame")
+    load_inside.Name = "LoadInside"
+    load_inside.Position = UDim2.fromOffset(1, 1)
+    load_inside.Size = UDim2.new(1, -2, 1, -2)
+    load_inside.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    load_inside.BackgroundTransparency = 1
+    load_inside.BorderSizePixel = 0
+    load_inside.ZIndex = 13
+    load_inside.Parent = load_button
+
+    local load_corner_inside = Instance.new("UICorner")
+    load_corner_inside.CornerRadius = UDim.new(0, 3)
+    load_corner_inside.Parent = load_inside
+
+    local load_text = Instance.new("TextLabel")
+    load_text.Name = "LoadText"
+    load_text.Position = UDim2.fromOffset(3, 0)
+    load_text.Size = UDim2.new(1, -6, 1, 0)
+    load_text.BackgroundTransparency = 1
+    load_text.Text = "load"
+    load_text.TextColor3 = Color3.fromRGB(70, 85, 87)
+    load_text.TextSize = 12
+    load_text.TextXAlignment = Enum.TextXAlignment.Left
+    load_text.TextYAlignment = Enum.TextYAlignment.Center
+    load_text.TextTransparency = 1
+    load_text.ZIndex = 14
+    apply_font(load_text, false)
+    load_text.Parent = load_inside
+
     local choices = {
-        { name = "juju", value = "juju", hint = "main Da Hood" },
-        { name = "jujuHC", value = "jujuHC", hint = "universal" },
-        { name = "auto", value = "auto", hint = "route by place" },
+        { name = "main", value = "juju", hint = "main Da Hood" },
+        { name = "copies", value = "jujuHC", hint = "universal" },
     }
+
+    local info_fade_items = {}
+
+    local function track_info(inst, prop, shown, hidden)
+        inst[prop] = hidden or 1
+        info_fade_items[#info_fade_items + 1] = {
+            inst = inst,
+            prop = prop,
+            shown = shown or 0,
+            hidden = hidden or 1,
+        }
+    end
+
+    track_info(thumb_border, "BackgroundTransparency", 0, 1)
+    track_info(thumb_inside, "BackgroundTransparency", 0, 1)
+    track_info(info_thumb, "ImageTransparency", 0, 1)
+    track_info(info_name, "TextTransparency", 0, 1)
+    track_info(info_updated, "TextTransparency", 0, 1)
+    track_info(info_status, "TextTransparency", 0, 1)
+    track_info(load_button, "BackgroundTransparency", 0, 1)
+    track_info(load_inside, "BackgroundTransparency", 0, 1)
+    track_info(load_text, "TextTransparency", 0, 1)
+
+    local info_shown = false
+    local info_fade_token = 0
+
+    local function set_info_shown(show)
+        info_fade_token = info_fade_token + 1
+        local token = info_fade_token
+        info_shown = show
+
+        if show then
+            info_panel.Visible = true
+            load_button.Visible = true
+        end
+
+        local duration = 0.22
+        local fade_info = TweenInfo.new(duration, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
+
+        for _, item in ipairs(info_fade_items) do
+            pcall(function()
+                tween(item.inst, fade_info, {
+                    [item.prop] = show and item.shown or item.hidden,
+                })
+            end)
+        end
+
+        load_button.Active = show
+        load_button.Selectable = show
+
+        if not show then
+            task.delay(duration + 0.02, function()
+                if token ~= info_fade_token or info_shown then
+                    return
+                end
+                info_panel.Visible = false
+                load_button.Visible = false
+            end)
+        end
+    end
+
+    local prompt_shown = true
+
+    local function set_prompt_shown(show)
+        prompt_shown = show
+        local fade_info = TweenInfo.new(0.18, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
+
+        pcall(function()
+            tween(title, fade_info, {
+                TextTransparency = show and 0 or 1,
+            })
+            tween(status, fade_info, {
+                TextTransparency = show and 0 or 1,
+            })
+        end)
+    end
+
+    local http_service = game:GetService("HttpService")
+
+    local function http_json(url)
+        local ok, body = pcall(function()
+            return game:HttpGet(url, true)
+        end)
+
+        if not ok or type(body) ~= "string" or body == "" then
+            ok, body = pcall(function()
+                return game:HttpGet(url)
+            end)
+        end
+
+        if not ok or type(body) ~= "string" or body == "" then
+            return nil
+        end
+
+        local ok_decode, decoded = pcall(function()
+            return http_service:JSONDecode(body)
+        end)
+
+        if ok_decode and type(decoded) == "table" then
+            return decoded
+        end
+
+        return nil
+    end
+
+    local function short_count(value)
+        local n = tonumber(value) or 0
+
+        if n >= 1000000 then
+            return string.format("%.1fm", n / 1000000)
+        elseif n >= 1000 then
+            return string.format("%.1fk", n / 1000)
+        end
+
+        return tostring(math.floor(n))
+    end
+
+    local function get_place_info(place_id, fallback_name)
+        local info = {
+            name = fallback_name or ("place " .. tostring(place_id)),
+            updated = "updated unknown",
+            status = "offline",
+            thumbnail = nil,
+        }
+
+        local universe_id = nil
+        local universe = http_json("https://apis.roblox.com/universes/v1/places/" .. tostring(place_id) .. "/universe")
+
+        if universe then
+            universe_id = tonumber(universe.universeId)
+        end
+
+        if not universe_id then
+            return info
+        end
+
+        local details = http_json("https://games.roblox.com/v1/games?universeIds=" .. tostring(universe_id))
+        local game_data = details and details.data and details.data[1]
+
+        if type(game_data) == "table" then
+            if type(game_data.name) == "string" and game_data.name ~= "" then
+                info.name = game_data.name
+            end
+
+            local updated = type(game_data.updated) == "string" and string.match(game_data.updated, "^(%d%d%d%d%-%d%d%-%d%d)") or nil
+            if updated then
+                info.updated = "updated " .. updated
+            end
+
+            local playing = tonumber(game_data.playing) or 0
+            if playing > 0 then
+                info.status = "online · " .. short_count(playing) .. " playing"
+            else
+                info.status = "offline"
+            end
+        end
+
+        local thumbs = http_json("https://thumbnails.roblox.com/v1/games/multiget/thumbnails?universeIds=" .. tostring(universe_id) .. "&size=150x150&format=Png&isCircular=false")
+        local thumb_data = thumbs and thumbs.data and thumbs.data[1]
+        local first_thumb = thumb_data and thumb_data.thumbnails and thumb_data.thumbnails[1]
+
+        if type(first_thumb) == "table" and type(first_thumb.imageUrl) == "string" and first_thumb.imageUrl ~= "" then
+            info.thumbnail = first_thumb.imageUrl
+        end
+
+        return info
+    end
+
+    local info_request = 0
+
+    local function show_build_info(choice)
+        if state.closed or state.picked then
+            return
+        end
+
+        state.selected = choice.value
+        info_request = info_request + 1
+        local token = info_request
+
+        if section_label then
+            section_label.Text = "info"
+        end
+
+        set_prompt_shown(false)
+        set_info_shown(false)
+
+        local fallback_name
+        local place_id
+
+        if choice.value == "juju" then
+            fallback_name = "Da Hood"
+            place_id = DA_HOOD_PLACE_ID
+        else
+            fallback_name = (type(game.Name) == "string" and game.Name ~= "" and game.Name) or "current place"
+            place_id = game.PlaceId
+        end
+
+        info_name.Text = fallback_name
+        info_updated.Text = "fetching update..."
+        info_status.Text = "checking status"
+        info_thumb.Image = ""
+        load_text.Text = "load " .. choice.name
+
+        task.delay(0.16, function()
+            if token ~= info_request or state.closed or state.picked then
+                return
+            end
+
+            set_info_shown(true)
+        end)
+
+        task.spawn(function()
+            local info = get_place_info(place_id, fallback_name)
+
+            if token ~= info_request or state.closed or state.picked then
+                return
+            end
+
+            info_name.Text = info.name
+            info_updated.Text = info.updated
+            info_status.Text = info.status
+
+            if info.thumbnail then
+                info_thumb.Image = info.thumbnail
+            end
+        end)
+    end
+
+    load_button.MouseEnter:Connect(function()
+        if state.closed or state.picked then
+            return
+        end
+
+        pcall(function()
+            tween(load_button, TweenInfo.new(0.17, Enum.EasingStyle.Circular, Enum.EasingDirection.Out), {
+                BackgroundColor3 = Color3.fromRGB(51, 65, 70),
+            })
+            tween(load_text, TweenInfo.new(0.17, Enum.EasingStyle.Circular, Enum.EasingDirection.Out), {
+                TextColor3 = Color3.fromRGB(197, 197, 197),
+            })
+        end)
+    end)
+
+    load_button.MouseLeave:Connect(function()
+        if state.closed or state.picked then
+            return
+        end
+
+        pcall(function()
+            tween(load_button, TweenInfo.new(0.17, Enum.EasingStyle.Circular, Enum.EasingDirection.Out), {
+                BackgroundColor3 = Color3.fromRGB(24, 25, 24),
+            })
+            tween(load_text, TweenInfo.new(0.17, Enum.EasingStyle.Circular, Enum.EasingDirection.Out), {
+                TextColor3 = Color3.fromRGB(70, 85, 87),
+            })
+        end)
+    end)
+
+    load_button.MouseButton1Click:Connect(function()
+        if state.closed or state.picked or not state.selected then
+            return
+        end
+
+        state.picked = state.selected
+        load_button.Active = false
+        load_button.Selectable = false
+        load_text.Text = "loading..."
+
+        pcall(function()
+            tween(load_inside, TweenInfo.new(0.075, Enum.EasingStyle.Circular, Enum.EasingDirection.Out), {
+                BackgroundColor3 = Color3.fromRGB(40, 40, 40),
+            })
+        end)
+
+        for _, entry in ipairs(buttons) do
+            entry.button.Active = false
+        end
+    end)
 
     for index, choice in ipairs(choices) do
         local tab = Instance.new("TextButton")
@@ -230,7 +664,7 @@ local function pick_target_ui()
                 return
             end
 
-            status.Text = choice.hint
+            status.Text = state.selected == choice.value and ("selected " .. choice.name) or choice.hint
 
             pcall(function()
                 tween(bar, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
@@ -250,14 +684,15 @@ local function pick_target_ui()
                 return
             end
 
-            status.Text = "choose a build"
+            local is_selected = state.selected == choice.value
+            status.Text = is_selected and ("selected " .. choice.name) or "choose a build"
 
             pcall(function()
                 tween(bar, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-                    BackgroundTransparency = 1,
+                    BackgroundTransparency = is_selected and 0.5 or 1,
                 })
                 tween(label, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-                    TextColor3 = Color3.fromRGB(197, 197, 197),
+                    TextColor3 = is_selected and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(197, 197, 197),
                 })
                 tween(status, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
                     TextColor3 = Color3.fromRGB(75, 72, 72),
@@ -270,31 +705,29 @@ local function pick_target_ui()
                 return
             end
 
-            state.picked = choice.value
+            state.selected = choice.value
 
             for _, entry in ipairs(buttons) do
-                entry.button.Active = false
+                entry.button.Active = true
 
                 if entry.value == choice.value then
                     entry.bar.BackgroundTransparency = 0.5
                     entry.label.TextColor3 = Color3.fromRGB(255, 255, 255)
                 else
                     entry.bar.BackgroundTransparency = 1
-                    entry.label.TextColor3 = Color3.fromRGB(75, 72, 72)
+                    entry.label.TextColor3 = Color3.fromRGB(197, 197, 197)
                 end
             end
 
-            if choice.value == "auto" then
-                status.Text = "checking place"
-            else
-                status.Text = "loading " .. choice.name
-            end
+            status.Text = "selected " .. choice.name
 
             pcall(function()
                 tween(status, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
                     TextColor3 = Color3.fromRGB(154, 213, 222),
                 })
             end)
+
+            show_build_info(choice)
         end)
     end
 
@@ -302,11 +735,17 @@ local function pick_target_ui()
     -- hide the picker rows and restore the loader tab + slider in place.
     local function finish_picker()
         state.closed = true
+        info_fade_token = info_fade_token + 1
+        info_shown = false
 
         for _, inst in ipairs(picker_objects) do
             pcall(function()
                 inst.Visible = false
             end)
+        end
+
+        if section_label then
+            section_label.Text = "juju.beta"
         end
 
         if slider_holder then
@@ -841,7 +1280,7 @@ function Uiloader.create(options)
         Size = UDim2.fromOffset(70, 13),
         BackgroundTransparency = 1,
         FontFace = UI_FONT_FACE,
-        Text = "system",
+        Text = "loader",
         TextColor3 = COLORS.accent,
         TextSize = 12,
         TextTransparency = 1,
