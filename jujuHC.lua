@@ -21576,10 +21576,12 @@ do
         local circle = nil
         local image = nil
         local glow = nil
-        local shadow_transparency = {["Transparency"] = 0.09}
-        local circle_transparency = {["Transparency"] = 0.8}
-        local image_transparency = {["Transparency"] = 0.8}
-        local offset = vector3_new(0, 0.5, 0)
+        local fake_position_style = {
+            shadow_transparency = {["Transparency"] = 0.09},
+            circle_transparency = {["Transparency"] = 0.8},
+            image_transparency = {["Transparency"] = 0.8},
+            offset = vector3_new(0, 0.5, 0),
+        }
         menu_references["fake_position_icon_data"] = base64_decode("iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAVUExURf///1FRUXh4eHl5eXp6elJSUgAAAFkqzC8AAAAHdFJOU////////wAaSwNGAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAGHRFWHRTb2Z0d2FyZQBQYWludC5ORVQgNS4xLjQS36aDAAAAtmVYSWZJSSoACAAAAAUAGgEFAAEAAABKAAAAGwEFAAEAAABSAAAAKAEDAAEAAAACAAAAMQECABAAAABaAAAAaYcEAAEAAABqAAAAAAAAAAx3AQDoAwAADHcBAOgDAABQYWludC5ORVQgNS4xLjQAAwAAkAcABAAAADAyMzABoAMAAQAAAAEAAAAFoAQAAQAAAJQAAAAAAAAAAgABAAIABAAAAFI5OAACAAcABAAAADAxMDAAAAAA0NlgAbHwM8wAAACjSURBVDhP1ZFLDsQwCENJ87n/kQvBGDKqNMuqb5EaYyWIyvrD5wJCYBip0QMwMwC/EA18QLt6h4yOn07ruxood2Enapkui+MBFNJCHQmhll7toAR4gZKJmEe5SmAUTfKFU1M+B2YZMh+eVDpYmSck9mHoVT9rUbJvmzW37nZ0Mx1NIkBrV5DejwDdxPsM8BmAH1sCR4TtI7AndFAbR+CJ9wNr3d6DDmOS3Q1aAAAAAElFTkSuQmCC")
         local last_pos = nil
         local do_smooth_fake_position_indicator = nil
@@ -21604,9 +21606,9 @@ do
                     return
                 elseif not visible and on_screen then
                     spawn(function()
-                        tween(glow, shadow_transparency, circular, out, 0.07)
-                        tween(image, image_transparency, circular, out, 0.07)
-                        tween(circle, circle_transparency, circular, out, 0.07)
+                        tween(glow, fake_position_style.shadow_transparency, circular, out, 0.07)
+                        tween(image, fake_position_style.image_transparency, circular, out, 0.07)
+                        tween(circle, fake_position_style.circle_transparency, circular, out, 0.07)
                     end)
                     visible = true
                 elseif not visible and not on_screen then
@@ -21614,7 +21616,7 @@ do
                     return
                 end
     
-                local pos2, _ = world_to_viewport_point(camera, local_fake_position + offset)
+                local pos2, _ = world_to_viewport_point(camera, local_fake_position + fake_position_style.offset)
     
                 local size = clamp((pos["Y"]-pos2["Y"])*10, 35, 45)
     
@@ -21722,7 +21724,7 @@ do
         create_connection(menu_references["fake_position_indicator_glow_color"]["on_transparency_change"], function(value)
             if glow and visible then
                 glow["Transparency"] = -value+1
-                shadow_transparency["Transparency"] = {["Transparency"] = -value+1}
+                fake_position_style.shadow_transparency["Transparency"] = {["Transparency"] = -value+1}
             end
         end)
     
@@ -21735,7 +21737,7 @@ do
         create_connection(menu_references["fake_position_indicator_icon_color"]["on_transparency_change"], function(value)
             if image and visible then
                 image["Transparency"] = -value+1
-                image_transparency["Transparency"] = {["Transparency"] = -value+1}
+                fake_position_style.image_transparency["Transparency"] = {["Transparency"] = -value+1}
             end
         end)
     
@@ -21748,7 +21750,7 @@ do
         create_connection(menu_references["fake_position_indicator_background_color"]["on_transparency_change"], function(value)
             if circle and visible then
                 circle["Transparency"] = -value+1
-                circle_transparency["Transparency"] = {["Transparency"] = -value+1}
+                fake_position_style.circle_transparency["Transparency"] = {["Transparency"] = -value+1}
             end
         end)
 
