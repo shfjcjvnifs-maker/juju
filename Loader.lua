@@ -169,9 +169,9 @@ local function pick_target_ui()
     picker_objects[#picker_objects + 1] = status
 
     local choices = {
-        { name = "juju", value = "juju" },
-        { name = "jujuHC", value = "jujuHC" },
-        { name = "auto", value = "auto" },
+        { name = "juju", value = "juju", hint = "main Da Hood" },
+        { name = "jujuHC", value = "jujuHC", hint = "universal" },
+        { name = "auto", value = "auto", hint = "route by place" },
     }
 
     for index, choice in ipairs(choices) do
@@ -230,12 +230,17 @@ local function pick_target_ui()
                 return
             end
 
+            status.Text = choice.hint
+
             pcall(function()
                 tween(bar, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
                     BackgroundTransparency = 0.5,
                 })
                 tween(label, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
                     TextColor3 = Color3.fromRGB(255, 255, 255),
+                })
+                tween(status, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                    TextColor3 = Color3.fromRGB(197, 197, 197),
                 })
             end)
         end)
@@ -245,12 +250,17 @@ local function pick_target_ui()
                 return
             end
 
+            status.Text = "choose a build"
+
             pcall(function()
                 tween(bar, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
                     BackgroundTransparency = 1,
                 })
                 tween(label, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
                     TextColor3 = Color3.fromRGB(197, 197, 197),
+                })
+                tween(status, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                    TextColor3 = Color3.fromRGB(75, 72, 72),
                 })
             end)
         end)
