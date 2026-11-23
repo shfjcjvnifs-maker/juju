@@ -8601,6 +8601,13 @@ local auto_equip_gun_name_of = {
     ["aug"] = "[AUG]"
 }
 
+-- The auto fire gun list is a pure function of the bound gun set and the auto
+-- equip order, so it is built once and reused until one of those changes.
+-- `seen` is the local_guns_version the cached list was built at, and the counter
+-- is declared here so the auto equip refresh below can bump it.
+local ragebot_gun_cache = {["seen"] = 0, ["list"] = nil}
+local local_guns_version = 0
+
 local function refresh_auto_equip_gun_names()
     local value = flags["auto_equip_gun"]
 
@@ -8629,6 +8636,7 @@ local function refresh_auto_equip_gun_names()
 
         auto_equip_gun_names = names
         auto_equip_gun_set = set
+        local_guns_version += 1
     end
 end
 
@@ -9031,6 +9039,7 @@ do
 
         guns_ext.bindings[tool] = entry
         local_guns[handle] = entry
+        local_guns_version += 1
 
         local_tool = tool
         local_gun = tonumber(range)
@@ -9057,6 +9066,7 @@ do
 
         local_guns[entry[1]] = nil
         guns_ext.bindings[tool] = nil
+        local_guns_version += 1
 
         if local_tool == tool then
             local_tool = nil
@@ -9244,6 +9254,7 @@ do
         guns_ext.bindings = {}
         guns_ext.retries = {}
         local_guns = {}
+        local_guns_version += 1
 
         local hrp = wait_for_child(character, "HumanoidRootPart", 5)
 
@@ -9426,6 +9437,23 @@ local shot_count = 0
 -- and auto fire falls back to the wrapped event call.
 local hook_shoot = nil
 
+-- >> ( adaptive lead )
+-- The miss reader below measures how far the aim point was from the target when
+-- the shot landed; the solve frame spends that correction. The velocity ring the
+-- lead reads lives here too, so the whole feature costs one top-level local
+-- instead of one per value.
+local lead_feedback = {
+    ["character"] = nil,
+    ["tool"] = nil,
+    ["multiplier"] = 1,
+    ["ring_position"] = {},
+    ["ring_time"] = {},
+    ["ring_count"] = 0,
+    ["lead_velocity"] = nil,
+    ["last_update"] = 0,
+    ["last_decay"] = 0
+}
+
 do
     -- >> ( variables )
 
@@ -9479,6 +9507,31 @@ do
         -- two different limbs would be reported as a prediction error.
         local miss_part = aim_part or part
 
+        -- Lead error, projected onto the target's own motion. The report lands
+        -- about a round trip after the shot: the live limb sits that far along its
+        -- path from the point that was sent, and the ping lead is exactly the
+        -- interval trying to cover it. A positive projection means the target
+        -- outran the lead, a negative one that the lead was long.
+        local lead_signed = 0
+        local lead_valid = false
+
+        if miss_part and miss_part["Parent"] and aim_position and target_velocity then
+            local speed = target_velocity["Magnitude"]
+
+            -- Below the floor the direction is noise. Past a limb's own width the
+            -- miss is another limb, or a target already gone, not a lead shortfall.
+            -- Auto prediction and the normal resolver only: confidence mode solves
+            -- a deliberate other point, and a manual value is the user's own number.
+            if speed > 20 and (flags["prediction"] or 0) == 0 and not (flags["resolver_mode"] and flags["resolver_mode"][1] == "confidence") then
+                local error_vector = miss_part["Position"] - aim_position
+
+                if error_vector["Magnitude"] <= 60 then
+                    lead_signed = (error_vector["X"] * target_velocity["X"] + error_vector["Y"] * target_velocity["Y"] + error_vector["Z"] * target_velocity["Z"]) / speed
+                    lead_valid = true
+                end
+            end
+        end
+
         if old_server_position and part and aim_position and miss_part and miss_part["Parent"] then
             message = " (pred miss: "..tostring(round((aim_position-miss_part["Position"])["Magnitude"], 1))..") (velocity: "..tostring(round((target_velocity or vector3_zero)["Magnitude"], 1))..(did_defensive and ") (defensive: true)" or ") (defensive: false)")
         end
@@ -9518,6 +9571,11 @@ do
             data[23] = new_health
             data[24] = clock()
 
+            -- A hit is evidence the lead was right: ease the multiplier back
+            -- toward 1 so a learned overshoot does not persist.
+            local fb = lead_feedback
+            fb["multiplier"] += (1 - fb["multiplier"]) * 0.15
+
             return signals["on_local_bullet_confirmed"]:Fire(player, part, tostring(floor(damage)), shot_count, message)
         end
 
@@ -9526,6 +9584,28 @@ do
         if data[23] == nil or new_health > data[23] then
             data[23] = new_health
             data[24] = clock()
+        end
+
+        -- One step per report, rate limited so a burst's overlapping threads move
+        -- the multiplier once instead of once per thread.
+        if lead_valid then
+            local fb = lead_feedback
+            local now = clock()
+
+            if now - fb["last_update"] > 0.03 then
+                fb["last_update"] = now
+
+                local lead_distance = target_velocity["Magnitude"] * (local_ping / 500) * fb["multiplier"]
+
+                if lead_distance < 2 then
+                    lead_distance = 2
+                end
+
+                -- One full lead length of error multiplies by 1.5. The step is
+                -- capped so a single bad read cannot double the lead.
+                local ratio = clamp(lead_signed / lead_distance, -1, 1)
+                fb["multiplier"] = clamp(fb["multiplier"] * (1 + 0.5 * ratio), 0.5, 2.0)
+            end
         end
 
         if shot_count == old_count then
@@ -22556,8 +22636,11 @@ local backtrack_data = {}
         menu_references["follow_target_distance"] = menu_references["follow_target_settings"]:create_element({["name"] = "distance"}, {["slider"] = {["flag"] = "follow_target_distance", ["min"] = 2, ["max"] = 200, ["default"] = 15, ["suffix"] = " studs"}})
         menu_references["follow_target_height"] = menu_references["follow_target_settings"]:create_element({["name"] = "height"}, {["slider"] = {["flag"] = "follow_target_height", ["min"] = -200, ["max"] = 200, ["default"] = 0, ["suffix"] = " studs"}})
         menu_references["follow_target_speed"] = menu_references["follow_target_settings"]:create_element({["name"] = "speed"}, {["slider"] = {["flag"] = "follow_target_speed", ["min"] = 1, ["max"] = 100, ["default"] = 75, ["suffix"] = "%"}})
+        menu_references["follow_target_ping_prediction"] = menu_references["follow_target_settings"]:create_element({["name"] = "shift prediction"}, {["toggle"] = {["flag"] = "follow_target_ping_prediction"}})
+        menu_references["follow_target_ping_scale"] = menu_references["follow_target_settings"]:create_element({["name"] = "shift scale"}, {["slider"] = {["flag"] = "follow_target_ping_scale", ["min"] = 0, ["max"] = 400, ["default"] = 400, ["suffix"] = "%", ["min_text"] = "off", ["max_text"] = "auto"}})
         menu_references["follow_target_height"]:set_visible(false)
         menu_references["follow_target_speed"]:set_visible(false)
+        menu_references["follow_target_ping_scale"]:set_visible(false)
         menu_references["auto_stomp"] = menu_references["utility_section"]:create_element({["name"] = "auto stomp"}, {["toggle"] = {["flag"] = "auto_stomp"}})
         menu_references["auto_stomp_settings"] = menu_references["auto_stomp"]:create_settings()
         menu_references["auto_stomp_stop_when_dead"] = menu_references["auto_stomp_settings"]:create_element({["name"] = "stop when target dead"}, {["toggle"] = {["flag"] = "auto_stomp_stop_when_dead", ["default"] = true}})
@@ -23577,15 +23660,11 @@ local backtrack_data = {}
                             end
                         end
 
-                        if target_distance ~= true then
-                            local distance = (local_client_position["p"] - hrp_position)["Magnitude"]
-
-                            if distance > target_distance then
-                                continue
-                            end
-                        end
-
                         local distance = (local_client_position["p"] - hrp_position)["Magnitude"]
+
+                        if target_distance ~= true and distance > target_distance then
+                            continue
+                        end
 
                         if distance < closest then
                             if ragebot_ignore_if_in_void and hrp_position["Magnitude"] > 9e8 then
@@ -23886,6 +23965,13 @@ local backtrack_data = {}
     local confidence_samples = {}
     local confidence_last_refresh = clock()
 
+    -- The densest-cluster scan is O(n^2) over a set three seconds wide, and its
+    -- answer is an average of that whole set, not a per-frame value: it is
+    -- recomputed at 20 Hz and the last answer is reused in between. Every call
+    -- still appends its own sample above; only the scan is cached.
+    local confidence_cached = nil
+    local confidence_cache_tick = 0
+
     local confidence_resolve = function(position)
         local now = clock()
 
@@ -23894,6 +23980,7 @@ local backtrack_data = {}
         if now - confidence_last_refresh >= (flags["confidence_refresh_time"] or 3) then
             confidence_samples = {}
             confidence_last_refresh = now
+            confidence_cached = nil
         end
 
         local samples = confidence_samples
@@ -23908,6 +23995,12 @@ local backtrack_data = {}
         if #samples < 10 then
             return position
         end
+
+        if now - confidence_cache_tick < 0.05 and confidence_cached then
+            return confidence_cached
+        end
+
+        confidence_cache_tick = now
 
         local forgiveness = flags["confidence_forgiveness"] or 14.4
 
@@ -23949,7 +24042,9 @@ local backtrack_data = {}
 
         -- Nothing holds up: the aim point is where the hitbox is, never the
         -- cluster read off an older set of samples.
-        return best or position
+        confidence_cached = best or position
+
+        return confidence_cached
     end
 
     set_ragebot_target = LPH_NO_VIRTUALIZE(function(target, message, manual)
@@ -24000,6 +24095,27 @@ local backtrack_data = {}
     local do_ragebot = LPH_JIT_MAX(function(dt, hrp)
         local target = ragebot_target
         local tick = clock()
+
+        -- The learned lead belongs to one body and one gun: a new target, a new
+        -- character (respawn) or a swapped tool starts it over at 1. With no miss
+        -- for a second it also creeps back, so an old overshoot does not linger
+        -- against a target that has settled.
+        do
+            local fb = lead_feedback
+            local character = target and target[3]
+
+            if fb["character"] ~= character or fb["tool"] ~= local_tool then
+                fb["character"] = character
+                fb["tool"] = local_tool
+                fb["multiplier"] = 1
+                fb["ring_count"] = 0
+                fb["lead_velocity"] = nil
+                fb["last_decay"] = tick
+            elseif tick - fb["last_decay"] > 1 then
+                fb["last_decay"] = tick
+                fb["multiplier"] += (1 - fb["multiplier"]) * 0.05
+            end
+        end
 
         target_list_only = next(ragebot_targets) ~= nil
 
@@ -24204,6 +24320,82 @@ local backtrack_data = {}
                     target_last_position = torso_position
                     last_refresh = clock()
                 end
+
+                -- Lead velocity: a short ring of position reads spaced past the
+                -- ~20 Hz a remote character replicates at. One 37 ms delta aliases
+                -- that stepping into spikes; over a 50-60 ms span they average out.
+                -- The throttled sample above keeps feeding the report, backtrack and
+                -- the gun handler, so `vel` on the damage line is unchanged.
+                if prediction == 0 then
+                    local fb = lead_feedback
+                    local lead_position = torso["Position"]
+                    local ring_count = fb["ring_count"]
+                    local ring_push = true
+
+                    if ring_count > 0 then
+                        local last_position = fb["ring_position"][ring_count]
+                        local sample_span = tick - fb["ring_time"][ring_count]
+                        local sample_travel = (lead_position - last_position)["Magnitude"]
+
+                        -- A jump no walking speed makes is a respawn, a teleport or
+                        -- a fling: 200 studs in one sample, or an implied 1200
+                        -- studs/s. The ring restarts on this sample so the jump is
+                        -- never divided into a lead.
+                        if sample_travel > 200 or (sample_span > 0 and sample_travel / sample_span > 1200) then
+                            ring_count = 0
+                        elseif sample_span < 0.015 then
+                            ring_push = false
+                        end
+                    end
+
+                    if ring_push then
+                        if ring_count >= 5 then
+                            for i = 2, 5 do
+                                fb["ring_time"][i - 1] = fb["ring_time"][i]
+                                fb["ring_position"][i - 1] = fb["ring_position"][i]
+                            end
+
+                            ring_count = 4
+                        end
+
+                        ring_count += 1
+                        fb["ring_time"][ring_count] = tick
+                        fb["ring_position"][ring_count] = lead_position
+                        fb["ring_count"] = ring_count
+                    end
+
+                    fb["lead_velocity"] = nil
+
+                    if ring_count >= 3 then
+                        local oldest = nil
+
+                        -- The freshest sample that already sits a replication
+                        -- interval back: the shortest window that still spans it.
+                        for i = ring_count - 1, 1, -1 do
+                            if fb["ring_time"][ring_count] - fb["ring_time"][i] >= 0.05 then
+                                oldest = i
+                                break
+                            end
+                        end
+
+                        if oldest and fb["ring_time"][ring_count] - fb["ring_time"][oldest] >= 0.03 then
+                            local ring_window = fb["ring_time"][ring_count] - fb["ring_time"][oldest]
+                            local lead_velocity = (fb["ring_position"][ring_count] - fb["ring_position"][oldest]) / ring_window
+                            local ring_speed = lead_velocity["Magnitude"]
+
+                            -- Past 400 studs/s the lead is clamped, not dropped: a
+                            -- fast fall or a fling still travels roughly where it
+                            -- points, and zeroing the lead aims at where the target
+                            -- was. This replaces the old 250 studs/s zeroing.
+                            if ring_speed > 400 then
+                                lead_velocity *= 400 / ring_speed
+                            end
+
+                            fb["lead_velocity"] = lead_velocity
+                        end
+                    end
+                end
+
             end
 
             if hitbox then
@@ -24246,8 +24438,18 @@ local backtrack_data = {}
                 else
                     ragebot_aim_position = hitbox_position
 
-                    if target_velocity then
-                        ragebot_aim_position+=(target_velocity*(prediction == 0 and local_ping/500 or prediction == 2 and 0 or prediction))
+                    -- Auto leads with the windowed velocity and the learned
+                    -- multiplier. A literal millisecond value and the disabled
+                    -- sentinel keep the exact expression they always had, and the
+                    -- multiplier is never laid over a number the user typed.
+                    if prediction == 0 then
+                        local lead = lead_feedback["lead_velocity"] or target_velocity
+
+                        if lead then
+                            ragebot_aim_position+=(lead*(local_ping/500)*lead_feedback["multiplier"])
+                        end
+                    elseif target_velocity then
+                        ragebot_aim_position+=(target_velocity*(prediction == 2 and 0 or prediction))
                     end
                 end
 
@@ -24340,7 +24542,7 @@ local backtrack_data = {}
                 -- No distance gate. The trigger is pulled at any range; the shot
                 -- is what reaches or does not, and the manipulation can move the
                 -- origin onto the target from anywhere.
-                if local_gun and (((not local_reloading or auto_fire_always_fire) and not target[18] and not target[7] and not spawn_guard["check"](target) and not grabbing_constraint) and (flags["auto_fire"] and (auto_fire_always_fire or (((server_position-ragebot_aim_position)["Magnitude"] > 0) or flags["follow_target"] or did_defensive)) and old_time-last_fire > fire_cooldown)) then
+                if local_gun and (((not local_reloading or auto_fire_always_fire) and not target[18] and not target[7] and not has_forcefield and not grabbing_constraint) and (flags["auto_fire"] and (auto_fire_always_fire or (((server_position-ragebot_aim_position)["Magnitude"] > 0) or flags["follow_target"] or did_defensive)) and old_time-last_fire > fire_cooldown)) then
                     local delay = flags["shot_delay"]
                     if delay > 0 then
                         wait(delay/1000)
@@ -24351,55 +24553,77 @@ local backtrack_data = {}
                         -- the target has already left. A backtrack, defensive,
                         -- forced or manipulated point is a deliberate other frame
                         -- and keeps what was solved.
-                        if not did_defensive and not flags["auto_fire_at_backtrack"] and not ragebot_manipulation and not ragebot_force_position and not did_custom_aim and ragebot_aim_position and target_velocity and hitbox and hitbox["Parent"] then
-                            ragebot_aim_position = hitbox["Position"] + target_velocity * (prediction == 0 and local_ping/500 or prediction == 2 and 0 or prediction)
+                        if not did_defensive and not flags["auto_fire_at_backtrack"] and not ragebot_manipulation and not ragebot_force_position and not did_custom_aim and ragebot_aim_position and hitbox and hitbox["Parent"] then
+                            -- Re-solved from the limb's position now, after the
+                            -- wait, with the same lead the solve frame used.
+                            if prediction == 0 then
+                                local lead = lead_feedback["lead_velocity"] or target_velocity
+
+                                if lead then
+                                    ragebot_aim_position = hitbox["Position"] + lead*(local_ping/500)*lead_feedback["multiplier"]
+                                end
+                            elseif target_velocity then
+                                ragebot_aim_position = hitbox["Position"] + target_velocity * (prediction == 2 and 0 or prediction)
+                            end
                         end
                     end
 
                     if local_gun then
-                        local new_local_guns = {}
-                        local gun_order = auto_equip_gun_names
-                        local gun_count = #gun_order
+                        -- The list is a pure function of the bound gun set and the
+                        -- auto equip order: rebuilt when one of those changes, and
+                        -- reused on every other fire frame instead of rescanning
+                        -- local_guns and the order on each shot.
+                        local gun_cache = ragebot_gun_cache
+                        local new_local_guns = gun_cache["list"]
 
-                        -- The auto equip list first, in its own order: those are
-                        -- the guns that were put in the character's hands, so
-                        -- they are the ones the shots are meant to come from.
-                        -- Every one of them fires; the loop below is not a pick.
-                        for i = 1, gun_count do
-                            local wanted = gun_order[i]
+                        if not new_local_guns or gun_cache["seen"] ~= local_guns_version then
+                            new_local_guns = {}
+                            local gun_order = auto_equip_gun_names
+                            local gun_count = #gun_order
 
-                            for handle, entry in local_guns do
-                                local tool = entry[5] or handle["Parent"]
+                            -- The auto equip list first, in its own order: those are
+                            -- the guns that were put in the character's hands, so
+                            -- they are the ones the shots are meant to come from.
+                            -- Every one of them fires; the loop below is not a pick.
+                            for i = 1, gun_count do
+                                local wanted = gun_order[i]
 
-                                if tool and tool["Name"] == wanted then
-                                    new_local_guns[#new_local_guns+1] = entry
-                                end
-                            end
-                        end
+                                for handle, entry in local_guns do
+                                    local tool = entry[5] or handle["Parent"]
 
-                        -- Everything else after it, so a gun held by hand that
-                        -- is not on the list still fires. The rifle keeps its old
-                        -- priority among those. Names already taken from the
-                        -- list above are skipped, never fired twice.
-                        for pass = 1, 2 do
-                            for handle, entry in local_guns do
-                                local tool = entry[5] or handle["Parent"]
-
-                                if tool then
-                                    local listed = false
-
-                                    for i = 1, gun_count do
-                                        if tool["Name"] == gun_order[i] then
-                                            listed = true
-                                            break
-                                        end
-                                    end
-
-                                    if not listed and (pass == 1) == (tool["Name"] == "[Rifle]") then
+                                    if tool and tool["Name"] == wanted then
                                         new_local_guns[#new_local_guns+1] = entry
                                     end
                                 end
                             end
+
+                            -- Everything else after it, so a gun held by hand that
+                            -- is not on the list still fires. The rifle keeps its old
+                            -- priority among those. Names already taken from the
+                            -- list above are skipped, never fired twice.
+                            for pass = 1, 2 do
+                                for handle, entry in local_guns do
+                                    local tool = entry[5] or handle["Parent"]
+
+                                    if tool then
+                                        local listed = false
+
+                                        for i = 1, gun_count do
+                                            if tool["Name"] == gun_order[i] then
+                                                listed = true
+                                                break
+                                            end
+                                        end
+
+                                        if not listed and (pass == 1) == (tool["Name"] == "[Rifle]") then
+                                            new_local_guns[#new_local_guns+1] = entry
+                                        end
+                                    end
+                                end
+                            end
+
+                            gun_cache["list"] = new_local_guns
+                            gun_cache["seen"] = local_guns_version
                         end
 
                         local pos = ragebot_aim_position
@@ -24456,7 +24680,7 @@ local backtrack_data = {}
 
                             -- An unread ammo value is unknown, not empty: fire and
                             -- let the server reject the shot if the clip is dry.
-                            if (ammo == nil or ammo > 0) and handle and handle["Parent"] and fire_hitbox and not target[7] and not spawn_guard["check"](target) then
+                            if (ammo == nil or ammo > 0) and handle and handle["Parent"] and fire_hitbox and not target[7] and not has_forcefield then
                                 last_fire = clock()
 
                                 -- The shot's visibility is decided once here, before
@@ -24936,6 +25160,16 @@ local backtrack_data = {}
         local distance = flags["follow_target_distance"]
         local speed = 75
         local height = vector3_zero
+        -- Shift lead state: one ring of live target reads, its straightness, and
+        -- the ceiling on how far the shift may ever lead. Block-local, so none of
+        -- it can leak into the rest of the script; mirrors the ragebot's own ring.
+        local follow_target_lead_hrp = nil
+        local follow_target_lead_velocity = nil
+        local follow_target_lead_straightness = 1
+        local follow_target_ring_time = {}
+        local follow_target_ring_pos = {}
+        local follow_target_ring_count = 0
+        local follow_target_lead_cap = 8
 
         local function do_void_while_waiting(hrp)
             local old_cframe = hrp["CFrame"]
@@ -24993,15 +25227,175 @@ local backtrack_data = {}
                 local old_cframe = hrp["CFrame"]
                 local new_cframe = old_cframe
 
+                local ragebot_active = flags["auto_fire"] and flags["ragebot"]
+
+                -- Anchor. ragebot_aim_position is the solved limb while a shot is
+                -- being solved, leaded by the ragebot's own prediction; while the
+                -- ragebot is idle it is whatever was solved last, so the live body
+                -- is read instead below.
+                local anchor_pos = ragebot_aim_position
+
+                local parts = ragebot_target[4]
+                local raw_hrp = parts and parts["HumanoidRootPart"]
+                local raw_valid = raw_hrp and raw_hrp["Parent"]
+
+                -- Shift lead: one ping round trip, scaled by shift scale. The old
+                -- manual millisecond slider is gone, so this is the whole lead,
+                -- and the toggle owns it in every mode.
+                local shift_scale = flags["follow_target_ping_scale"] or 0
+
+                -- The top of the slider is the auto position, and the position it
+                -- starts at. Auto is one round trip (local_ping is the round-trip
+                -- ping, so the 50 below is deliberate): half of what 100% means,
+                -- folded here rather than in the slider so a saved config still
+                -- holding 100 shifts exactly as it always did.
+                if shift_scale >= 400 then
+                    shift_scale = 50
+                end
+
+                local lead_seconds = 0
+                if flags["follow_target_ping_prediction"] then
+                    lead_seconds = (local_ping / 500) * (shift_scale / 100)
+                end
+
+                -- Velocity is sampled here off the live target HRP, into a short
+                -- ring of reads. One frame-to-frame delta aliases the ~20 Hz a
+                -- remote character replicates at into spikes; a ring spanning 50 ms
+                -- averages that stepping out. It is fed whenever the target is
+                -- live, independent of the ragebot's prediction toggle, so the
+                -- shift never borrows a ring the ragebot may not be feeding.
+                if raw_valid then
+                    local sample_now = clock()
+                    local sample_position = raw_hrp["Position"]
+
+                    if follow_target_lead_hrp ~= raw_hrp then
+                        -- A new body is a respawn: the old ring belongs to a
+                        -- character that is gone.
+                        follow_target_lead_hrp = raw_hrp
+                        follow_target_ring_count = 0
+                    end
+
+                    local ring_count = follow_target_ring_count
+                    local ring_push = true
+
+                    if ring_count > 0 then
+                        local last_position = follow_target_ring_pos[ring_count]
+                        local sample_span = sample_now - follow_target_ring_time[ring_count]
+                        local sample_travel = (sample_position - last_position)["Magnitude"]
+
+                        -- A jump no walking speed makes is a respawn, a teleport or
+                        -- a fling: 200 studs in one read, or an implied 1200 studs/s.
+                        -- The ring restarts on this read so the jump is never
+                        -- divided into a lead. A read inside the replication interval
+                        -- adds nothing, so it is dropped, not stored.
+                        if sample_travel > 200 or (sample_span > 0 and sample_travel / sample_span > 1200) then
+                            ring_count = 0
+                        elseif sample_span < 0.015 then
+                            ring_push = false
+                        end
+                    end
+
+                    if ring_push then
+                        if ring_count >= 5 then
+                            for i = 2, 5 do
+                                follow_target_ring_time[i - 1] = follow_target_ring_time[i]
+                                follow_target_ring_pos[i - 1] = follow_target_ring_pos[i]
+                            end
+
+                            ring_count = 4
+                        end
+
+                        ring_count += 1
+                        follow_target_ring_time[ring_count] = sample_now
+                        follow_target_ring_pos[ring_count] = sample_position
+                    end
+
+                    follow_target_ring_count = ring_count
+                    follow_target_lead_velocity = nil
+                    follow_target_lead_straightness = 1
+
+                    if ring_count >= 3 then
+                        local oldest = nil
+
+                        -- The freshest read that already sits a replication
+                        -- interval back: the shortest window that still spans it,
+                        -- so the velocity never carries more stale motion than one
+                        -- step of replication can hide.
+                        for i = ring_count - 1, 1, -1 do
+                            if follow_target_ring_time[ring_count] - follow_target_ring_time[i] >= 0.05 then
+                                oldest = i
+                                break
+                            end
+                        end
+
+                        if oldest then
+                            local ring_window = follow_target_ring_time[ring_count] - follow_target_ring_time[oldest]
+
+                            if ring_window > 0 then
+                                local ring_travel = follow_target_ring_pos[ring_count] - follow_target_ring_pos[oldest]
+                                local lead_velocity = ring_travel / ring_window
+                                local ring_speed = lead_velocity["Magnitude"]
+
+                                -- Past 400 studs/s the lead is clamped, not dropped:
+                                -- a fast fall or a fling still travels roughly where
+                                -- it points, and zeroing the lead aims at where the
+                                -- target was.
+                                if ring_speed > 400 then
+                                    lead_velocity *= 400 / ring_speed
+                                end
+
+                                follow_target_lead_velocity = lead_velocity
+
+                                -- Straightness: net displacement over the whole path
+                                -- walked between the same two reads. Straight out and
+                                -- back reads 0, a clean run reads 1. It only ever
+                                -- damps the lead below, so a target that curves or
+                                -- jukes is led less, never more.
+                                local path_walked = 0
+                                for i = oldest + 1, ring_count do
+                                    path_walked += (follow_target_ring_pos[i] - follow_target_ring_pos[i - 1])["Magnitude"]
+                                end
+
+                                if path_walked > 0.01 then
+                                    follow_target_lead_straightness = clamp(ring_travel["Magnitude"] / path_walked, 0, 1)
+                                end
+                            end
+                        end
+                    end
+
+                    if lead_seconds > 0 and follow_target_lead_velocity then
+                        local base = ragebot_active and ragebot_aim_position or raw_hrp["Position"]
+                        local lead_step = follow_target_lead_velocity * lead_seconds
+
+                        -- Cap the distance first, then damp by straightness, so
+                        -- neither can add lead. A high ping and a fast target would
+                        -- otherwise carry the shift past the target entirely; the
+                        -- cap and a poor straightness both pull it back to the body.
+                        local lead_distance = lead_step["Magnitude"]
+
+                        if lead_distance > follow_target_lead_cap then
+                            lead_step *= follow_target_lead_cap / lead_distance
+                        end
+
+                        if lead_distance > 0 then
+                            anchor_pos = base + lead_step * (0.35 + 0.65 * follow_target_lead_straightness)
+                        end
+                    end
+                else
+                    follow_target_lead_hrp = nil
+                    follow_target_lead_velocity = nil
+                    follow_target_ring_count = 0
+                end
+
                 if follow_target_style == "random" then
-                    new_cframe = cframe_new(ragebot_aim_position + vector3_new(math_random(-distance, distance), math_random(-distance, distance), math_random(-distance, distance)))
+                    new_cframe = cframe_new(anchor_pos + vector3_new(math_random(-distance, distance), math_random(-distance, distance), math_random(-distance, distance)))
                     new_cframe*=cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
                 elseif follow_target_style == "random spam" then
                     local tick = clock()
                     local difference = tick - follow_target_avoid_last_tick
                     local old_difference = difference < 0.06
                     if difference > 0.11 or old_difference then
-                        new_cframe = cframe_new(ragebot_aim_position + vector3_new(math_random(-distance, distance), math_random(-distance, distance), math_random(-distance, distance)))
+                        new_cframe = cframe_new(anchor_pos + vector3_new(math_random(-distance, distance), math_random(-distance, distance), math_random(-distance, distance)))
                         if not old_difference then
                             follow_target_avoid_last_tick = tick
                         end
@@ -25013,9 +25407,9 @@ local backtrack_data = {}
                     -- speed 1..100% maps to 0.05..5 loops per second. The loop
                     -- is vertical, so height has no meaning here and is hidden.
                     local offset = spiral_follow_offset(clock(), speed * 0.05, distance)
-                    new_cframe = cframe_new(ragebot_aim_position + offset, ragebot_aim_position)
+                    new_cframe = cframe_new(anchor_pos + offset, anchor_pos)
                 else
-                    new_cframe = cframe_angles(0,rad(360 * ((clock() * speed) % 1)),0) * cframe_new(0,0,distance) + (ragebot_aim_position + height)
+                    new_cframe = cframe_angles(0,rad(360 * ((clock() * speed) % 1)),0) * cframe_new(0,0,distance) + (anchor_pos + height)
                 end
 
                 local_following = true
@@ -25068,6 +25462,10 @@ local backtrack_data = {}
 
         create_connection(menu_references["follow_target_height"]["on_slider_change"], function(value)
             height = vector3_new(0, value, 0)
+        end)
+
+        create_connection(menu_references["follow_target_ping_prediction"]["on_toggle_change"], function(value)
+            menu_references["follow_target_ping_scale"]:set_visible(value)
         end)
 
         create_connection(menu_references["follow_target_stop_if"]["on_dropdown_change"], function(value)
@@ -25979,6 +26377,14 @@ local backtrack_data = {}
     local data = {[11] = 0}
     local old_radius = 0
     local rendering = false
+
+    -- Per line, the last values written to it, so an unchanged one is not written
+    -- again: the fade and the two colours only change with the flags, and only
+    -- From/To move with the spin. Slots are [1..2] From, [3..4] To, [5]
+    -- transparency, [6] colour, [7] colour written, [8] visible.
+    local circle_state = {}
+    local circle_color_key = nil
+    local circle_gradient_key = nil
     local get_bounding_box = nil
     local bbox_cache_character = nil
     local bbox_cache_tick = 0
@@ -26034,6 +26440,27 @@ local backtrack_data = {}
             local angle_step = 0.12566370614359174
             local pos1, on_screen = world_to_viewport_point(camera, position + vector3_new(cos(offset) * radius, 0, sin(offset) * radius))
 
+            -- The two colours change only with the flags, so the 32 per-slot
+            -- lerps are rebuilt on a flag change instead of every frame.
+            if circle_color_key ~= color or circle_gradient_key ~= gradient_color then
+                circle_color_key = color
+                circle_gradient_key = gradient_color
+
+                for i = 1, 32 do
+                    local slot = circle_state[i]
+
+                    if not slot then
+                        slot = {}
+                        circle_state[i] = slot
+                    end
+
+                    slot[6] = color3_lerp(color, gradient_color, i / 32)
+                    slot[7] = nil
+                end
+            end
+
+            local circle_transparency = flags["3d_target_circle_transparency"] or 0
+
             for i = 1, 32 do
                 local line = lines[i]
                 local angle2 = angle_step * i + offset
@@ -26041,19 +26468,51 @@ local backtrack_data = {}
                 local pos2, on_screen2 = world_to_viewport_point(camera, position + vector3_new(cos(angle2) * radius, 0, sin(angle2) * radius))
 
                 local visible = (i + 32) % 32
+                local slot = circle_state[i]
+
+                if not slot then
+                    slot = {}
+                    circle_state[i] = slot
+                end
 
                 if on_screen and on_screen2 and visible then
                     local fade = visible/32
+                    local from_x, from_y = pos1["X"], pos1["Y"]
+                    local to_x, to_y = pos2["X"], pos2["Y"]
 
-                    line["From"] = vector2_new(pos1["X"], pos1["Y"])
-                    line["To"] = vector2_new(pos2["X"], pos2["Y"])
+                    if slot[1] ~= from_x or slot[2] ~= from_y then
+                        slot[1] = from_x
+                        slot[2] = from_y
+                        line["From"] = vector2_new(from_x, from_y)
+                    end
+
+                    if slot[3] ~= to_x or slot[4] ~= to_y then
+                        slot[3] = to_x
+                        slot[4] = to_y
+                        line["To"] = vector2_new(to_x, to_y)
+                    end
+
                     -- The fade is the ring's own ramp around it; the colour's
                     -- transparency is laid over it, so the ring can be dimmed as
                     -- a whole.
-                    line["Transparency"] = clamp(fade + (flags["3d_target_circle_transparency"] or 0), 0, 1)
-                    line["Color"] = color3_lerp(color, gradient_color, i / 32)
-                    line["Visible"] = true
-                else
+                    local transparency = clamp(fade + circle_transparency, 0, 1)
+
+                    if slot[5] ~= transparency then
+                        slot[5] = transparency
+                        line["Transparency"] = transparency
+                    end
+
+                    if slot[7] ~= slot[6] then
+                        slot[7] = slot[6]
+                        line["Color"] = slot[6]
+                    end
+
+                    if slot[8] ~= true then
+                        slot[8] = true
+                        line["Visible"] = true
+                    end
+                elseif slot[8] ~= false then
+                    slot[8] = false
                     line["Visible"] = false
                 end
 
@@ -26063,9 +26522,16 @@ local backtrack_data = {}
             end
         elseif rendering then
             old_radius = 0
+
             for i = 1, 32 do
-                lines[i]["Visible"] = false
+                local slot = circle_state[i]
+
+                if slot and slot[8] ~= false then
+                    slot[8] = false
+                    lines[i]["Visible"] = false
+                end
             end
+
             rendering = false
         end
     end)
@@ -26091,6 +26557,12 @@ local backtrack_data = {}
                     ["Visible"] = false
                 })
             end
+
+            -- Fresh drawings: the cache must not claim a new line is already
+            -- coloured or already visible.
+            circle_state = {}
+            circle_color_key = nil
+            circle_gradient_key = nil
 
             heartbeat[#heartbeat+1] = do_target_circle
             -- Pure arithmetic and Drawing writes: no wait() inside, so it can
