@@ -13728,6 +13728,104 @@ do
     end)
 end
 
+-- >> ( follow prediction )
+
+-- Velocity used to lead a followed target. The ragebot's own sample is the
+-- authority while it is the selected target; every other target is read from
+-- its body assembly. A jump or fling is discarded, the same way the ragebot
+-- discards it: one frame of a teleport is not a direction the target is moving in.
+local get_follow_target_velocity = LPH_NO_VIRTUALIZE(function(target)
+    if not target then
+        return nil
+    end
+
+    if target == ragebot_target and ragebot_aim_velocity then
+        local velocity = ragebot_aim_velocity
+
+        if velocity["Magnitude"] > 0.1 and velocity["Magnitude"] < 250 then
+            return velocity
+        end
+    end
+
+    local parts = target[4]
+    local root = parts and (parts["HumanoidRootPart"] or parts["UpperTorso"] or parts["Head"])
+
+    if root then
+        local velocity = root["AssemblyLinearVelocity"] or root["Velocity"]
+
+        if velocity and velocity["Magnitude"] > 0.1 and velocity["Magnitude"] < 250 then
+            return velocity
+        end
+    end
+
+    return nil
+end)
+
+-- Follow prediction is always automatic. Half the local round trip is the time
+-- a shot spends in flight, so leading by exactly that keeps every followed
+-- point where the target will be when the shot lands. The prediction slider is
+-- left to the ragebot's own solve: a follow target should not stop leading
+-- because the shot prediction was disabled or overridden. The clamp keeps a bad
+-- ping reading from throwing the point metres off the body.
+local get_follow_prediction_lead = LPH_NO_VIRTUALIZE(function()
+    return clamp(local_ping / 500, 0, 0.25)
+end)
+
+-- The point a followed target is drawn around, led by the automatic follow
+-- prediction. The head is what the target is recognised by and the part "view
+-- target" locks the camera to; a missing head walks down the torso to the root
+-- so the anchor stays on the body. A missing or implausible velocity leaves the
+-- live point untouched.
+local get_follow_target_anchor = LPH_NO_VIRTUALIZE(function(target)
+    local parts = target and target[4]
+
+    if not parts then
+        return nil
+    end
+
+    local position = nil
+    local head = parts["Head"]
+
+    if head then
+        position = head["Position"]
+    else
+        local upper_torso = parts["UpperTorso"]
+
+        if upper_torso then
+            position = upper_torso["Position"]
+        else
+            -- R6 has a single Torso; R15 has UpperTorso. Both are closer to
+            -- the body's centre than the root, which is the last fallback.
+            local torso_part = parts["Torso"]
+
+            if torso_part then
+                position = torso_part["Position"]
+            else
+                local root = parts["HumanoidRootPart"]
+                position = root and root["Position"] or nil
+            end
+        end
+    end
+
+    if not position then
+        return nil
+    end
+
+    local lead = get_follow_prediction_lead()
+
+    if lead <= 0 then
+        return position
+    end
+
+    local velocity = get_follow_target_velocity(target)
+
+    if not velocity then
+        return position
+    end
+
+    return position + velocity * lead
+end)
+
 -- >> ( game )
 
 ;(function()
@@ -14222,12 +14320,12 @@ end
         local do_drawing_crosshair = LPH_JIT_MAX(function(dt)
             local new_position = nil
             
-            if flags["drawing_crosshair_follow_target"] and ragebot_target then
-                local hrp = ragebot_target[4]["UpperTorso"]
+            if flags["drawing_crosshair_follow_target"] and ragebot_target and ragebot_target[3] and ragebot_target[3]["Parent"] then
+                local anchor = get_follow_target_anchor(ragebot_target)
 
-                if hrp then
-                    local pos, on_screen = world_to_viewport_point(camera, hrp["Position"])
-                    
+                if anchor then
+                    local pos, on_screen = world_to_viewport_point(camera, anchor)
+
                     if on_screen then
                         new_position = vector2_new(pos["X"], pos["Y"])
                     end
@@ -16864,6 +16962,10 @@ end
         end
 
         create_connection(menu_references["hide_game_crosshair"]["on_toggle_change"], function(value)
+            if value and flags["crosshair_follow"] and menu_references["crosshair_follow"] then
+                menu_references["crosshair_follow"]:set_toggle(false)
+            end
+
             if flags["crosshair_animations"] then
                 menu_references["crosshair_animations"]:set_toggle(false)
 
@@ -22378,6 +22480,140 @@ local update_fov_circle_follow = LPH_NO_VIRTUALIZE(function(circle, outline, dea
     return true
 end)
 
+-- Spins one feature's FOV fill. The fill is a GUI gradient, so rotating it
+-- sweeps the fade around the circle; the outline stays a symmetric Drawing.
+-- Speed is read per frame so a loaded config applies without a callback.
+local update_fov_rotation = LPH_NO_VIRTUALIZE(function(circle, rotation_flag, speed_flag, dt)
+    if not circle or not flags[rotation_flag] then
+        return
+    end
+
+    local speed = (flags[speed_flag] or 30) * 5
+
+    circle["Rotation"] = ((circle["Rotation"] or 90) + speed * dt) % 360
+end)
+
+-- FOV fills are GUI circles: a Drawing circle cannot carry a UIGradient, and
+-- the fill is the part that fades. Outlines stay as drawings so they keep
+-- their crisp edge.
+local fov_gradient_gui = nil
+
+local get_fov_gradient_gui = LPH_NO_VIRTUALIZE(function()
+    if not fov_gradient_gui or not fov_gradient_gui["Parent"] then
+        fov_gradient_gui = create_instance("ScreenGui", {
+            ["Name"] = "juju_fov_gradients",
+            ["IgnoreGuiInset"] = true,
+            ["ResetOnSpawn"] = false,
+            ["DisplayOrder"] = 9,
+            ["ZIndexBehavior"] = Enum["ZIndexBehavior"]["Global"],
+            ["Parent"] = core_gui
+        })
+    end
+
+    return fov_gradient_gui
+end)
+
+-- Keeps the Drawing-style property names the FOV callers already use, while
+-- writing them to a circular Frame with a UIGradient fade.
+local create_fov_fill = LPH_NO_VIRTUALIZE(function(properties)
+    local state = {
+        ["Color"] = properties["Color"] or color3_fromrgb(255, 255, 255),
+        ["Transparency"] = properties["Transparency"] or 0,
+        ["Radius"] = properties["Radius"] or 0,
+        ["Visible"] = properties["Visible"] ~= false,
+        ["Position"] = properties["Position"] or vector2_new(0, 0),
+        ["ZIndex"] = properties["ZIndex"] or 1,
+        ["Rotation"] = properties["Rotation"] or 90,
+        ["Destroyed"] = false
+    }
+
+    local frame = create_instance("Frame", {
+        ["Name"] = "fov_fill",
+        ["AnchorPoint"] = vector2_new(0.5, 0.5),
+        ["BackgroundColor3"] = state["Color"],
+        ["BackgroundTransparency"] = 1 - clamp(state["Transparency"], 0, 1),
+        ["BorderSizePixel"] = 0,
+        ["Position"] = udim2_new(0, state["Position"]["X"], 0, state["Position"]["Y"]),
+        ["Size"] = udim2_new(0, state["Radius"] * 2, 0, state["Radius"] * 2),
+        ["Visible"] = state["Visible"] and state["Radius"] > 0,
+        ["ZIndex"] = state["ZIndex"],
+        ["Parent"] = get_fov_gradient_gui()
+    })
+
+    create_instance("UICorner", {
+        ["CornerRadius"] = UDim["new"](1, 0),
+        ["Parent"] = frame
+    })
+
+    -- 90 degrees is vertical. The fade is strongest at the top and bottom and
+    -- clears in the middle, so the fill still reads as a circle instead of a
+    -- hard half-disc.
+    local gradient = create_instance("UIGradient", {
+        ["Rotation"] = state["Rotation"],
+        ["Transparency"] = NumberSequence["new"]({
+            NumberSequenceKeypoint["new"](0, 0.75),
+            NumberSequenceKeypoint["new"](0.5, 0),
+            NumberSequenceKeypoint["new"](1, 0.75)
+        }),
+        ["Parent"] = frame
+    })
+
+    local apply = function()
+        if state["Destroyed"] then
+            return
+        end
+
+        local radius = type(state["Radius"]) == "number" and state["Radius"] or 0
+        local position = state["Position"]
+
+        frame["Position"] = udim2_new(0, position["X"], 0, position["Y"])
+        frame["Size"] = udim2_new(0, radius * 2, 0, radius * 2)
+        frame["BackgroundColor3"] = state["Color"]
+        frame["BackgroundTransparency"] = 1 - clamp(state["Transparency"], 0, 1)
+        frame["Visible"] = state["Visible"] and radius > 0
+        frame["ZIndex"] = state["ZIndex"]
+        gradient["Rotation"] = state["Rotation"]
+    end
+
+    local proxy
+
+    proxy = setmetatable({}, {
+        ["__index"] = function(_, property)
+            if property == "Destroy" then
+                return function()
+                    if state["Destroyed"] then
+                        return
+                    end
+
+                    state["Destroyed"] = true
+
+                    -- The tween library keys its running tweens by object, so a
+                    -- destroyed fill would otherwise stay referenced there.
+                    for _, tweens in active_tweens do
+                        tweens[proxy] = nil
+                    end
+
+                    frame:Destroy()
+                end
+            end
+
+            return state[property]
+        end,
+        ["__newindex"] = function(_, property, value)
+            if property == "Destroy" then
+                return
+            end
+
+            state[property] = value
+            apply()
+        end
+    })
+
+    apply()
+
+    return proxy
+end)
+
 -- > ( ragebot / hvh )
 
 local backtrack_data = {}
@@ -22459,6 +22695,9 @@ local backtrack_data = {}
 
         set_resolver_settings_visible(flags["resolver_mode"])
         menu_references["ragebot_hitbox"] = menu_references["general_section"]:create_element({["name"] = "target hitbox"}, {["dropdown"] = {["flag"] = "ragebot_hitbox", ["options"] = {"head", "root", "torso", "arms", "legs", "randomize"}, ["default"] = {"head"}}})
+        -- The hitbox above is the preference order, not a fixed answer: the aim
+        -- takes the first limb on it that a ray from the muzzle can see, and
+        -- only falls back to the plain pick when every limb is behind cover.
         menu_references["prediction"] = menu_references["general_section"]:create_element({["name"] = "prediction"}, {["slider"] = {["flag"] = "prediction", ["min"] = 0, ["max"] = 2000, ["default"] = 0, ["min_text"] = "auto", ["max_text"] = "disabled", ["suffix"] = "%", ["decimals"] = 2}})
         menu_references["prediction_settings"] = menu_references["prediction"]:create_settings()
         menu_references["resolver_rate"] = menu_references["prediction_settings"]:create_element({["name"] = "resolver rate"}, {["slider"] = {["flag"] = "resolver_rate", ["min"] = 0, ["suffix"] = "s", ["max"] = 0.1, ["default"] = 0.037, ["decimals"] = 4}})
@@ -22480,7 +22719,18 @@ local backtrack_data = {}
         -- trims it. The player list still colors and can still mark players, it
         -- just does not gate the ragebot on a fresh install.
         menu_references["target_statuses"] = menu_references["target_selection_settings"]:create_element({["name"] = "target statuses"}, {["dropdown"] = {["flag"] = "target_statuses", ["options"] = {"friendly", "neutral", "enemy"}, ["default"] = {"friendly", "neutral", "enemy"}, ["multi"] = true, ["requires_one"] = true}})
-        menu_references["target_selection_prioritize_by"] = menu_references["target_selection_settings"]:create_element({["name"] = "prioritize by"}, {["dropdown"] = {["flag"] = "prioritize_by", ["options"] = {"closest to character", "closest to mouse", "highest wanted", "lowest health", "random"}, ["default"] = {"closest to mouse"}}})
+        -- "closest to crosshair" measures the mouse ray in 3D, so a target under
+        -- the cursor but far behind it does not beat one the ray actually passes.
+        -- "visible only" casts a ray to the head and drops a blocked target, so
+        -- the pick is one a shot can reach. "aiming at you" reads the shot-at
+        -- signal and forgets it after two seconds.
+        menu_references["target_selection_prioritize_by"] = menu_references["target_selection_settings"]:create_element({["name"] = "prioritize by"}, {["dropdown"] = {["flag"] = "prioritize_by", ["options"] = {"closest to character", "closest to mouse", "closest to crosshair", "highest wanted", "lowest health", "lowest armor", "visible only", "aiming at you", "weighted", "random"}, ["default"] = {"closest to mouse"}}})
+        -- Sticky holds the current target while it is still a fair pick: its
+        -- score has to stay within the margin of the best one. Without it the
+        -- aim jumps to whichever name is a hair closer on the frame.
+        menu_references["target_selection_sticky"] = menu_references["target_selection_settings"]:create_element({["name"] = "sticky target"}, {["toggle"] = {["flag"] = "target_selection_sticky", ["default"] = true}})
+        menu_references["target_selection_sticky_settings"] = menu_references["target_selection_sticky"]:create_settings()
+        menu_references["target_selection_sticky_margin"] = menu_references["target_selection_sticky_settings"]:create_element({["name"] = "margin"}, {["slider"] = {["flag"] = "target_selection_sticky_margin", ["min"] = 0, ["max"] = 100, ["default"] = 15, ["suffix"] = "%"}})
         menu_references["target_selection_ignore_if"] = menu_references["target_selection_settings"]:create_element({["name"] = "ignore if"}, {["dropdown"] = {["flag"] = "ignore_if", ["options"] = {"invulnerable", "knocked", "in void"}, ["default"] = {"invulnerable"}, ["multi"] = true}})
         menu_references["target_selection_target_distance"] = menu_references["target_selection_settings"]:create_element({["name"] = "target distance"}, {["slider"] = {["flag"] = "target_selection_target_distance", ["default"] = 2500, ["max_text"] = "max", ["min"] = 5, ["max"] = 2500, ["suffix"] = " studs"}})
     menu_references["visualization_section"] = menu["groups"]["main"]:create_section("ragebot", "visualization", 1, 0.3, 0.7)
@@ -22503,6 +22753,9 @@ local backtrack_data = {}
         menu_references["ragebot_field_of_view_outline"] = menu_references["ragebot_field_of_view_show_fov_settings"]:create_element({["name"] = "outline"}, {["colorpicker"] = {["color_flag"] = "ragebot_field_of_view_outline_color", ["default_color"] = color3_fromrgb(15, 15, 15), ["default_transparency"] = 0.4, ["transparency_flag"] = "ragebot_field_of_view_outline_transparency"}})
         menu_references["ragebot_field_of_view_active_color"] = menu_references["ragebot_field_of_view_show_fov_settings"]:create_element({["name"] = "active color"}, {["colorpicker"] = {["color_flag"] = "ragebot_field_of_view_active_color", ["default_color"] = color3_fromrgb(233, 44, 44), ["default_transparency"] = 0.8, ["transparency_flag"] = "ragebot_field_of_view_active_transparency"}})
         menu_references["ragebot_field_of_view_active_outline"] = menu_references["ragebot_field_of_view_show_fov_settings"]:create_element({["name"] = "active outline"}, {["colorpicker"] = {["color_flag"] = "ragebot_field_of_view_active_outline", ["default_color"] = color3_fromrgb(15, 15, 15), ["default_transparency"] = 0.8, ["transparency_flag"] = "ragebot_field_of_view_active_outline_transparency"}})
+        menu_references["ragebot_field_of_view_rotation"] = menu_references["ragebot_field_of_view_show_fov_settings"]:create_element({["name"] = "moving rotation"}, {["toggle"] = {["flag"] = "ragebot_field_of_view_rotation"}})
+        menu_references["ragebot_field_of_view_rotation_speed"] = menu_references["ragebot_field_of_view_show_fov_settings"]:create_element({["name"] = "speed"}, {["slider"] = {["flag"] = "ragebot_field_of_view_rotation_speed", ["min"] = 1, ["max"] = 100, ["default"] = 30, ["suffix"] = "%"}})
+        menu_references["ragebot_field_of_view_rotation_speed"]:set_visible(false)
         menu_references["ragebot_tracer"] = menu_references["visualization_section"]:create_element({["name"] = "tracer"}, {["toggle"] = {["flag"] = "ragebot_tracer"}})
         menu_references["ragebot_tracer_settings"] = menu_references["ragebot_tracer"]:create_settings()
         menu_references["ragebot_tracer_thickness"] = menu_references["ragebot_tracer_settings"]:create_element({["name"] = "thickness"}, {["slider"] = {["flag"] = "ragebot_tracer_thickness", ["min"] = 0.5, ["max"] = 5, ["default"] = 2, ["decimals"] = 1, ["suffix"] = "px"}})
@@ -22637,7 +22890,12 @@ local backtrack_data = {}
         ["loop_after_kill"] = true, -- keep the target selected after it dies, wait for its forcefield, then kill it again
         ["lock_while_waiting"] = true, -- do not auto-pick another target while waiting for protection to end
         ["waiting"] = nil, -- player data we are waiting on
-        ["spawned"] = setmetatable({}, {["__mode"] = "k"})
+        ["spawned"] = setmetatable({}, {["__mode"] = "k"}),
+        -- Negative results of the instance walk, keyed by player data and
+        -- validated by character. Only misses are stored, so a forcefield that
+        -- starts is seen on the next check rather than after the cache expires.
+        ["checked"] = setmetatable({}, {["__mode"] = "k"}),
+        ["checked_time"] = 0.05
     }
 
     local function get_forcefield(character)
@@ -22682,7 +22940,15 @@ local backtrack_data = {}
         spawn_guard["spawned"][data] = clock()
     end)
 
-    spawn_guard["check"] = LPH_NO_VIRTUALIZE(function(data)
+    spawn_guard["check"] = LPH_NO_VIRTUALIZE(function(data, bypass_cache)
+        local spawned_at = spawn_guard["spawned"][data]
+
+        -- Grace first: the timestamp is cheaper than any instance walk and it
+        -- answers the whole check for the first seconds after a spawn.
+        if spawned_at and clock() - spawned_at < spawn_guard["grace"] then
+            return true
+        end
+
         local parts = data[4]
         local forcefield = parts and (parts["ForceField"] or parts["FORCEFIELD"])
 
@@ -22693,17 +22959,23 @@ local backtrack_data = {}
         local character = data[3]
 
         if character and character["Parent"] then
+            -- A miss is cached for a few frames per character. The fire-time
+            -- check passes bypass_cache so a shot never leaves on a stale miss.
+            if not bypass_cache then
+                local cached = spawn_guard["checked"][data]
+
+                if cached and cached[1] == character and clock() - cached[2] < spawn_guard["checked_time"] then
+                    return false
+                end
+            end
+
             local ok, found = pcall(get_forcefield, character)
 
             if ok and found then
                 return true
             end
-        end
 
-        local spawned_at = spawn_guard["spawned"][data]
-
-        if spawned_at and clock() - spawned_at < spawn_guard["grace"] then
-            return true
+            spawn_guard["checked"][data] = {character, clock()}
         end
 
         return false
@@ -23862,6 +24134,38 @@ local backtrack_data = {}
 
     local prediction = 0
 
+    -- The lead applied to a solved hitbox. The slider owns the value: 0 is
+    -- auto (half a round trip), 2000 is disabled, and every other value is
+    -- read as seconds. Shared by the frame solve and the packet-time solve so
+    -- the lead time cannot disagree.
+    local get_predicted_aim_position = LPH_NO_VIRTUALIZE(function(target, hitbox, refresh_velocity)
+        local velocity = target_velocity
+        local velocity_valid = velocity and velocity["Magnitude"] > 0.1
+
+        -- The body's own assembly velocity is only read when it can change the
+        -- answer: at packet time, or while the resolver has no usable sample.
+        -- A frame solve with a live resolver sample skips the part walk.
+        if refresh_velocity or not velocity_valid then
+            local parts = target and target[4]
+            local root = parts and (parts["HumanoidRootPart"] or parts["UpperTorso"] or parts["Head"])
+            local assembly_velocity = root and (root["AssemblyLinearVelocity"] or root["Velocity"])
+            local assembly_valid = assembly_velocity and assembly_velocity["Magnitude"] > 0.1 and assembly_velocity["Magnitude"] < 250
+
+            -- At packet time the resolver's sample can be a frame old; the body
+            -- is read live, so a direction change during the shot delay is
+            -- followed instead of leading along the old heading.
+            if assembly_valid then
+                if refresh_velocity and velocity_valid then
+                    velocity = velocity:Lerp(assembly_velocity, 0.5)
+                else
+                    velocity = assembly_velocity
+                end
+            end
+        end
+
+        return hitbox["Position"] + (velocity or vector3_zero) * (prediction == 0 and local_ping/500 or prediction == 2 and 0 or prediction)
+    end)
+
     local last_auto = clock()
     -- The center panel samples this at 10 Hz, so writing the global every frame
     -- only produced 90% of the table walks for a value nobody had read yet.
@@ -23870,6 +24174,8 @@ local backtrack_data = {}
     local fire_cooldown = flags["fire_cooldown"]/1000
     local target_cooldown = flags["target_selection_cooldown"]
     local auto_fire_always_fire = flags["auto_fire_always_fire"]
+    local auto_fire_muzzle_offset = vector3_new(0.004, 3.0208, -0.048)
+    local auto_fire_beam_color = color3_fromrgb(1, 0.545098, 0.14902)
 
     local target_changed_signal = signals["on_ragebot_target_changed"]
     local defensive_positions = {}
@@ -23885,9 +24191,22 @@ local backtrack_data = {}
     -- hitbox is at stands whenever no cluster holds up.
     local confidence_samples = {}
     local confidence_last_refresh = clock()
+    -- The body the samples and the spam positions belong to. A respawn keeps
+    -- the player data table but replaces the character, and the old body's
+    -- positions must not bias the first shots at the new one.
+    local resolver_character = nil
+    -- The resolver runs at a fixed rate instead of once per frame. A 240 FPS
+    -- client used to fill the 500-sample cap and compare every pair every
+    -- frame; the cache below keeps the answer between samples and the live
+    -- hitbox jump check refreshes it immediately when the target teleports.
+    local confidence_aim = nil
+    local confidence_last_input = nil
+    local confidence_last_sample = 0
+    local confidence_sample_interval = 1/60
+    local confidence_sample_limit = 300
 
-    local confidence_resolve = function(position)
-        local now = clock()
+    local confidence_resolve = function(position, now)
+        now = now or clock()
 
         -- Every call is a sample. The set is the last few seconds of them, not a
         -- count of them, so the whole set is thrown away and filled again.
@@ -23899,7 +24218,7 @@ local backtrack_data = {}
         local samples = confidence_samples
         samples[#samples+1] = position
 
-        if #samples > 500 then
+        if #samples > confidence_sample_limit then
             remove(samples, 1)
         end
 
@@ -23924,32 +24243,51 @@ local backtrack_data = {}
             forgiveness = clamp(forgiveness - ((position - hrp["Position"])["Magnitude"] / 100) * (flags["confidence_distance_penalty"] or 2), 1, 100)
         end
 
-        local best = nil
+        -- Squared radius, component sums: the old loop allocated a Vector3 for
+        -- every subtraction and another for every match. The count and the
+        -- centroid are the same, only without the garbage.
+        local forgiveness_squared = forgiveness * forgiveness
+        local count = #samples
+        local best_x, best_y, best_z = nil, nil, nil
         local best_count = 0
 
-        for i = 1, #samples do
+        for i = 1, count do
             local point = samples[i]
-            local count = 0
-            local sum = vector3_zero
+            local px, py, pz = point["X"], point["Y"], point["Z"]
+            local matches = 0
+            local sum_x, sum_y, sum_z = 0, 0, 0
 
-            for j = 1, #samples do
+            for j = 1, count do
                 local other = samples[j]
+                local ox, oy, oz = other["X"], other["Y"], other["Z"]
+                local dx, dy, dz = px - ox, py - oy, pz - oz
 
-                if (point - other)["Magnitude"] <= forgiveness then
-                    count += 1
-                    sum += other
+                if dx*dx + dy*dy + dz*dz <= forgiveness_squared then
+                    matches += 1
+                    sum_x += ox
+                    sum_y += oy
+                    sum_z += oz
                 end
             end
 
-            if count >= 4 and count > best_count then
-                best_count = count
-                best = sum / count
+            if matches >= 4 and matches > best_count then
+                best_count = matches
+                best_x, best_y, best_z = sum_x / matches, sum_y / matches, sum_z / matches
+
+                -- No later point can beat a cluster that holds every sample.
+                if matches == count then
+                    break
+                end
             end
         end
 
         -- Nothing holds up: the aim point is where the hitbox is, never the
         -- cluster read off an older set of samples.
-        return best or position
+        if best_x then
+            return vector3_new(best_x, best_y, best_z)
+        end
+
+        return position
     end
 
     set_ragebot_target = LPH_NO_VIRTUALIZE(function(target, message, manual)
@@ -23973,6 +24311,10 @@ local backtrack_data = {}
         -- The samples belong to the target they were taken on.
         confidence_samples = {}
         confidence_last_refresh = clock()
+        confidence_aim = nil
+        confidence_last_input = nil
+        confidence_last_sample = 0
+        resolver_character = nil
         -- The solve belongs to the target it was made for.
         ragebot_manipulation = nil
         ragebot_aim_velocity = nil
@@ -24130,6 +24472,8 @@ local backtrack_data = {}
             local on_screen = update_fov_circle_follow(fov_circle, fov_circle_outline, nil, "ragebot_field_of_view_follow", "ragebot_field_of_view_lerp", fov_follow_position, dt)
             local visible = on_screen and type(ragebot_field_of_view) == "number"
 
+            update_fov_rotation(fov_circle, "ragebot_field_of_view_rotation", "ragebot_field_of_view_rotation_speed", dt)
+
             fov_circle["Visible"] = visible
 
             if fov_circle_outline then
@@ -24172,6 +24516,11 @@ local backtrack_data = {}
                 end
             end
 
+            -- A target change in this block makes the frame's local target the
+            -- old body. Solving it would fire one shot at the target that was
+            -- just dropped, so the frame stops here; the next frame starts on
+            -- the new target. An untarget still clears the solve first, so the
+            -- panel and the hook do not read a point for a body nobody owns.
             if ragebot_target == nil then
                 target_velocity = vector3_zero
                 ragebot_aim_position = nil
@@ -24180,14 +24529,21 @@ local backtrack_data = {}
                 target_last_position = nil
                 torso = nil
                 last_refresh = clock()
+                is_defensive = false
+                return
+            elseif ragebot_target ~= target then
+                is_defensive = false
+                return
             elseif torso then
                 -- Read from the setting every time: the slider owns it, and a
                 -- value loaded with a config is the slider's.
-                if clock() - last_refresh > (flags["resolver_rate"] or 0.037) then
+                local sample_now = clock()
+
+                if sample_now - last_refresh > (flags["resolver_rate"] or 0.037) then
                     local torso_position = torso["Position"]
 
                     if target_last_position then
-                        local delta = clock() - last_refresh
+                        local delta = sample_now - last_refresh
                         local distance = (torso_position - target_last_position)
 
                         -- A respawn, a teleport or a fling is a jump, not a
@@ -24202,7 +24558,7 @@ local backtrack_data = {}
                     end
 
                     target_last_position = torso_position
-                    last_refresh = clock()
+                    last_refresh = sample_now
                 end
             end
 
@@ -24212,49 +24568,96 @@ local backtrack_data = {}
                 -- The manual-shot rewrite in the remote hook fires at this part.
                 ragebot_aim_part = hitbox
 
+                -- A new body invalidates both resolvers. The respawn keeps the
+                -- player data table, so this is the only place the change is
+                -- seen before the first sample is taken.
+                if target[3] ~= resolver_character then
+                    resolver_character = target[3]
+                    defensive_positions = {}
+                    confidence_samples = {}
+                    confidence_aim = nil
+                    confidence_last_input = nil
+                    confidence_last_sample = 0
+                    target_last_position = nil
+                    target_velocity = vector3_zero
+                    ragebot_aim_velocity = nil
+                end
+
                 local current_time = clock()
                 local confidence_mode = (flags["resolver_mode"] and flags["resolver_mode"][1]) == "confidence"
-            
-                local positions_to_remove = {}
-                for position, data in defensive_positions do
-                    local time_delta = current_time - data["last_update_time"]
-                    if time_delta > 0 then
-                        -- Normal mode walks its own weights down here; in
-                        -- confidence mode none of it is read, so they are left
-                        -- standing instead of being spent for nothing.
-                        local rate = confidence_mode and 0 or flags["void_spam_resolver_forget_rate"]/20
-                        data["weight"]-=((position - hitbox_position)["magnitude"] > 200 and time_delta*(rate*2.5) or time_delta*rate)
-                        data["last_update_time"] = current_time
-                    end
-            
-                    if data["weight"] < 0.1 then
-                        positions_to_remove[#positions_to_remove+1] = position
+                local resolver_enabled = flags["auto_fire_defensive"] and true or false
+                local frame_dt = dt or 1/60
+                local highest = nil
+                local highest_weight = 0
+
+                if resolver_enabled and not confidence_mode then
+                    -- One pass decays every position and keeps the current
+                    -- highest. A key can be set to nil during traversal, so the
+                    -- removal scratch table is gone. Squared distance keeps the
+                    -- far-position check free of Vector3 allocations.
+                    local rate = flags["void_spam_resolver_forget_rate"]/20
+
+                    for position, data in defensive_positions do
+                        local time_delta = current_time - data["last_update_time"]
+
+                        if time_delta > 0 then
+                            local dx = position["X"] - hitbox_position["X"]
+                            local dy = position["Y"] - hitbox_position["Y"]
+                            local dz = position["Z"] - hitbox_position["Z"]
+                            local far = dx*dx + dy*dy + dz*dz > 40000
+
+                            data["weight"]-=time_delta*(far and rate*2.5 or rate)
+                            data["last_update_time"] = current_time
+                        end
+
+                        if data["weight"] < 0.1 then
+                            defensive_positions[position] = nil
+                        elseif data["weight"] > highest_weight then
+                            highest_weight = data["weight"]
+                            highest = position
+                        end
                     end
                 end
 
-                for _, position in positions_to_remove do
-                    defensive_positions[position] = nil
-                end
-            
                 local old_time = clock()
 
-                if confidence_mode then
-                    -- The resolved point already accounts for where the target
-                    -- keeps coming back to, so the velocity prediction is not
-                    -- laid over it.
-                    ragebot_aim_position = confidence_resolve(hitbox_position)
-                else
-                    ragebot_aim_position = hitbox_position
+                if confidence_mode and resolver_enabled then
+                    -- The resolver runs at a fixed 60 Hz and the answer is kept
+                    -- between samples. A hitbox that jumped more than 200 studs
+                    -- is read immediately instead of waiting for the next tick.
+                    local jumped = false
 
-                    if target_velocity then
-                        ragebot_aim_position+=(target_velocity*(prediction == 0 and local_ping/500 or prediction == 2 and 0 or prediction))
+                    if confidence_last_input then
+                        local dx = hitbox_position["X"] - confidence_last_input["X"]
+                        local dy = hitbox_position["Y"] - confidence_last_input["Y"]
+                        local dz = hitbox_position["Z"] - confidence_last_input["Z"]
+                        jumped = dx*dx + dy*dy + dz*dz > 40000
                     end
+
+                    -- A jump is a teleport, not a position the target walked
+                    -- to. The old cluster describes the body it left, so it is
+                    -- dropped instead of outvoting the one new sample.
+                    if jumped then
+                        confidence_samples = {}
+                        confidence_aim = nil
+                        confidence_last_refresh = current_time
+                    end
+
+                    if not confidence_aim or jumped or current_time - confidence_last_sample >= confidence_sample_interval * 0.9 then
+                        confidence_aim = confidence_resolve(hitbox_position, current_time)
+                        confidence_last_input = hitbox_position
+                        confidence_last_sample = current_time
+                    end
+
+                    ragebot_aim_position = confidence_aim
+                else
+                    ragebot_aim_position = get_predicted_aim_position(target, hitbox)
                 end
 
                 -- "at backtrack" aims at a hitbox the target was at, which is
                 -- the opposite of what confidence mode is reading the frame for,
                 -- so the mode keeps the point it solved.
-                if flags["auto_fire_at_backtrack"] and not confidence_mode then
+                if flags["auto_fire_at_backtrack"] and not (confidence_mode and resolver_enabled) then
                     local data = backtrack_data[target[2]]
 
                     if data then
@@ -24274,38 +24677,49 @@ local backtrack_data = {}
                 -- would die with the block and leave the read outside it always false.
                 did_defensive = false
             
-                if flags["auto_fire_defensive"] and not confidence_mode then
+                if resolver_enabled and not confidence_mode then
                     local weight_to_add = (hitbox_position["Magnitude"] < 9e5 and void_spam_resolver_position_weight or void_spam_resolver_void_weight)
-                    local done = false
-            
+                    local lerp_alpha = 1 - (1 - void_spam_resolver_lerp) ^ (frame_dt * 60)
+                    lerp_alpha = clamp(lerp_alpha, 0, 1)
+
+                    local merged_position = nil
+                    local merged_weight = nil
+
                     for position, data in defensive_positions do
-                        if (position - hitbox_position).magnitude <= 200 then
-                            local new_position = position:Lerp(hitbox_position, void_spam_resolver_lerp)
-                        
-                            defensive_positions[new_position] = {
-                                weight = clamp(data.weight + weight_to_add, -1, 18),
-                                last_update_time = current_time
-                            }
+                        local dx = position["X"] - hitbox_position["X"]
+                        local dy = position["Y"] - hitbox_position["Y"]
+                        local dz = position["Z"] - hitbox_position["Z"]
+
+                        if dx*dx + dy*dy + dz*dz <= 40000 then
+                            local new_position = position:Lerp(hitbox_position, lerp_alpha)
+
+                            -- Reuse the entry: the old key is removed below, so
+                            -- the table has one owner and no per-frame garbage.
+                            data["weight"] = clamp(data["weight"] + weight_to_add, -1, 18)
+                            data["last_update_time"] = current_time
                             defensive_positions[position] = nil
-                        
-                            done = true
+                            defensive_positions[new_position] = data
+
+                            merged_position = new_position
+                            merged_weight = data["weight"]
                             break
                         end
                     end
-            
-                    if not done then
-                        defensive_positions[hitbox_position] = { ["weight"] = weight_to_add, ["last_update_time"] = current_time }
+
+                    if not merged_position then
+                        local data = { ["weight"] = weight_to_add, ["last_update_time"] = current_time }
+                        defensive_positions[hitbox_position] = data
+                        merged_position = hitbox_position
+                        merged_weight = data["weight"]
                     end
 
-                    local highest = nil
-                    local highest_weight = 0
-                    for position, data in defensive_positions do
-                        if data["weight"] > highest_weight then
-                            highest_weight = data["weight"]
-                            highest = position
-                        end
+                    -- Only one entry changes weight in the merge, so comparing
+                    -- that one against the decay pass is the old final scan.
+                    if merged_weight > highest_weight then
+                        highest_weight = merged_weight
+                        highest = merged_position
                     end
-            
+
                     if highest and highest_weight > void_spam_resolver_accuracy then
                         ragebot_aim_position = highest
                         target_velocity = vector3_zero
@@ -24342,18 +24756,66 @@ local backtrack_data = {}
                 -- origin onto the target from anywhere.
                 if local_gun and (((not local_reloading or auto_fire_always_fire) and not target[18] and not target[7] and not spawn_guard["check"](target) and not grabbing_constraint) and (flags["auto_fire"] and (auto_fire_always_fire or (((server_position-ragebot_aim_position)["Magnitude"] > 0) or flags["follow_target"] or did_defensive)) and old_time-last_fire > fire_cooldown)) then
                     local delay = flags["shot_delay"]
+                    local fire_character = target[3]
+
                     if delay > 0 then
                         wait(delay/1000)
+                    end
 
-                        -- The delay yields frames. A plain shot is solved again
-                        -- from where the limb is now, with the muzzle read after
-                        -- the wait; the point solved before it describes a frame
-                        -- the target has already left. A backtrack, defensive,
-                        -- forced or manipulated point is a deliberate other frame
-                        -- and keeps what was solved.
-                        if not did_defensive and not flags["auto_fire_at_backtrack"] and not ragebot_manipulation and not ragebot_force_position and not did_custom_aim and ragebot_aim_position and target_velocity and hitbox and hitbox["Parent"] then
-                            ragebot_aim_position = hitbox["Position"] + target_velocity * (prediction == 0 and local_ping/500 or prediction == 2 and 0 or prediction)
-                        end
+                    -- The delay yields frames, so every gate that allowed the
+                    -- shot is read again here. A target that died, was knocked,
+                    -- grabbed or protected during the wait is no longer a shot
+                    -- the trigger would have allowed, and the cooldown check
+                    -- keeps two overlapping solves from firing one shot twice.
+                    local grabbed_now = target[4] and target[4]["GRABBING_CONSTRAINT"]
+                    -- Read live at the packet: the cache exists to spare the
+                    -- per-frame scans, not to let a shot leave on a stale miss.
+                    local fire_forcefield = spawn_guard["check"](target, true)
+
+                    if not flags["ragebot"]
+                        or not flags["auto_fire"]
+                        or not local_gun
+                        or ragebot_target ~= target
+                        or target[3] ~= fire_character
+                        or not fire_character
+                        or not fire_character["Parent"]
+                        or target[7]
+                        or target[18]
+                        or grabbed_now
+                        or fire_forcefield
+                        or (local_reloading and not auto_fire_always_fire)
+                        or clock() - last_fire <= fire_cooldown then
+                        is_defensive = did_defensive
+                        return
+                    end
+
+                    -- The part is read from the frame that solved the shot. If
+                    -- it is gone by the time the packet leaves (a respawn, a
+                    -- removed limb), the live part for the same hitbox is taken
+                    -- instead. The packet-time solve below must use that live
+                    -- part, not the destroyed one.
+                    local fire_hitbox = hitbox
+
+                    if not fire_hitbox or not fire_hitbox["Parent"] then
+                        local live_parts = target[4]
+                        local aimed_name = ragebot_aim_part and ragebot_aim_part["Name"]
+
+                        fire_hitbox = live_parts and ((aimed_name and live_parts[aimed_name]) or live_parts[resolve_ragebot_hitbox_part(live_parts)] or live_parts["HumanoidRootPart"])
+                    end
+
+                    if not fire_hitbox or not fire_hitbox["Parent"] then
+                        is_defensive = did_defensive
+                        return
+                    end
+
+                    -- The delay yields frames. A plain shot is solved again
+                    -- from where the limb is now, with the muzzle read after
+                    -- the wait; the point solved before it describes a frame
+                    -- the target has already left. A backtrack, defensive,
+                    -- forced or manipulated point is a deliberate other frame
+                    -- and keeps what was solved.
+                    if delay > 0 and not (confidence_mode and resolver_enabled) and not did_defensive and not flags["auto_fire_at_backtrack"] and not ragebot_manipulation and not ragebot_force_position and not did_custom_aim and ragebot_aim_position then
+                        ragebot_aim_position = get_predicted_aim_position(target, fire_hitbox, true)
                     end
 
                     if local_gun then
@@ -24386,14 +24848,7 @@ local backtrack_data = {}
                                 local tool = entry[5] or handle["Parent"]
 
                                 if tool then
-                                    local listed = false
-
-                                    for i = 1, gun_count do
-                                        if tool["Name"] == gun_order[i] then
-                                            listed = true
-                                            break
-                                        end
-                                    end
+                                    local listed = auto_equip_gun_set[tool["Name"]]
 
                                     if not listed and (pass == 1) == (tool["Name"] == "[Rifle]") then
                                         new_local_guns[#new_local_guns+1] = entry
@@ -24403,20 +24858,6 @@ local backtrack_data = {}
                         end
 
                         local pos = ragebot_aim_position
-                        local fire_hitbox = hitbox
-
-                        -- The part is read from the frame that solved the shot. If
-                        -- it is gone by the time the packet leaves (a respawn, a
-                        -- removed limb), the report names an instance the server
-                        -- cannot match, so the live part for the same hitbox is
-                        -- taken instead.
-                        if not fire_hitbox or not fire_hitbox["Parent"] then
-                            local live_parts = target[4]
-
-                            if live_parts then
-                                fire_hitbox = live_parts[resolve_ragebot_hitbox_part(live_parts)] or live_parts["HumanoidRootPart"]
-                            end
-                        end
 
                         -- The packet leaves from the muzzle, the same origin the
                         -- namecall hook, the automatic gun and the triggerbot send.
@@ -24425,7 +24866,7 @@ local backtrack_data = {}
                         -- is a miss no matter where the aim point is. The position
                         -- is read here, after any shot delay, not from the frame
                         -- that pulled the trigger.
-                        local origin = local_server_position["p"] + vector3_new(0.004, 3.0208, -0.048)
+                        local origin = local_server_position["p"] + auto_fire_muzzle_offset
 
                         if ragebot_manipulation then
                             local manip_part = ragebot_manipulation["part"]
@@ -24453,10 +24894,11 @@ local backtrack_data = {}
                             local entry = new_local_guns[i]
                             local handle = entry[1]
                             local ammo = tonumber(entry[3])
+                            local tool = entry[5] or handle["Parent"]
 
                             -- An unread ammo value is unknown, not empty: fire and
                             -- let the server reject the shot if the clip is dry.
-                            if (ammo == nil or ammo > 0) and handle and handle["Parent"] and fire_hitbox and not target[7] and not spawn_guard["check"](target) then
+                            if (ammo == nil or ammo > 0) and handle and handle["Parent"] and tool and tool["Parent"] == local_character and fire_hitbox and fire_hitbox["Parent"] and not target[7] and not target[18] and not fire_forcefield then
                                 last_fire = clock()
 
                                 -- The shot's visibility is decided once here, before
@@ -24483,8 +24925,8 @@ local backtrack_data = {}
                                             Handle = handle,
                                             ForcedOrigin = origin,
                                             AimPosition = pos,
-                                            BeamColor = color3_fromrgb(1, 0.545098, 0.14902),
-                                            Range = tonumber(entry[2]) or 1000
+                                            BeamColor = auto_fire_beam_color,
+                                            Range = entry[2] or 1000
                                         })
                                         env["require"] = nil
                                     end)
@@ -24596,6 +25038,12 @@ local backtrack_data = {}
     
     create_connection(menu_references["auto_fire_defensive"]["on_toggle_change"], function(value)
         defensive_positions = {}
+        confidence_samples = {}
+        confidence_last_refresh = clock()
+        confidence_aim = nil
+        confidence_last_input = nil
+        confidence_last_sample = 0
+        resolver_character = nil
     end)
 
     create_connection(menu_references["target_selection_notification"]["on_toggle_change"], function(value)
@@ -24609,6 +25057,10 @@ local backtrack_data = {}
         -- the mode that is now on.
         confidence_samples = {}
         confidence_last_refresh = clock()
+        confidence_aim = nil
+        confidence_last_input = nil
+        confidence_last_sample = 0
+        resolver_character = nil
         defensive_positions = {}
     end)
 
@@ -24842,12 +25294,10 @@ local backtrack_data = {}
 
         if value then
             local is_number = type(ragebot_field_of_view) == "number"
-            fov_circle = create_real_drawing("Circle", {
+            fov_circle = create_fov_fill({
                 ["Radius"] = is_number and ragebot_field_of_view or 0,
                 ["Color"] = ragebot_target and flags["ragebot_field_of_view_active_color"] or flags["ragebot_field_of_view_color"],
-                ["Filled"] = true,
                 ["Transparency"] = 0,
-                ["Thickness"] = 1,
                 ["ZIndex"] = 11,
                 ["Visible"] = is_number
             })
@@ -24923,6 +25373,10 @@ local backtrack_data = {}
 
     create_connection(menu_references["ragebot_field_of_view"]["on_slider_change"], update_field_of_view)
 
+    create_connection(menu_references["ragebot_field_of_view_rotation"]["on_toggle_change"], function(value)
+        menu_references["ragebot_field_of_view_rotation_speed"]:set_visible(value)
+    end)
+
     -- >> ( follow target )
     do
         local rad = math["rad"]
@@ -24978,7 +25432,13 @@ local backtrack_data = {}
                 return
             end
 
-            if ragebot_target and hrp and ((not in_void and not stomping and not purchasing) or bypass) and ragebot_aim_position and not ragebot_target[7] then
+            -- Every style orbits the point the target is heading for, not the
+            -- point it is standing on: the shared anchor applies the automatic
+            -- follow prediction. The ragebot's solved point is the fallback for
+            -- a target whose head and torso are missing.
+            local follow_position = ragebot_target and get_follow_target_anchor(ragebot_target) or ragebot_aim_position
+
+            if ragebot_target and ragebot_target[3] and ragebot_target[3]["Parent"] and hrp and ((not in_void and not stomping and not purchasing) or bypass) and follow_position and not ragebot_target[7] then
                 if follow_target_stop_if_reloading and local_reloading then -- theres a reason for not using else ifs i think? i forget but im not risking it
                     local_following = false
                     return
@@ -24994,14 +25454,14 @@ local backtrack_data = {}
                 local new_cframe = old_cframe
 
                 if follow_target_style == "random" then
-                    new_cframe = cframe_new(ragebot_aim_position + vector3_new(math_random(-distance, distance), math_random(-distance, distance), math_random(-distance, distance)))
+                    new_cframe = cframe_new(follow_position + vector3_new(math_random(-distance, distance), math_random(-distance, distance), math_random(-distance, distance)))
                     new_cframe*=cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
                 elseif follow_target_style == "random spam" then
                     local tick = clock()
                     local difference = tick - follow_target_avoid_last_tick
                     local old_difference = difference < 0.06
                     if difference > 0.11 or old_difference then
-                        new_cframe = cframe_new(ragebot_aim_position + vector3_new(math_random(-distance, distance), math_random(-distance, distance), math_random(-distance, distance)))
+                        new_cframe = cframe_new(follow_position + vector3_new(math_random(-distance, distance), math_random(-distance, distance), math_random(-distance, distance)))
                         if not old_difference then
                             follow_target_avoid_last_tick = tick
                         end
@@ -25013,9 +25473,9 @@ local backtrack_data = {}
                     -- speed 1..100% maps to 0.05..5 loops per second. The loop
                     -- is vertical, so height has no meaning here and is hidden.
                     local offset = spiral_follow_offset(clock(), speed * 0.05, distance)
-                    new_cframe = cframe_new(ragebot_aim_position + offset, ragebot_aim_position)
+                    new_cframe = cframe_new(follow_position + offset, follow_position)
                 else
-                    new_cframe = cframe_angles(0,rad(360 * ((clock() * speed) % 1)),0) * cframe_new(0,0,distance) + (ragebot_aim_position + height)
+                    new_cframe = cframe_angles(0,rad(360 * ((clock() * speed) % 1)),0) * cframe_new(0,0,distance) + (follow_position + height)
                 end
 
                 local_following = true
@@ -26102,81 +26562,101 @@ local backtrack_data = {}
     -- >> ( crosshair follow )
 
     do
-        local cached_mouse_position = nil
-        local cached_mouse_tick = 0
-        local cached_viewport_size = nil
-        local cached_viewport_tick = 0
-
-        local function get_mouse_position_cached()
-            local t = clock()
-
-            if not cached_mouse_position or t - cached_mouse_tick > 0.0075 then
-                cached_mouse_position = user_input_service["GetMouseLocation"](user_input_service)
-                cached_mouse_tick = t
-            end
-
-            return cached_mouse_position
-        end
-
-        local function get_viewport_size_cached()
-            local t = clock()
-
-            if not cached_viewport_size or t - cached_viewport_tick > 0.0075 then
-                cached_viewport_size = camera["ViewportSize"]
-                cached_viewport_tick = t
-            end
-
-            return cached_viewport_size
-        end
-
-        local mid_position = get_viewport_size_cached()/2 - vector2_new(2, 58)
-        local old_value = udim2_new(0, mid_position["X"], 0, mid_position["Y"])
         local aim_frame = nil
+        local following = false
+        local original_anchor = nil
+        local original_position = nil
+        local current_top_left = nil
         local blank = vector2_new(0, 0)
+
+        local function restore_aim_frame()
+            if following and aim_frame and aim_frame["Parent"] and original_anchor and original_position then
+                aim_frame["AnchorPoint"] = original_anchor
+                aim_frame["Position"] = original_position
+            end
+
+            following = false
+            current_top_left = nil
+            original_anchor = nil
+            original_position = nil
+        end
+
+        local function set_aim_frame_top_left(top_left)
+            aim_frame["AnchorPoint"] = blank
+            aim_frame["Position"] = udim2_new(0, top_left["X"], 0, top_left["Y"])
+        end
+
         local do_crosshair_follow = LPH_JIT_MAX(function(dt, hrp)
             render_stepped_wait(render_stepped)
-            local mouse_position = get_mouse_position_cached()
-            if aim_frame and ragebot_target and ragebot_aim_position then
-                if ragebot_aim_position then
-                    local position, on_screen = world_to_viewport_point(camera, ragebot_aim_position)
 
-                    -- > the goal is kept in screen pixels, so both of the ways
-                    -- it can go are one type
-
-                    local goal_position = vector2_new(mouse_position["X"], mouse_position["Y"])
-
-                    if on_screen and not local_reloading and not ragebot_target[7] then
-                        goal_position = vector2_new(position["X"] - 2, position["Y"] - 58)
-                    end
-
-                    local tween_value = dt*4^2
-
-                    if aim_frame["AnchorPoint"] ~= blank then
-                        local old_position = aim_frame["AbsolutePosition"]
-                        aim_frame["AnchorPoint"] = blank
-                        old_value = udim2_new(0, old_position["X"], 0, old_position["Y"])
-                        aim_frame["Position"] = old_value
-                    end
-
-                    -- > smoothed in pixels, and packed into a UDim2 once
-
-                    local old_pixel = vector2_new(old_value["X"]["Offset"], old_value["Y"]["Offset"])
-                    local new_pixel = old_pixel + (goal_position - old_pixel) * tween_value
-
-                    local new = udim2_new(0, new_pixel["X"], 0, new_pixel["Y"])
-
-                    aim_frame["Position"] = new
-
-                    old_value = new
-                else
-                    old_value = udim2_new(0, mouse_position["X"], 0, mouse_position["Y"])
-                end
-            else
-                old_value = udim2_new(0, mouse_position["X"], 0, mouse_position["Y"])
+            if not aim_frame or not aim_frame["Parent"] then
+                return
             end
+
+            local target = ragebot_target
+            local anchor = nil
+
+            if target and target[3] and target[3]["Parent"] then
+                -- The live head with ping lead is the stable point the drawing
+                -- crosshair follows; the resolver point can jump between samples.
+                anchor = get_follow_target_anchor(target)
+            end
+
+            local goal_center = nil
+
+            if anchor then
+                local position, on_screen = world_to_viewport_point(camera, anchor)
+
+                if on_screen and not local_reloading and not target[7] then
+                    goal_center = vector2_new(position["X"], position["Y"])
+                end
+            end
+
+            -- No target, dead target, reloading, or off screen: put the game
+            -- crosshair back exactly where it was before following started.
+            if not goal_center then
+                if following then
+                    restore_aim_frame()
+                end
+
+                return
+            end
+
+            local size = aim_frame["AbsoluteSize"]
+
+            if size["X"] <= 0 or size["Y"] <= 0 then
+                return
+            end
+
+            local parent = aim_frame["Parent"]
+            local parent_position = parent and parent:IsA("GuiObject") and parent["AbsolutePosition"] or vector2_new(0, 0)
+            -- The crosshair is centred in its frame; the live size keeps the
+            -- offset correct if the game resizes it.
+            local center_offset = size * 0.5
+            local goal_top_left = goal_center - center_offset - parent_position
+
+            if not following then
+                -- Capture the untouched frame right before the first write, so
+                -- disabling restores the game's own geometry. Start from where
+                -- the frame actually is, so acquiring a target cannot jump.
+                original_anchor = aim_frame["AnchorPoint"]
+                original_position = aim_frame["Position"]
+                current_top_left = aim_frame["AbsolutePosition"] - parent_position
+                following = true
+            end
+
+            -- Framerate-independent version of the old dt * 16 at 60 fps.
+            local tween_value = 1 - 0.733 ^ (dt * 60)
+            current_top_left = current_top_left + (goal_top_left - current_top_left) * tween_value
+
+            set_aim_frame_top_left(current_top_left)
         end)
 
         local get_aim_frame = LPH_JIT_MAX(function()
+            restore_aim_frame()
+
+            aim_frame = nil
+
             local player_gui = local_player["PlayerGui"]
 
             if player_gui then
@@ -26184,21 +26664,9 @@ local backtrack_data = {}
 
                 if main_screen_gui then
                     aim_frame = wait_for_child(main_screen_gui, "Aim", 5)
-
-                    aim_frame["Position"] = udim2_new(0.5, -2, 0.5, -58)
-
-                    local aboslute_position = aim_frame["AbsolutePosition"]
-                    old_value = udim2_new(0, aboslute_position["X"], 0, aboslute_position["Y"])
                 end
             end
         end)
-
-        local reset_aim_frame = function()
-            if aim_frame then
-                aim_frame["AnchorPoint"] = vector2_new(0.5, 0.5)
-                aim_frame["Position"] = udim2_new(0.5, 0, 0.5, -19)
-            end
-        end
 
         local crosshair_follow_update_connection = nil
 
@@ -26216,13 +26684,27 @@ local backtrack_data = {}
             end
 
             if value then
-                aim_frame = nil
+                -- A hidden game crosshair would make follow invisible, and the
+                -- hide toggle owns the same Aim frame.
+                if flags["hide_game_crosshair"] then
+                    menu_references["hide_game_crosshair"]:set_toggle(false)
+                end
+
                 get_aim_frame()
+
+                -- Acquiring the frame yields; the toggle may have been turned
+                -- back off while that wait was running.
+                if not flags["crosshair_follow"] then
+                    restore_aim_frame()
+                    aim_frame = nil
+
+                    return
+                end
 
                 crosshair_follow_update_connection = create_connection(signals["on_local_character_added"], get_aim_frame)
                 heartbeat[#heartbeat+1] = do_crosshair_follow
-            elseif aim_frame then
-                reset_aim_frame()
+            else
+                restore_aim_frame()
                 aim_frame = nil
             end
         end)
@@ -27908,6 +28390,9 @@ local get_backtrack_models = nil
         menu_references["aim_assist_field_of_view_outline"] = menu_references["aim_assist_field_of_view_settings"]:create_element({["name"] = "outline"}, {["colorpicker"] = {["color_flag"] = "aim_assist_field_of_view_outline_color", ["default_color"] = color3_fromrgb(181, 255, 246), ["default_transparency"] = 0.4, ["transparency_flag"] = "aim_assist_field_of_view_outline_transparency"}})
         menu_references["aim_assist_field_of_view_follow"] = menu_references["aim_assist_field_of_view_settings"]:create_element({["name"] = "follow"}, {["dropdown"] = {["flag"] = "aim_assist_field_of_view_follow", ["options"] = {"mouse", "target"}, ["default"] = {"mouse"}, ["requires_one"] = true}})
         menu_references["aim_assist_field_of_view_lerp"] = menu_references["aim_assist_field_of_view_settings"]:create_element({["name"] = "lerp"}, {["slider"] = {["flag"] = "aim_assist_field_of_view_lerp", ["min"] = 1, ["max"] = 100, ["suffix"] = "%", ["default"] = 27, ["max_text"] = "instant"}})
+        menu_references["aim_assist_field_of_view_rotation"] = menu_references["aim_assist_field_of_view_settings"]:create_element({["name"] = "moving rotation"}, {["toggle"] = {["flag"] = "aim_assist_field_of_view_rotation"}})
+        menu_references["aim_assist_field_of_view_rotation_speed"] = menu_references["aim_assist_field_of_view_settings"]:create_element({["name"] = "speed"}, {["slider"] = {["flag"] = "aim_assist_field_of_view_rotation_speed", ["min"] = 1, ["max"] = 100, ["default"] = 30, ["suffix"] = "%"}})
+        menu_references["aim_assist_field_of_view_rotation_speed"]:set_visible(false)
 
     menu_references["silent_aim_section"] = menu["groups"]["main"]:create_section("legitbot", "redirection", 1, 0.23, 0.77)
         menu_references["silent_aim"] = menu_references["silent_aim_section"]:create_element({["name"] = "silent aim"}, {["toggle"] = {["flag"] = "silent_aim"}})
@@ -27922,6 +28407,9 @@ local get_backtrack_models = nil
         menu_references["silent_aim_field_of_view_outline"] = menu_references["silent_aim_field_of_view_settings"]:create_element({["name"] = "outline"}, {["colorpicker"] = {["color_flag"] = "silent_aim_field_of_view_outline_color", ["default_color"] = color3_fromrgb(181, 255, 246), ["default_transparency"] = 0.4, ["transparency_flag"] = "silent_aim_field_of_view_outline_transparency"}})
         menu_references["silent_aim_field_of_view_follow"] = menu_references["silent_aim_field_of_view_settings"]:create_element({["name"] = "follow"}, {["dropdown"] = {["flag"] = "silent_aim_field_of_view_follow", ["options"] = {"mouse", "target"}, ["default"] = {"mouse"}, ["requires_one"] = true}})
         menu_references["silent_aim_field_of_view_lerp"] = menu_references["silent_aim_field_of_view_settings"]:create_element({["name"] = "lerp"}, {["slider"] = {["flag"] = "silent_aim_field_of_view_lerp", ["min"] = 1, ["max"] = 100, ["suffix"] = "%", ["default"] = 27, ["max_text"] = "instant"}})
+        menu_references["silent_aim_field_of_view_rotation"] = menu_references["silent_aim_field_of_view_settings"]:create_element({["name"] = "moving rotation"}, {["toggle"] = {["flag"] = "silent_aim_field_of_view_rotation"}})
+        menu_references["silent_aim_field_of_view_rotation_speed"] = menu_references["silent_aim_field_of_view_settings"]:create_element({["name"] = "speed"}, {["slider"] = {["flag"] = "silent_aim_field_of_view_rotation_speed", ["min"] = 1, ["max"] = 100, ["default"] = 30, ["suffix"] = "%"}})
+        menu_references["silent_aim_field_of_view_rotation_speed"]:set_visible(false)
         menu_references["silent_aim_max_curve"] = menu_references["silent_aim_section"]:create_element({["name"] = "max curve"}, {["slider"] = {["flag"] = "silent_aim_max_curve", ["min"] = 1, ["max"] = 100, ["default"] = 100, ["suffix"] = "%"}})
         menu_references["silent_aim_max_curve_settings"] = menu_references["silent_aim_max_curve"]:create_settings()
         menu_references["silent_aim_dont_curve_vertically"] = menu_references["silent_aim_max_curve_settings"]:create_element({["name"] = "dont curve vertically"}, {["toggle"] = {["flag"] = "silent_aim_dont_curve_vertically"}})
@@ -28378,6 +28866,8 @@ local get_backtrack_models = nil
             -- feature's own toggle keeps owning the transparency fade.
             local visible = update_fov_circle_follow(fov_circle, fov_circle_outline, fov_circle_dead_zone, "aim_assist_field_of_view_follow", "aim_assist_field_of_view_lerp", aim_assist_follow_position, dt)
 
+            update_fov_rotation(fov_circle, "aim_assist_field_of_view_rotation", "aim_assist_field_of_view_rotation_speed", dt)
+
             fov_circle["Visible"] = visible
 
             if fov_circle_outline then
@@ -28492,12 +28982,10 @@ local get_backtrack_models = nil
         end
 
         if value then
-            fov_circle = create_real_drawing("Circle", {
+            fov_circle = create_fov_fill({
                 ["Radius"] = aim_assist_field_of_view,
                 ["Color"] = flags["aim_assist_field_of_view_color"],
-                ["Filled"] = true,
                 ["Transparency"] = 0,
-                ["Thickness"] = 1,
                 ["ZIndex"] = 12,
                 ["Visible"] = true
             })
@@ -28569,6 +29057,10 @@ local get_backtrack_models = nil
 
     create_connection(menu_references["aim_assist_field_of_view"]["on_slider_change"], update_aim_assist_field_of_view)
     create_connection(menu_references["aim_assist_dead_zone"]["on_slider_change"], update_aim_assist_field_of_view)
+
+    create_connection(menu_references["aim_assist_field_of_view_rotation"]["on_toggle_change"], function(value)
+        menu_references["aim_assist_field_of_view_rotation_speed"]:set_visible(value)
+    end)
 
     create_connection(menu_references["aim_assist_smoothing"]["on_toggle_change"], function(value)
         aim_assist_vertical_smoothing = value and flags["aim_assist_vertical_smoothing_amount"]/5 or 0
@@ -28679,7 +29171,7 @@ local get_backtrack_models = nil
                         local pos = world_to_viewport_point(camera, silent_aim_position)
                         local world_position = mouse_position+((vector2_new(pos.X, pos.Y)-mouse_position)*(silent_aim_max_curve or 1))
                         local ray = viewport_point_to_ray(camera, world_position.X, silent_aim_dont_curve_vertically and mouse_position["Y"] or world_position["Y"])
-                        silent_aim_position = ray["Origin"] + ray["Direction"] * (ray["Origin"]-part_position)["magnitude"]
+                        silent_aim_position = ray["Origin"] + ray["Direction"] * (ray["Origin"]-part_position)["Magnitude"]
                     end
 
                     did_silent_aim = true
@@ -28696,6 +29188,8 @@ local get_backtrack_models = nil
             -- Hidden while the followed point is outside the viewport; the
             -- feature's own toggle keeps owning the transparency fade.
             local visible = update_fov_circle_follow(fov_circle, fov_circle_outline, nil, "silent_aim_field_of_view_follow", "silent_aim_field_of_view_lerp", silent_aim_follow_position, dt)
+
+            update_fov_rotation(fov_circle, "silent_aim_field_of_view_rotation", "silent_aim_field_of_view_rotation_speed", dt)
 
             fov_circle["Visible"] = visible
 
@@ -28796,12 +29290,10 @@ local get_backtrack_models = nil
         end
 
         if value then
-            fov_circle = create_real_drawing("Circle", {
+            fov_circle = create_fov_fill({
                 ["Radius"] = silent_aim_field_of_view,
                 ["Color"] = flags["silent_aim_field_of_view_color"],
-                ["Filled"] = true,
                 ["Transparency"] = 0,
-                ["Thickness"] = 1,
                 ["ZIndex"] = 11,
                 ["Visible"] = true
             })
@@ -28846,6 +29338,10 @@ local get_backtrack_models = nil
     end)
 
     create_connection(menu_references["silent_aim_field_of_view"]["on_slider_change"], update_silent_aim_field_of_view)
+
+    create_connection(menu_references["silent_aim_field_of_view_rotation"]["on_toggle_change"], function(value)
+        menu_references["silent_aim_field_of_view_rotation_speed"]:set_visible(value)
+    end)
 
     create_connection(menu_references["silent_aim_multipoint"]["on_slider_change"], function(value)
         silent_aim_multipoint = value/200
