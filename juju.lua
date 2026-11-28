@@ -22781,6 +22781,7 @@ local backtrack_data = {}
         menu_references["void_hide_settings"] = menu_references["void_hide"]:create_settings()
         menu_references["void_hide_type"] = menu_references["void_hide_settings"]:create_element({["name"] = "type"}, {["dropdown"] = {["options"] = game["PlaceId"] == 7213786345 and {"vc server", "bait"} or {"random", "bait"}, ["flag"] = "void_hide_type", ["requires_one"] = true, ["default"] = game["PlaceId"] == 7213786345 and {"vc server"} or {"random"}}})
         menu_references["void_hide_bait_distance"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait distance"}, {["slider"] = {["min"] = 200, ["max"] = 9000000000, ["decimals"] = 0, ["default"] = 250, ["flag"] = "void_hide_bait_distance", ["suffix"] = " studs"}})
+        menu_references["void_hide_bait_min_distance"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait min distance"}, {["slider"] = {["min"] = 0, ["max"] = 9000000000, ["decimals"] = 0, ["default"] = 0, ["flag"] = "void_hide_bait_min_distance", ["min_text"] = "off", ["suffix"] = " studs"}})
         menu_references["void_hide_bait_cooldown"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait cooldown"}, {["slider"] = {["min"] = 0.01, ["max"] = 1.5, ["decimals"] = 2, ["default"] = 0.5, ["flag"] = "void_hide_bait_cooldown", ["suffix"] = "s"}})
         menu_references["void_hide_bait_time"] = menu_references["void_hide_settings"]:create_element({["name"] = "bait time"}, {["slider"] = {["min"] = 0.01, ["max"] = 0.3, ["decimals"] = 2, ["default"] = 0.03, ["flag"] = "void_hide_bait_time", ["suffix"] = "s"}})
         menu_references["void_hide_disable_when"] = menu_references["void_hide_settings"]:create_element({["name"] = "disable when"}, {["dropdown"] = {["options"] = {"target selected", "following target", "target knocked", "purchasing"}, ["flag"] = "void_hide_disable_when", ["multi"] = true, ["requires_one"] = false}})
@@ -22788,6 +22789,10 @@ local backtrack_data = {}
         menu_references["void_hide_exploit"] = menu_references["void_hide_settings"]:create_element({["name"] = "spam"}, {["toggle"] = {["flag"] = "void_hide_exploit"}})
         menu_references["void_hide_stop_if_forced"] = menu_references["void_hide_settings"]:create_element({["name"] = "stop if forced"}, {["toggle"] = {["flag"] = "void_hide_stop_if_forced"}})
         menu_references["void_hide_offset"] = menu_references["void_hide_settings"]:create_element({["name"] = "offset"}, {["slider"] = {["min"] = 0, ["max"] = 500, ["flag"] = "void_hide_offset", ["min_text"] = "off", ["suffix"] = "studs"}})
+        menu_references["void_hide_distance_min"] = menu_references["void_hide_settings"]:create_element({["name"] = "distance min"}, {["slider"] = {["min"] = 0, ["max"] = 9000000000, ["decimals"] = 0, ["default"] = 0, ["flag"] = "void_hide_distance_min", ["min_text"] = "off", ["suffix"] = " studs"}})
+        menu_references["void_hide_distance_max"] = menu_references["void_hide_settings"]:create_element({["name"] = "distance max"}, {["slider"] = {["min"] = 0, ["max"] = 9000000000, ["decimals"] = 0, ["default"] = 9000000000, ["flag"] = "void_hide_distance_max", ["max_text"] = "max", ["suffix"] = " studs"}})
+        menu_references["void_hide_distance_bias"] = menu_references["void_hide_settings"]:create_element({["name"] = "distance bias"}, {["dropdown"] = {["flag"] = "void_hide_distance_bias", ["options"] = {"uniform", "logarithmic", "near", "far"}, ["default"] = {"uniform"}, ["requires_one"] = true}})
+        menu_references["void_hide_vertical_range"] = menu_references["void_hide_settings"]:create_element({["name"] = "vertical range"}, {["slider"] = {["min"] = 0, ["max"] = 2147483647, ["decimals"] = 0, ["default"] = 2147483647, ["flag"] = "void_hide_vertical_range", ["max_text"] = "full", ["suffix"] = " studs"}})
         menu_references["void_hide_void_time"] = menu_references["void_hide_settings"]:create_element({["name"] = "void time"}, {["slider"] = {["min"] = 0.01, ["max"] = 2, ["decimals"] = 3, ["default"] = 0.47, ["flag"] = "void_hide_void_time", ["suffix"] = "s"}})
         menu_references["void_hide_teleport_time"] = menu_references["void_hide_settings"]:create_element({["name"] = "teleport time"}, {["slider"] = {["min"] = 0.01, ["max"] = 2, ["decimals"] = 3, ["default"] = 0.1, ["flag"] = "void_hide_teleport_time", ["suffix"] = "s"}})
         menu_references["void_hide_stop_if_forced"]:set_visible(false)
@@ -24184,11 +24189,88 @@ local backtrack_data = {}
     local void_spam_resolver_void_weight = 0.2
     local void_spam_resolver_position_weight = 1.5
 
-    -- The confidence resolver keeps the positions the target's hitbox was seen
-    -- at. A target that is really standing somewhere shows a cluster of samples
-    -- there; the copies it spams out are spread thin and never gather the same
-    -- count. The aim point is read off the densest cluster, and the position the
-    -- hitbox is at stands whenever no cluster holds up.
+    -- One map test for both resolver modes. The map sits within a few thousand
+    -- studs of the origin; void-hide spam parks a body hundreds of thousands
+    -- out. The old normal mode used 9e5 and confidence used 8955, so the two
+    -- modes disagreed about which samples were in the map.
+    local resolver_map_radius = 9e5
+    local resolver_position_in_map = function(position)
+        return position ~= nil and position["Magnitude"] < resolver_map_radius
+    end
+
+    -- A body is a few studs wide; a sample 40 studs from a tracked point is
+    -- not the same body any more. The old 200-stud merge let a spam copy drag
+    -- the real entry towards itself every frame.
+    local resolver_merge_radius = 40
+    local resolver_merge_radius_squared = resolver_merge_radius * resolver_merge_radius
+
+    -- The resolver clusters the body's root, not whichever limb the hitbox
+    -- setting rolled this frame: head and root samples of one body differ by
+    -- studs and split a cluster in two. The current limb offset is added back
+    -- to the resolved root so the shot still lands on the part that was picked.
+    local get_resolver_sample = function(parts, hitbox)
+        local hitbox_position = hitbox and hitbox["Position"]
+        local root = parts and (parts["HumanoidRootPart"] or parts["UpperTorso"] or parts["Head"])
+        local root_position = root and root["Position"]
+
+        if root_position and hitbox_position then
+            local offset = hitbox_position - root_position
+
+            -- A normal limb sits within a few studs of the root. A part much
+            -- further out is being moved on its own (or is a vehicle part), so
+            -- tracking the root would put the offset back on the spam copy.
+            -- Track the part itself in that case, as the old resolver did.
+            if offset["Magnitude"] <= 12 then
+                return root_position, offset
+            end
+
+            return hitbox_position, vector3_zero
+        end
+
+        return hitbox_position or root_position, vector3_zero
+    end
+
+    -- The same lead the ordinary prediction uses, so a resolved point and a
+    -- plain shot are led by the same clock. Prediction 2 is the "disabled" end
+    -- of the slider.
+    local get_resolver_lead = function()
+        local lead = prediction == 0 and local_ping/500 or prediction == 2 and 0 or prediction
+
+        -- A resolved point is frozen while the shot delay runs; lead through
+        -- the delay too so the wait does not put the shot behind the body.
+        if prediction ~= 2 then
+            lead += (flags["shot_delay"] or 0) / 1000
+        end
+
+        return lead
+    end
+
+    -- A sample that jumped far from the last one is a teleport, not a
+    -- direction. The sampler already drops such a velocity, but its answer can
+    -- be a frame old; re-check at the point the lead is applied.
+    local get_resolver_velocity = function(sample_position, last_position)
+        local velocity = target_velocity
+
+        if not velocity or not last_position then
+            return velocity or vector3_zero
+        end
+
+        local dx = sample_position["X"] - last_position["X"]
+        local dy = sample_position["Y"] - last_position["Y"]
+        local dz = sample_position["Z"] - last_position["Z"]
+
+        if dx*dx + dy*dy + dz*dz > 40000 then
+            return vector3_zero
+        end
+
+        return velocity
+    end
+
+    -- The confidence resolver keeps the positions the target's body root was
+    -- seen at. A target that is really standing somewhere shows a cluster of
+    -- samples there; the copies it spams out are spread thin and never gather
+    -- the same count. The aim point is read off the densest cluster, and the
+    -- position the hitbox is at stands whenever no cluster holds up.
     local confidence_samples = {}
     local confidence_last_refresh = clock()
     -- The body the samples and the spam positions belong to. A respawn keeps
@@ -24229,18 +24311,35 @@ local backtrack_data = {}
         end
 
         local forgiveness = flags["confidence_forgiveness"] or 14.4
+        local hrp = local_parts["HumanoidRootPart"]
+        local nearest_sample = nil
+        local nearest_distance = nil
+
+        -- The radius is read from the sample closest to the local body, not
+        -- from whichever sample happened to arrive last. A target that spams
+        -- into the void would otherwise collapse the radius to one stud and
+        -- hide the real cluster in the map.
+        if hrp then
+            for i = 1, #samples do
+                local sample = samples[i]
+                local distance = (sample - hrp["Position"])["Magnitude"]
+
+                if not nearest_distance or distance < nearest_distance then
+                    nearest_distance = distance
+                    nearest_sample = sample
+                end
+            end
+        end
 
         -- Out past the map the target's copies are further apart, so the radius
         -- opens up; close in, the distance penalty pulls it back down so a near
         -- target is pinned to where it actually is.
-        if math["abs"](position["X"]) + math["abs"](position["Z"]) < 8955 then
+        if resolver_position_in_map(nearest_sample or position) then
             forgiveness += flags["confidence_void_bonus"] or 5
         end
 
-        local hrp = local_parts["HumanoidRootPart"]
-
-        if hrp then
-            forgiveness = clamp(forgiveness - ((position - hrp["Position"])["Magnitude"] / 100) * (flags["confidence_distance_penalty"] or 2), 1, 100)
+        if nearest_distance then
+            forgiveness = clamp(forgiveness - (nearest_distance / 100) * (flags["confidence_distance_penalty"] or 2), 1, 100)
         end
 
         -- Squared radius, component sums: the old loop allocated a Vector3 for
@@ -24256,6 +24355,7 @@ local backtrack_data = {}
             local px, py, pz = point["X"], point["Y"], point["Z"]
             local matches = 0
             local sum_x, sum_y, sum_z = 0, 0, 0
+            local weight_sum = 0
 
             for j = 1, count do
                 local other = samples[j]
@@ -24264,20 +24364,27 @@ local backtrack_data = {}
 
                 if dx*dx + dy*dy + dz*dz <= forgiveness_squared then
                     matches += 1
-                    sum_x += ox
-                    sum_y += oy
-                    sum_z += oz
+                    -- Samples are chronological; weighting by index pulls the
+                    -- centroid towards the newest end of a moving trail
+                    -- instead of aiming at the middle of it.
+                    sum_x += ox * j
+                    sum_y += oy * j
+                    sum_z += oz * j
+                    weight_sum += j
                 end
             end
 
             if matches >= 4 and matches > best_count then
-                best_count = matches
-                best_x, best_y, best_z = sum_x / matches, sum_y / matches, sum_z / matches
-
-                -- No later point can beat a cluster that holds every sample.
+                -- A cluster that holds every sample is the whole window. The
+                -- current sample is its newest point, so it is the only one
+                -- that is not a trail behind a moving target; the centroid of
+                -- the whole window would aim where the target was.
                 if matches == count then
-                    break
+                    return position
                 end
+
+                best_count = matches
+                best_x, best_y, best_z = sum_x / weight_sum, sum_y / weight_sum, sum_z / weight_sum
             end
         end
 
@@ -24564,6 +24671,7 @@ local backtrack_data = {}
 
             if hitbox then
                 local hitbox_position = hitbox["Position"]
+                local sample_position, aim_offset = get_resolver_sample(parts, hitbox)
 
                 -- The manual-shot rewrite in the remote hook fires at this part.
                 ragebot_aim_part = hitbox
@@ -24601,10 +24709,10 @@ local backtrack_data = {}
                         local time_delta = current_time - data["last_update_time"]
 
                         if time_delta > 0 then
-                            local dx = position["X"] - hitbox_position["X"]
-                            local dy = position["Y"] - hitbox_position["Y"]
-                            local dz = position["Z"] - hitbox_position["Z"]
-                            local far = dx*dx + dy*dy + dz*dz > 40000
+                            local dx = position["X"] - sample_position["X"]
+                            local dy = position["Y"] - sample_position["Y"]
+                            local dz = position["Z"] - sample_position["Z"]
+                            local far = dx*dx + dy*dy + dz*dz > resolver_merge_radius_squared
 
                             data["weight"]-=time_delta*(far and rate*2.5 or rate)
                             data["last_update_time"] = current_time
@@ -24628,28 +24736,34 @@ local backtrack_data = {}
                     local jumped = false
 
                     if confidence_last_input then
-                        local dx = hitbox_position["X"] - confidence_last_input["X"]
-                        local dy = hitbox_position["Y"] - confidence_last_input["Y"]
-                        local dz = hitbox_position["Z"] - confidence_last_input["Z"]
+                        local dx = sample_position["X"] - confidence_last_input["X"]
+                        local dy = sample_position["Y"] - confidence_last_input["Y"]
+                        local dz = sample_position["Z"] - confidence_last_input["Z"]
                         jumped = dx*dx + dy*dy + dz*dz > 40000
                     end
 
                     -- A jump is a teleport, not a position the target walked
                     -- to. The old cluster describes the body it left, so it is
-                    -- dropped instead of outvoting the one new sample.
+                    -- dropped instead of outvoting the one new sample. The lead
+                    -- is dropped with it: one frame of a teleport is not a
+                    -- direction the target is moving in.
                     if jumped then
                         confidence_samples = {}
                         confidence_aim = nil
                         confidence_last_refresh = current_time
+                        target_velocity = vector3_zero
                     end
 
                     if not confidence_aim or jumped or current_time - confidence_last_sample >= confidence_sample_interval * 0.9 then
-                        confidence_aim = confidence_resolve(hitbox_position, current_time)
-                        confidence_last_input = hitbox_position
+                        confidence_aim = confidence_resolve(sample_position, current_time)
+                        confidence_last_input = sample_position
                         confidence_last_sample = current_time
                     end
 
-                    ragebot_aim_position = confidence_aim
+                    -- The cluster is a root position; the current limb offset
+                    -- puts the shot back on the picked part, and the body's own
+                    -- velocity leads it to where the shot lands.
+                    ragebot_aim_position = confidence_aim + aim_offset + get_resolver_velocity(sample_position, target_last_position) * get_resolver_lead()
                 else
                     ragebot_aim_position = get_predicted_aim_position(target, hitbox)
                 end
@@ -24678,38 +24792,46 @@ local backtrack_data = {}
                 did_defensive = false
             
                 if resolver_enabled and not confidence_mode then
-                    local weight_to_add = (hitbox_position["Magnitude"] < 9e5 and void_spam_resolver_position_weight or void_spam_resolver_void_weight)
+                    local weight_to_add = (resolver_position_in_map(sample_position) and void_spam_resolver_position_weight or void_spam_resolver_void_weight)
                     local lerp_alpha = 1 - (1 - void_spam_resolver_lerp) ^ (frame_dt * 60)
                     lerp_alpha = clamp(lerp_alpha, 0, 1)
+
+                    -- Pick the nearest entry inside the merge radius. The old
+                    -- loop took the first one in table order and rekeyed the
+                    -- table while it was being traversed, which is undefined
+                    -- in Lua and could merge two different positions in one
+                    -- pass.
+                    local merge_position = nil
+                    local merge_data = nil
+                    local merge_distance = nil
+
+                    for position, data in defensive_positions do
+                        local dx = position["X"] - sample_position["X"]
+                        local dy = position["Y"] - sample_position["Y"]
+                        local dz = position["Z"] - sample_position["Z"]
+                        local distance = dx*dx + dy*dy + dz*dz
+
+                        if distance <= resolver_merge_radius_squared and (not merge_distance or distance < merge_distance) then
+                            merge_position = position
+                            merge_data = data
+                            merge_distance = distance
+                        end
+                    end
 
                     local merged_position = nil
                     local merged_weight = nil
 
-                    for position, data in defensive_positions do
-                        local dx = position["X"] - hitbox_position["X"]
-                        local dy = position["Y"] - hitbox_position["Y"]
-                        local dz = position["Z"] - hitbox_position["Z"]
-
-                        if dx*dx + dy*dy + dz*dz <= 40000 then
-                            local new_position = position:Lerp(hitbox_position, lerp_alpha)
-
-                            -- Reuse the entry: the old key is removed below, so
-                            -- the table has one owner and no per-frame garbage.
-                            data["weight"] = clamp(data["weight"] + weight_to_add, -1, 18)
-                            data["last_update_time"] = current_time
-                            defensive_positions[position] = nil
-                            defensive_positions[new_position] = data
-
-                            merged_position = new_position
-                            merged_weight = data["weight"]
-                            break
-                        end
-                    end
-
-                    if not merged_position then
+                    if merge_position then
+                        merged_position = merge_position:Lerp(sample_position, lerp_alpha)
+                        merge_data["weight"] = clamp(merge_data["weight"] + weight_to_add, -1, 18)
+                        merge_data["last_update_time"] = current_time
+                        defensive_positions[merge_position] = nil
+                        defensive_positions[merged_position] = merge_data
+                        merged_weight = merge_data["weight"]
+                    else
                         local data = { ["weight"] = weight_to_add, ["last_update_time"] = current_time }
-                        defensive_positions[hitbox_position] = data
-                        merged_position = hitbox_position
+                        defensive_positions[sample_position] = data
+                        merged_position = sample_position
                         merged_weight = data["weight"]
                     end
 
@@ -24721,9 +24843,11 @@ local backtrack_data = {}
                     end
 
                     if highest and highest_weight > void_spam_resolver_accuracy then
-                        ragebot_aim_position = highest
-                        target_velocity = vector3_zero
-                        target_last_position = highest
+                        -- The tracked point is a root position; the current
+                        -- limb offset puts the shot back on the picked part,
+                        -- and the body's velocity leads it to where the shot
+                        -- lands instead of pinning it to the sample.
+                        ragebot_aim_position = highest + aim_offset + get_resolver_velocity(sample_position, target_last_position) * get_resolver_lead()
                         did_defensive = true
                     end
                 end
@@ -27261,7 +27385,12 @@ local backtrack_data = {}
 
         local void_hide_teleport_time = flags["void_hide_teleport_time"]
         local void_hide_void_time = flags["void_hide_void_time"]
-        local void_hide_offset = flags["void_hide_offset"]
+        local void_hide_offset = flags["void_hide_offset"] or 0
+        local void_hide_distance_min = flags["void_hide_distance_min"] or 0
+        local void_hide_distance_max = flags["void_hide_distance_max"] or 9000000000
+        local void_hide_distance_bias = "uniform"
+        local void_hide_vertical_range = flags["void_hide_vertical_range"] or 2147483647
+        local void_hide_bait_min_distance = flags["void_hide_bait_min_distance"] or 0
         local void_hide_disable_when_target_selected = false
         local void_hide_disable_when_following_target = false
         local void_hide_disable_when_target_knocked = false
@@ -27270,6 +27399,25 @@ local backtrack_data = {}
         local void_hide_force_when_tabbed_out = false
         local void_hide_force_when_not_full_health = false
         local void_hide_type = game["PlaceId"] == 7213786345 and "vc server" or "random"
+
+        -- The menu stores dropdowns as arrays; configs saved by older builds
+        -- may hold a bare string. Read both so a loaded config picks the mode
+        -- it was saved with instead of falling back to the game default.
+        local bias_flag = flags["void_hide_distance_bias"]
+
+        if type(bias_flag) == "table" then
+            void_hide_distance_bias = bias_flag[1] or "uniform"
+        elseif type(bias_flag) == "string" then
+            void_hide_distance_bias = bias_flag
+        end
+
+        local type_flag = flags["void_hide_type"]
+
+        if type(type_flag) == "table" then
+            void_hide_type = type_flag[1] or void_hide_type
+        elseif type(type_flag) == "string" then
+            void_hide_type = type_flag
+        end
 
 
         -- An executor that has isrbxactive keeps it; without one the window is read
@@ -27290,18 +27438,49 @@ local backtrack_data = {}
             void_hide_void_time = value
         end)
 
+        create_connection(menu_references["void_hide_distance_min"]["on_slider_change"], function(value)
+            void_hide_distance_min = value
+        end)
+
+        create_connection(menu_references["void_hide_distance_max"]["on_slider_change"], function(value)
+            void_hide_distance_max = value
+        end)
+
+        create_connection(menu_references["void_hide_distance_bias"]["on_dropdown_change"], function(value)
+            void_hide_distance_bias = value[1] or "uniform"
+        end)
+
+        create_connection(menu_references["void_hide_vertical_range"]["on_slider_change"], function(value)
+            void_hide_vertical_range = value
+        end)
+
+        create_connection(menu_references["void_hide_bait_min_distance"]["on_slider_change"], function(value)
+            void_hide_bait_min_distance = value
+        end)
+
         create_connection(menu_references["void_hide_type"]["on_dropdown_change"], function(value)
-            void_hide_type = value[1]
-            
-            local is_bait = value[1] == "bait"
+            void_hide_type = value[1] or void_hide_type
+
+            local is_bait = void_hide_type == "bait"
             menu_references["void_hide_bait_distance"]:set_visible(is_bait)
+            menu_references["void_hide_bait_min_distance"]:set_visible(is_bait)
             menu_references["void_hide_bait_time"]:set_visible(is_bait)
             menu_references["void_hide_bait_cooldown"]:set_visible(is_bait)
-
+            menu_references["void_hide_distance_min"]:set_visible(not is_bait)
+            menu_references["void_hide_distance_max"]:set_visible(not is_bait)
+            menu_references["void_hide_distance_bias"]:set_visible(not is_bait)
+            menu_references["void_hide_vertical_range"]:set_visible(not is_bait)
         end)
-        menu_references["void_hide_bait_distance"]:set_visible(false)
-        menu_references["void_hide_bait_time"]:set_visible(false)
-        menu_references["void_hide_bait_cooldown"]:set_visible(false)
+
+        local is_bait_initial = void_hide_type == "bait"
+        menu_references["void_hide_bait_distance"]:set_visible(is_bait_initial)
+        menu_references["void_hide_bait_min_distance"]:set_visible(is_bait_initial)
+        menu_references["void_hide_bait_time"]:set_visible(is_bait_initial)
+        menu_references["void_hide_bait_cooldown"]:set_visible(is_bait_initial)
+        menu_references["void_hide_distance_min"]:set_visible(not is_bait_initial)
+        menu_references["void_hide_distance_max"]:set_visible(not is_bait_initial)
+        menu_references["void_hide_distance_bias"]:set_visible(not is_bait_initial)
+        menu_references["void_hide_vertical_range"]:set_visible(not is_bait_initial)
 
         local cframe_angles = CFrame["Angles"]
         local rad = math["rad"]
@@ -27332,7 +27511,83 @@ local backtrack_data = {}
         }
 
         local new_cframe = cframe_new()
-        
+
+        -- A void position is built from a distance first, then a direction, so
+        -- the distance itself varies between hides instead of being whatever a
+        -- point in a fixed cube happens to be. The bias picks how the range is
+        -- sampled: uniform, logarithmic (spread across orders of magnitude),
+        -- near (most hides close to the minimum) or far (most hides close to
+        -- the maximum).
+        local function random_void_distance()
+            local low = math["min"](void_hide_distance_min or 0, void_hide_distance_max or 9000000000)
+            local high = math["max"](void_hide_distance_min or 0, void_hide_distance_max or 9000000000)
+            low = clamp(low, 0, 9000000000)
+            high = clamp(high, 0, 9000000000)
+
+            local distance
+
+            if void_hide_distance_bias == "logarithmic" then
+                local log_low = math["log"](math["max"](low, 1))
+                local log_high = math["log"](math["max"](high, low + 1))
+                distance = math["exp"](log_low + (log_high - log_low) * math_random())
+            elseif void_hide_distance_bias == "near" then
+                distance = low + (high - low) * (math_random() ^ 2)
+            elseif void_hide_distance_bias == "far" then
+                distance = low + (high - low) * (1 - (1 - math_random()) ^ 2)
+            else
+                distance = low + (high - low) * math_random()
+            end
+
+            return clamp(distance, low, high)
+        end
+
+        local function random_void_position()
+            local distance = random_void_distance()
+            local offset = void_hide_offset or 0
+            local x, y, z
+
+            if void_hide_type == "vc server" then
+                -- vc server parks the character on the Y axis; keep that shape
+                -- and let the distance range pick the height.
+                x, z = 0, 0
+                y = math_random() < 0.5 and -distance or distance
+            else
+                -- A point at exactly `distance` from the origin. The vertical
+                -- range caps the Y component; the rest goes around a random
+                -- angle, so the horizontal direction stays random too.
+                --
+                -- The lower end stays at -400 like the old cube did. A body
+                -- parked billions of studs under the map can fall out of the
+                -- world before the teleport back, so the spread only opens
+                -- upwards.
+                local vertical = math["min"](void_hide_vertical_range or 0, distance)
+                local vertical_floor = -math["min"](400, vertical)
+                y = vertical_floor + math_random() * (vertical - vertical_floor)
+                local planar = math["sqrt"](math["max"](distance * distance - y * y, 0))
+                local angle = math_random() * math["pi"] * 2
+                x = math["cos"](angle) * planar
+                z = math["sin"](angle) * planar
+            end
+
+            return vector3_new(
+                x + (math_random() * 2 - 1) * offset,
+                y + (math_random() * 2 - 1) * offset,
+                z + (math_random() * 2 - 1) * offset
+            )
+        end
+
+        local function random_bait_position(max_distance)
+            local low = math["min"](void_hide_bait_min_distance or 0, max_distance or 250)
+            local high = math["max"](void_hide_bait_min_distance or 0, max_distance or 250)
+            low = clamp(low, 0, 9000000000)
+            high = clamp(high, 0, 9000000000)
+
+            local distance = low + (high - low) * math_random()
+            local angle = math_random() * math["pi"] * 2
+
+            return vector3_new(math["cos"](angle) * distance, math_random(-200, 200), math["sin"](angle) * distance)
+        end
+
         local do_void_hide = LPH_JIT_MAX(function(dt, hrp)
             local humanoid = local_parts["Humanoid"]
 
@@ -27389,11 +27644,11 @@ local backtrack_data = {}
                         in_void = true
                         local fake_in_void = true
                         if void_hide_type == "bait" then
-                            local bait_range = flags["void_hide_bait_distance"]
+                            local bait_range = flags["void_hide_bait_distance"] or 250
                             local difference = tick - last_bait
                             if difference > 0.5 then
                                 last_bait = tick
-                                bait_position = cframe_new(vector3_new(math_random(-bait_range, bait_range), math_random(-200, 200), math_random(-bait_range, bait_range)))
+                                bait_position = cframe_new(random_bait_position(bait_range))
                             elseif difference < flags["void_hide_bait_time"] and bait_position then
                                 fake_in_void = false
                             else
@@ -27420,18 +27675,18 @@ local backtrack_data = {}
                             end
                         end
                         if fake_in_void then
-                            hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, math_random() * 18000000000 - 9000000000, 0)) or cframe_new(vector3_new(math_random() * 18000000000 - 9000000000, math_random(-400, 2147483647), math_random() * 18000000000 - 9000000000))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
+                            hrp["CFrame"] = cframe_new(random_void_position()) * cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
                         end
                     end
                 elseif do_void_hide then
                     in_void = true
                     local fake_in_void = true
                     if void_hide_type == "bait" then
-                        local bait_range = flags["void_hide_bait_distance"]
+                        local bait_range = flags["void_hide_bait_distance"] or 250
                         local difference = tick - last_bait
                         if difference > flags["void_hide_bait_cooldown"] then
                             last_bait = tick
-                            bait_position = cframe_new(vector3_new(math_random(-bait_range, bait_range), math_random(-200, 200), math_random(-bait_range, bait_range)))
+                            bait_position = cframe_new(random_bait_position(bait_range))
                         elseif difference < flags["void_hide_bait_time"] and bait_position then
                             fake_in_void = false
                             hrp["CFrame"] = bait_position + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset))
@@ -27459,7 +27714,7 @@ local backtrack_data = {}
                         end
                     end
                     if fake_in_void then
-                        hrp["CFrame"] = ((void_hide_type == "vc server" and cframe_new(vector3_new(0, math_random() * 18000000000 - 9000000000, 0)) or cframe_new(vector3_new(math_random() * 18000000000 - 9000000000, math_random(-400, 2147483647), math_random() * 18000000000 - 9000000000))) + vector3_new(math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset), math_random(-void_hide_offset, void_hide_offset)))*cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
+                        hrp["CFrame"] = cframe_new(random_void_position()) * cframe_angles(rad(math_random(1,359)), rad(math_random(1,359)), rad(math_random(1,359)))
                     end
                 end
                 if not in_void then
